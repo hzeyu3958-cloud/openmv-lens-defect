@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv_windows_host/
+
+# Android / Gradle
+.gradle/
+.kotlin/
+app/build/
+build/
+local.properties
+
+# PyInstaller output
+dist/
+*.spec
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+.DS_Store
+
+# Dataset and trained model outputs can become large.
+# Keep README files, ignore collected images and generated models by default.
+dataset/**
+!dataset/
+!dataset/README.md
+models/**
+!models/
+!models/README.md
+
+# Keep packaged demo artifacts here.
+!release/
+!release/**

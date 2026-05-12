@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1E6B5C</color>
+    <color name="primary_dark">#164D43</color>
+    <color name="text_main">#1D1D1F</color>
+    <color name="text_sub">#5F6368</color>
+    <color name="panel_bg">#F5F7F8</color>
+    <color name="divider">#D8DEE3</color>
+</resources>
