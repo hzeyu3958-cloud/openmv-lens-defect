@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,13 @@ except ImportError:
     serial = None
     list_ports = None
 
+try:
+    from PIL import Image, ImageStat, ImageTk
+except ImportError:
+    Image = None
+    ImageStat = None
+    ImageTk = None
+
 
 APP_TITLE = "OpenMV N6 眼镜片缺陷识别上位机"
 DEFAULT_BAUDRATE = "115200"
@@ -31,6 +39,10 @@ HISTORY_DIR = APP_DIR / "history"
 HISTORY_JSONL = HISTORY_DIR / "detection_history.jsonl"
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "dataset"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
+METADATA_FILENAME = "metadata.csv"
+SPLIT_TARGET_RATIOS = {"train": 0.7, "val": 0.2, "test": 0.1}
+MIN_RECOMMENDED_IMAGES_PER_CLASS = 100
 
 DEFECT_TYPE_ORDER = [
     "normal",
@@ -92,6 +104,20 @@ def now_text():
 
 def safe_filename_time():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
+def list_image_files(folder):
+    if not folder.exists():
+        return []
+    return [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
+
+
+def count_image_files(folder):
+    return len(list_image_files(folder))
+
+
+def metadata_path(dataset_dir):
+    return dataset_dir / METADATA_FILENAME
 
 
 def find_training_script():
@@ -240,12 +266,17 @@ class LensDefectHostApp:
         self.dataset_dir_var = tk.StringVar(value=str(DEFAULT_DATASET_DIR))
         self.dataset_class_var = tk.StringVar(value="normal")
         self.dataset_split_var = tk.StringVar(value="train")
+        self.auto_split_var = tk.BooleanVar(value=True)
         self.capture_interval_var = tk.StringVar(value="1.0")
         self.capture_count_var = tk.StringVar(value="当前类别图片数：0")
+        self.dataset_health_var = tk.StringVar(value="数据集体检：暂无统计")
+        self.capture_preview_var = tk.StringVar(value="采集预览：暂无图片")
+        self.capture_quality_var = tk.StringVar(value="质量提示：暂无图片")
 
         self.model_file_var = tk.StringVar(value=str(DEFAULT_MODELS_DIR / "lens_defect_classifier_int8.tflite"))
         self.labels_file_var = tk.StringVar(value=str(DEFAULT_MODELS_DIR / "lens_defect_labels.txt"))
         self.openmv_folder_var = tk.StringVar(value="")
+        self.capture_preview_photo = None
 
         self._create_widgets()
         self.refresh_ports()
@@ -439,6 +470,11 @@ class LensDefectHostApp:
 
         ttk.Label(config_frame, text="自动采集间隔秒").grid(row=1, column=2, sticky="e", pady=(8, 0))
         ttk.Entry(config_frame, textvariable=self.capture_interval_var, width=8).grid(row=1, column=3, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            config_frame,
+            text="按 70/20/10 自动分配 train/val/test",
+            variable=self.auto_split_var,
+        ).grid(row=2, column=1, sticky="w", padx=8, pady=(8, 0))
         config_frame.columnconfigure(1, weight=1)
 
         action_frame = ttk.Frame(self.dataset_tab)
@@ -448,15 +484,16 @@ class LensDefectHostApp:
         ttk.Button(action_frame, text="开始自动采集", command=self.start_auto_capture).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="停止自动采集", command=self.stop_auto_capture).pack(side=tk.LEFT, padx=4)
         ttk.Button(action_frame, text="打开数据集目录", command=self.open_dataset_dir).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_frame, text="刷新统计", command=self.refresh_dataset_counts).pack(side=tk.LEFT, padx=4)
         ttk.Label(action_frame, textvariable=self.capture_count_var, style="Status.TLabel").pack(side=tk.LEFT, padx=12)
 
         pane = ttk.PanedWindow(self.dataset_tab, orient="horizontal")
         pane.pack(fill=tk.BOTH, expand=True)
 
         count_frame = ttk.LabelFrame(pane, text="数据集数量统计", padding=8)
-        log_frame = ttk.LabelFrame(pane, text="采集日志", padding=8)
+        right_panel = ttk.Frame(pane)
         pane.add(count_frame, weight=1)
-        pane.add(log_frame, weight=2)
+        pane.add(right_panel, weight=2)
 
         self.dataset_tree = ttk.Treeview(count_frame, columns=("class", "train", "val", "test", "total"), show="headings")
         for column, text, width in (
@@ -469,9 +506,28 @@ class LensDefectHostApp:
             self.dataset_tree.heading(column, text=text)
             self.dataset_tree.column(column, width=width, anchor="center")
         self.dataset_tree.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(count_frame, textvariable=self.dataset_health_var, wraplength=360, style="Status.TLabel").pack(fill=tk.X, pady=(8, 0))
 
+        preview_frame = ttk.LabelFrame(right_panel, text="最近采集预览和质量提示", padding=8)
+        preview_frame.pack(fill=tk.X)
+        self.capture_preview_label = tk.Label(
+            preview_frame,
+            textvariable=self.capture_preview_var,
+            compound="top",
+            bg="#F8F8F8",
+            relief="groove",
+            width=52,
+            height=13,
+            anchor="center",
+            justify="center",
+        )
+        self.capture_preview_label.pack(fill=tk.X)
+        ttk.Label(preview_frame, textvariable=self.capture_quality_var, wraplength=620, style="Status.TLabel").pack(fill=tk.X, pady=(6, 0))
+
+        log_frame = ttk.LabelFrame(right_panel, text="采集日志", padding=8)
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.capture_log_text = self._create_text(log_frame, height=14)
-        self._set_text(self.capture_log_text, "操作步骤：\n1. 把 openmv/n6_usb_image_capture.py 保存到 OpenMV N6 并运行。\n2. 关闭 OpenMV IDE 串口占用，或确保上位机能打开 N6 的 COM 口。\n3. 选择类别，点击“拍一张保存到电脑”。")
+        self._set_text(self.capture_log_text, "操作步骤：\n1. 把 openmv/n6_usb_image_capture.py 保存到 OpenMV N6 并运行。\n2. 关闭 OpenMV IDE 串口占用，或确保上位机能打开 N6 的 COM 口。\n3. 选择类别，建议保持“自动分配集合”开启后开始采集。")
 
     def _create_train_tab(self):
         workflow = (
@@ -486,6 +542,7 @@ class LensDefectHostApp:
         ttk.Button(train_frame, text="打开模型输出目录", command=self.open_models_dir).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="启动本地训练脚本", command=self.run_training_script).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="打开训练脚本位置", command=self.open_training_script_folder).pack(side=tk.LEFT, padx=4)
+        ttk.Button(train_frame, text="刷新训练结果", command=self.load_training_summary).pack(side=tk.LEFT, padx=4)
 
         deploy_frame = ttk.LabelFrame(self.train_tab, text="把模型文件传回 OpenMV N6", padding=10)
         deploy_frame.pack(fill=tk.X, pady=(10, 8))
@@ -505,14 +562,19 @@ class LensDefectHostApp:
 
         ttk.Button(deploy_frame, text="复制模型到 OpenMV N6", command=self.copy_model_to_openmv).grid(row=3, column=1, sticky="w", padx=8, pady=(12, 0))
 
+        result_frame = ttk.LabelFrame(self.train_tab, text="最近训练结果", padding=10)
+        result_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+        self.training_result_text = self._create_text(result_frame, height=9)
+
         script_frame = ttk.LabelFrame(self.train_tab, text="N6 端脚本提示", padding=10)
-        script_frame.pack(fill=tk.BOTH, expand=True)
+        script_frame.pack(fill=tk.X)
         text = (
             "采集数据时：运行 openmv/n6_usb_image_capture.py。\n"
             "部署模型后：运行 openmv/n6_classifier_main.py，它会加载 /lens_defect_classifier_int8.tflite 和 /lens_defect_labels.txt。\n"
             "如果模型较大，建议之后加一张 32GB microSD，把模型放 /sd/ 目录。"
         )
         ttk.Label(script_frame, text=text, wraplength=1000).pack(anchor="w")
+        self.load_training_summary()
 
     def _create_text(self, parent, height):
         frame = ttk.Frame(parent)
@@ -591,30 +653,16 @@ class LensDefectHostApp:
             messagebox.showerror("测试失败", str(exc))
 
     def capture_one_image(self, test_only=False):
-        if self.reader.running:
-            raise RuntimeError("检测接收正在占用串口，请先停止接收。")
-
-        dataset_dir = Path(self.dataset_dir_var.get())
-        split = self.dataset_split_var.get()
-        class_name = self.dataset_class_var.get()
-        save_dir = dataset_dir / split / class_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        port = self.selected_port()
-        baudrate = self.selected_baudrate()
-        image_bytes, width, height = UsbImageCaptureClient.capture(port, baudrate)
-
-        if test_only:
-            self.log_capture("测试采图成功：%d 字节，尺寸 %dx%d" % (len(image_bytes), width, height))
-            return
-
-        filename = "%s_%s_%s.jpg" % (class_name, split, safe_filename_time())
-        save_path = save_dir / filename
-        with open(save_path, "wb") as file:
-            file.write(image_bytes)
-
-        self.log_capture("保存图片：%s，%d 字节，尺寸 %dx%d" % (save_path, len(image_bytes), width, height))
-        self.refresh_dataset_counts()
+        try:
+            settings = self.capture_settings()
+            payload = self.capture_and_store_image(settings, test_only=test_only)
+            self.apply_capture_result(payload)
+        except Exception as exc:
+            if test_only:
+                raise
+            self.status_var.set("状态：采集失败")
+            self.log_capture("采集失败：%s" % exc)
+            messagebox.showerror("采集失败", str(exc))
 
     def start_auto_capture(self):
         if self.auto_capture_running:
@@ -628,24 +676,250 @@ class LensDefectHostApp:
             messagebox.showwarning("提示", "自动采集间隔必须是大于 0 的数字。")
             return
 
+        try:
+            settings = self.capture_settings()
+        except Exception as exc:
+            messagebox.showerror("采集失败", str(exc))
+            return
+
         self.auto_capture_running = True
         self.status_var.set("状态：开始自动采集训练图片")
-        threading.Thread(target=self._auto_capture_loop, args=(interval,), daemon=True).start()
+        threading.Thread(target=self._auto_capture_loop, args=(interval, settings), daemon=True).start()
 
     def stop_auto_capture(self):
         self.auto_capture_running = False
         self.status_var.set("状态：已请求停止自动采集")
 
-    def _auto_capture_loop(self, interval):
+    def _auto_capture_loop(self, interval, settings):
         while self.auto_capture_running:
             try:
-                self.capture_one_image()
+                payload = self.capture_and_store_image(settings, test_only=False)
+                self.ui_queue.put(UiMessage("capture_saved", payload))
             except Exception as exc:
                 self.ui_queue.put(UiMessage("capture_error", str(exc)))
                 self.auto_capture_running = False
                 break
             time.sleep(interval)
         self.ui_queue.put(UiMessage("status", "自动采集已停止"))
+
+    def capture_settings(self):
+        if self.reader.running:
+            raise RuntimeError("检测接收正在占用串口，请先停止接收。")
+        return {
+            "dataset_dir": Path(self.dataset_dir_var.get()),
+            "class_name": self.dataset_class_var.get(),
+            "split": self.dataset_split_var.get(),
+            "auto_split": bool(self.auto_split_var.get()),
+            "port": self.selected_port(),
+            "baudrate": self.selected_baudrate(),
+        }
+
+    def capture_and_store_image(self, settings, test_only=False):
+        dataset_dir = settings["dataset_dir"]
+        class_name = settings["class_name"]
+        split = settings["split"]
+        port = settings["port"]
+        baudrate = settings["baudrate"]
+
+        image_bytes, width, height = UsbImageCaptureClient.capture(port, baudrate)
+        quality = self.inspect_capture_image(image_bytes, width, height)
+
+        save_path = None
+        if not test_only:
+            if settings["auto_split"]:
+                split = self.choose_balanced_split(dataset_dir, class_name)
+            save_dir = dataset_dir / split / class_name
+            save_dir.mkdir(parents=True, exist_ok=True)
+            filename = "%s_%s_%s.jpg" % (class_name, split, safe_filename_time())
+            save_path = save_dir / filename
+            with open(save_path, "wb") as file:
+                file.write(image_bytes)
+            self.append_capture_metadata(
+                dataset_dir=dataset_dir,
+                save_path=save_path,
+                split=split,
+                class_name=class_name,
+                port=port,
+                baudrate=baudrate,
+                width=quality["width"],
+                height=quality["height"],
+                byte_count=len(image_bytes),
+                quality=quality,
+            )
+
+        return {
+            "test_only": test_only,
+            "save_path": str(save_path) if save_path else "",
+            "split": split,
+            "class_name": class_name,
+            "byte_count": len(image_bytes),
+            "width": quality["width"],
+            "height": quality["height"],
+            "image_bytes": image_bytes,
+            "quality": quality,
+        }
+
+    def choose_balanced_split(self, dataset_dir, class_name):
+        counts = {}
+        for split in ("train", "val", "test"):
+            counts[split] = count_image_files(dataset_dir / split / class_name)
+        total_after = sum(counts.values()) + 1
+
+        best_split = "train"
+        best_score = None
+        for candidate in ("train", "val", "test"):
+            candidate_counts = dict(counts)
+            candidate_counts[candidate] += 1
+            score = 0.0
+            for split, ratio in SPLIT_TARGET_RATIOS.items():
+                actual = candidate_counts[split] / total_after
+                score += abs(actual - ratio)
+            if best_score is None or score < best_score:
+                best_split = candidate
+                best_score = score
+        return best_split
+
+    def inspect_capture_image(self, image_bytes, width, height):
+        quality = {
+            "width": width,
+            "height": height,
+            "brightness": "",
+            "contrast": "",
+            "status": "未检查",
+            "warnings": [],
+        }
+
+        if Image is None or ImageStat is None:
+            quality["warnings"].append("未安装 Pillow，只保存图片，不显示 JPEG 预览和亮度检查")
+            return quality
+
+        try:
+            with Image.open(BytesIO(image_bytes)) as image:
+                quality["width"], quality["height"] = image.size
+                gray = image.convert("L")
+                stat = ImageStat.Stat(gray)
+                brightness = float(stat.mean[0])
+                contrast = float(stat.stddev[0])
+                quality["brightness"] = "%.1f" % brightness
+                quality["contrast"] = "%.1f" % contrast
+
+                if brightness < 35:
+                    quality["warnings"].append("图片偏暗，建议增加补光或曝光")
+                elif brightness > 220:
+                    quality["warnings"].append("图片偏亮，缺陷细节可能被过曝淹没")
+                if contrast < 12:
+                    quality["warnings"].append("对比度偏低，透明镜片缺陷可能不明显")
+                if min(image.size) < 96:
+                    quality["warnings"].append("图片尺寸偏小，建议保持至少 128x128 以上")
+        except Exception as exc:
+            quality["warnings"].append("图片质量检查失败：%s" % exc)
+
+        quality["status"] = "通过" if not quality["warnings"] else "需复核"
+        return quality
+
+    def append_capture_metadata(self, dataset_dir, save_path, split, class_name, port, baudrate, width, height, byte_count, quality):
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        path = metadata_path(dataset_dir)
+        is_new_file = not path.exists()
+        try:
+            relative_path = str(save_path.relative_to(dataset_dir))
+        except ValueError:
+            relative_path = str(save_path)
+
+        with open(path, "a", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            if is_new_file:
+                writer.writerow([
+                    "capture_time",
+                    "relative_path",
+                    "split",
+                    "label",
+                    "width",
+                    "height",
+                    "bytes",
+                    "brightness",
+                    "contrast",
+                    "quality_status",
+                    "quality_warnings",
+                    "port",
+                    "baudrate",
+                    "source",
+                ])
+            writer.writerow([
+                now_text(),
+                relative_path,
+                split,
+                class_name,
+                width,
+                height,
+                byte_count,
+                quality.get("brightness", ""),
+                quality.get("contrast", ""),
+                quality.get("status", ""),
+                "；".join(quality.get("warnings", [])),
+                port,
+                baudrate,
+                "OpenMV N6 USB",
+            ])
+
+    def apply_capture_result(self, payload):
+        quality = payload["quality"]
+        quality_text = self.format_quality_text(quality)
+        if payload["test_only"]:
+            self.log_capture(
+                "测试采图成功：%d 字节，尺寸 %dx%d，%s"
+                % (payload["byte_count"], payload["width"], payload["height"], quality_text)
+            )
+        else:
+            self.log_capture(
+                "保存图片：%s，类别 %s，集合 %s，尺寸 %dx%d，%s"
+                % (
+                    payload["save_path"],
+                    defect_type_name(payload["class_name"]),
+                    payload["split"],
+                    payload["width"],
+                    payload["height"],
+                    quality_text,
+                )
+            )
+            self.refresh_dataset_counts()
+        self.update_capture_preview(payload)
+
+    def format_quality_text(self, quality):
+        warnings = quality.get("warnings") or []
+        base = "质量：%s" % quality.get("status", "未检查")
+        if quality.get("brightness"):
+            base += "，亮度 %s" % quality["brightness"]
+        if quality.get("contrast"):
+            base += "，对比度 %s" % quality["contrast"]
+        if warnings:
+            base += "；" + "；".join(warnings)
+        return base
+
+    def update_capture_preview(self, payload):
+        quality_text = self.format_quality_text(payload["quality"])
+        location = "测试采图，未保存"
+        if payload["save_path"]:
+            location = "%s / %s" % (payload["split"], defect_type_name(payload["class_name"]))
+        self.capture_preview_var.set(
+            "最近图片：%s\n尺寸：%dx%d，大小：%d 字节"
+            % (location, payload["width"], payload["height"], payload["byte_count"])
+        )
+        self.capture_quality_var.set(quality_text)
+
+        if Image is None or ImageTk is None:
+            self.capture_preview_label.configure(image="")
+            return
+
+        try:
+            with Image.open(BytesIO(payload["image_bytes"])) as image:
+                image.thumbnail((520, 220))
+                self.capture_preview_photo = ImageTk.PhotoImage(image.copy())
+            self.capture_preview_label.configure(image=self.capture_preview_photo, compound="top")
+        except Exception as exc:
+            self.capture_preview_photo = None
+            self.capture_preview_label.configure(image="")
+            self.capture_quality_var.set(quality_text + "；预览失败：%s" % exc)
 
     def refresh_dataset_counts(self):
         if not hasattr(self, "dataset_tree"):
@@ -655,19 +929,54 @@ class LensDefectHostApp:
 
         selected_class = self.dataset_class_var.get()
         selected_total = 0
+        totals = {}
+        split_missing_classes = []
         for class_name in DEFECT_TYPE_ORDER:
             counts = []
             total = 0
             for split in ("train", "val", "test"):
                 folder = dataset_dir / split / class_name
-                count = len(list(folder.glob("*.jpg"))) + len(list(folder.glob("*.jpeg"))) + len(list(folder.glob("*.png")))
+                count = count_image_files(folder)
                 counts.append(count)
                 total += count
             if class_name == selected_class:
                 selected_total = total
+            totals[class_name] = total
+            if total > 0 and (counts[1] == 0 or counts[2] == 0):
+                split_missing_classes.append(defect_type_name(class_name))
             self.dataset_tree.insert("", tk.END, values=(defect_type_name(class_name), counts[0], counts[1], counts[2], total))
 
         self.capture_count_var.set("当前类别图片数：%d" % selected_total)
+        self.dataset_health_var.set(self.build_dataset_health_text(totals, split_missing_classes))
+
+    def build_dataset_health_text(self, totals, split_missing_classes):
+        image_total = sum(totals.values())
+        active_classes = [class_name for class_name, total in totals.items() if total > 0]
+        low_classes = [
+            defect_type_name(class_name)
+            for class_name, total in totals.items()
+            if 0 < total < MIN_RECOMMENDED_IMAGES_PER_CLASS
+        ]
+
+        messages = ["数据集体检：共 %d 张，有数据类别 %d/%d" % (image_total, len(active_classes), len(DEFECT_TYPE_ORDER))]
+        if low_classes:
+            messages.append("不足 %d 张：%s" % (MIN_RECOMMENDED_IMAGES_PER_CLASS, "、".join(low_classes[:5])))
+        if split_missing_classes:
+            messages.append("缺少 val/test：%s" % "、".join(split_missing_classes[:5]))
+
+        non_zero_totals = [total for total in totals.values() if total > 0]
+        if len(non_zero_totals) >= 2 and min(non_zero_totals) > 0 and max(non_zero_totals) / min(non_zero_totals) > 3:
+            messages.append("类别数量差异较大，训练可能偏向样本多的类别")
+        if image_total == 0:
+            messages.append("建议先每类至少采 100 张，稳定后再扩到 300 张以上")
+
+        metadata = metadata_path(Path(self.dataset_dir_var.get()))
+        if metadata.exists():
+            messages.append("已记录 %s" % metadata.name)
+        else:
+            messages.append("下一次采集会自动生成 metadata.csv")
+
+        return "；".join(messages)
 
     def open_dataset_dir(self):
         path = Path(self.dataset_dir_var.get())
@@ -677,6 +986,53 @@ class LensDefectHostApp:
     def open_models_dir(self):
         DEFAULT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         self.open_path(DEFAULT_MODELS_DIR)
+
+    def load_training_summary(self):
+        if not hasattr(self, "training_result_text"):
+            return
+
+        summary_path = DEFAULT_MODELS_DIR / "training_summary.json"
+        if not summary_path.exists():
+            self._set_text(
+                self.training_result_text,
+                "暂无训练结果。训练结束后这里会读取 models/training_summary.json、training_history.csv 和混淆矩阵文件。",
+            )
+            return
+
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._set_text(self.training_result_text, "训练结果读取失败：%s" % exc)
+            return
+
+        lines = []
+        lines.append("数据集：%s" % summary.get("dataset", ""))
+        lines.append("输入尺寸：%s x %s" % (summary.get("image_size", ""), summary.get("image_size", "")))
+        lines.append("类别顺序：%s" % "、".join(summary.get("labels", [])))
+        metrics = summary.get("metrics", {})
+        for split in ("train", "val", "test"):
+            values = metrics.get(split)
+            if not values:
+                continue
+            accuracy = values.get("accuracy")
+            loss = values.get("loss")
+            lines.append("%s：accuracy=%s，loss=%s" % (split, self.format_metric(accuracy), self.format_metric(loss)))
+
+        artifacts = summary.get("artifacts", {})
+        if artifacts.get("int8_tflite"):
+            lines.append("INT8 模型：%s" % artifacts["int8_tflite"])
+        if artifacts.get("confusion_matrix"):
+            lines.append("混淆矩阵：%s" % artifacts["confusion_matrix"])
+        lines.append("更新时间：%s" % now_text())
+        self._set_text(self.training_result_text, "\n".join(lines))
+
+    def format_metric(self, value):
+        if value is None:
+            return "暂无"
+        try:
+            return "%.4f" % float(value)
+        except (TypeError, ValueError):
+            return str(value)
 
     def run_training_script(self):
         script = find_training_script()
@@ -777,6 +1133,8 @@ class LensDefectHostApp:
                 self.status_var.set("状态：采集失败")
                 self.log_capture("采集失败：%s" % message.payload)
                 messagebox.showerror("采集失败", str(message.payload))
+            elif message.kind == "capture_saved":
+                self.apply_capture_result(message.payload)
 
         self.root.after(80, self._poll_ui_queue)
 

@@ -1,4 +1,6 @@
 import argparse
+import csv
+import json
 from pathlib import Path
 
 
@@ -12,6 +14,7 @@ DEFAULT_CLASSES = [
     "edge_damage",
     "unknown",
 ]
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
 def parse_args():
@@ -22,6 +25,31 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=128)
     return parser.parse_args()
+
+
+def image_files(folder):
+    if not folder.exists():
+        return []
+    return [path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS]
+
+
+def count_images(split_dir, labels):
+    counts = {}
+    for label in labels:
+        counts[label] = len(image_files(split_dir / label))
+    return counts
+
+
+def split_has_images(split_dir, labels):
+    if not split_dir.exists():
+        return False
+    return sum(count_images(split_dir, labels).values()) > 0
+
+
+def ensure_class_dirs(split_dir, labels):
+    split_dir.mkdir(parents=True, exist_ok=True)
+    for label in labels:
+        (split_dir / label).mkdir(parents=True, exist_ok=True)
 
 
 def check_dataset(dataset_dir):
@@ -36,6 +64,45 @@ def check_dataset(dataset_dir):
     return sorted(class_dirs, key=lambda name: DEFAULT_CLASSES.index(name) if name in DEFAULT_CLASSES else 999)
 
 
+def write_history_csv(history, path):
+    metric_names = sorted(history.history.keys())
+    with open(path, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(["epoch"] + metric_names)
+        epoch_count = len(next(iter(history.history.values()))) if history.history else 0
+        for index in range(epoch_count):
+            writer.writerow([index + 1] + [history.history[name][index] for name in metric_names])
+
+
+def evaluate_split(model, dataset, split_name):
+    if dataset is None:
+        return None
+    values = model.evaluate(dataset, verbose=0, return_dict=True)
+    return {"split": split_name, **{name: float(value) for name, value in values.items()}}
+
+
+def save_confusion_matrix(model, dataset, labels, path):
+    if dataset is None:
+        return None
+
+    import numpy as np
+
+    matrix = [[0 for _ in labels] for _ in labels]
+    for images, batch_labels in dataset:
+        predictions = model.predict(images, verbose=0)
+        true_indices = np.argmax(batch_labels.numpy(), axis=1)
+        pred_indices = np.argmax(predictions, axis=1)
+        for true_index, pred_index in zip(true_indices, pred_indices):
+            matrix[int(true_index)][int(pred_index)] += 1
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.writer(file)
+        writer.writerow(["actual\\predicted"] + labels)
+        for label, row in zip(labels, matrix):
+            writer.writerow([label] + row)
+    return str(path)
+
+
 def main():
     args = parse_args()
     dataset_dir = Path(args.dataset).resolve()
@@ -48,7 +115,16 @@ def main():
     import tensorflow as tf
 
     image_size = (args.image_size, args.image_size)
+    class_counts = {
+        "train": count_images(dataset_dir / "train", labels),
+        "val": count_images(dataset_dir / "val", labels),
+        "test": count_images(dataset_dir / "test", labels),
+    }
+    if sum(class_counts["train"].values()) == 0:
+        raise RuntimeError("No training images found under %s" % (dataset_dir / "train"))
+    print("Class counts:", json.dumps(class_counts, ensure_ascii=False))
 
+    ensure_class_dirs(dataset_dir / "train", labels)
     train_ds = tf.keras.utils.image_dataset_from_directory(
         dataset_dir / "train",
         labels="inferred",
@@ -61,9 +137,24 @@ def main():
 
     val_dir = dataset_dir / "val"
     val_ds = None
-    if val_dir.exists():
+    if split_has_images(val_dir, labels):
+        ensure_class_dirs(val_dir, labels)
         val_ds = tf.keras.utils.image_dataset_from_directory(
             val_dir,
+            labels="inferred",
+            label_mode="categorical",
+            class_names=labels,
+            image_size=image_size,
+            batch_size=args.batch_size,
+            shuffle=False,
+        )
+
+    test_dir = dataset_dir / "test"
+    test_ds = None
+    if split_has_images(test_dir, labels):
+        ensure_class_dirs(test_dir, labels)
+        test_ds = tf.keras.utils.image_dataset_from_directory(
+            test_dir,
             labels="inferred",
             label_mode="categorical",
             class_names=labels,
@@ -101,25 +192,49 @@ def main():
         metrics=["accuracy"],
     )
 
+    monitor_accuracy = "val_accuracy" if val_ds is not None else "accuracy"
+    monitor_loss = "val_loss" if val_ds is not None else "loss"
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
             filepath=str(output_dir / "lens_defect_classifier.keras"),
-            monitor="val_accuracy" if val_ds is not None else "accuracy",
+            monitor=monitor_accuracy,
             save_best_only=True,
         ),
-        tf.keras.callbacks.ReduceLROnPlateau(patience=3, factor=0.5),
+        tf.keras.callbacks.EarlyStopping(
+            monitor=monitor_accuracy,
+            patience=6,
+            restore_best_weights=True,
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(monitor=monitor_loss, patience=3, factor=0.5),
     ]
 
-    model.fit(
+    history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=args.epochs,
         callbacks=callbacks,
     )
+    write_history_csv(history, output_dir / "training_history.csv")
 
     keras_path = output_dir / "lens_defect_classifier.keras"
     if keras_path.exists():
         model = tf.keras.models.load_model(keras_path)
+
+    metrics = {
+        "train": evaluate_split(model, train_ds, "train"),
+        "val": evaluate_split(model, val_ds, "val"),
+        "test": evaluate_split(model, test_ds, "test"),
+    }
+    confusion_source = test_ds if test_ds is not None else val_ds
+    confusion_split = "test" if test_ds is not None else "val"
+    confusion_path = None
+    if confusion_source is not None:
+        confusion_path = save_confusion_matrix(
+            model,
+            confusion_source,
+            labels,
+            output_dir / ("confusion_matrix_%s.csv" % confusion_split),
+        )
 
     labels_path = output_dir / "lens_defect_labels.txt"
     labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
@@ -150,6 +265,28 @@ def main():
     print("Saved float TFLite:", float_path)
     print("Saved labels:", labels_path)
     print("Class order:", labels)
+
+    summary = {
+        "dataset": str(dataset_dir),
+        "output": str(output_dir),
+        "image_size": args.image_size,
+        "batch_size": args.batch_size,
+        "epochs_requested": args.epochs,
+        "labels": labels,
+        "class_counts": class_counts,
+        "metrics": metrics,
+        "artifacts": {
+            "keras": str(keras_path),
+            "float_tflite": str(float_path),
+            "int8_tflite": str(int8_path) if int8_path.exists() else "",
+            "labels": str(labels_path),
+            "training_history": str(output_dir / "training_history.csv"),
+            "confusion_matrix": confusion_path or "",
+        },
+    }
+    summary_path = output_dir / "training_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print("Saved training summary:", summary_path)
 
 
 if __name__ == "__main__":
