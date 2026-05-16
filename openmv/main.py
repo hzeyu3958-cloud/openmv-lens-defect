@@ -11,7 +11,7 @@ import sensor
 import image
 import time
 import ujson
-from pyb import UART
+from pyb import UART, USB_VCP
 
 
 # ============================================================
@@ -53,41 +53,34 @@ DUST_MAX_PIXELS = 45
 DUST_MAX_ASPECT_RATIO = 2.0
 SCRATCH_MIN_ASPECT_RATIO = 5.0
 SCRATCH_MIN_LENGTH = 24
-CRACK_MIN_ASPECT_RATIO = 7.0
-CRACK_MIN_LENGTH = 80
 STAIN_MIN_PIXELS = 60
 STAIN_MAX_ASPECT_RATIO = 4.5
-COATING_MIN_PIXELS = 450
-COATING_BRIGHTNESS_DELTA = 28
 SERIOUS_PIXELS = 900
 MEDIUM_PIXELS = 220
 
 # 串口参数。OpenMV 常用 UART(3)，实际引脚请按你的板子型号确认。
+# 也可把这个 UART 预留给单片机：OpenMV TX -> 单片机 RX，GND 共地。
 UART_PORT = 3
 UART_BAUDRATE = 115200
 UART_TIMEOUT_CHAR = 1000
 SEND_INTERVAL_MS = 300
 PRINT_JSON_TO_IDE = True
 
+ENABLE_USB_IMAGE_STREAM = True
+USB_IMAGE_INTERVAL_MS = 700
+USB_IMAGE_JPEG_QUALITY = 70
+
 # 调试绘图颜色。灰度图下 color 是 0~255。
 COLOR_MAP = {
     "scratch": 255,
     "dust": 210,
     "stain": 170,
-    "coating_damage": 130,
-    "crack": 255,
-    "edge_damage": 90,
-    "unknown": 60,
 }
 
 DEFECT_TYPES = [
     "scratch",
     "dust",
     "stain",
-    "coating_damage",
-    "crack",
-    "edge_damage",
-    "unknown",
 ]
 
 LEVEL_SCORE = {
@@ -147,7 +140,7 @@ def is_near_roi_edge(x, y, w, h, roi):
 
 
 def get_roi_brightness_delta(img, defect_rect, lens_roi):
-    # 计算缺陷区域与整个镜片 ROI 的平均亮度差，辅助判断镀膜损伤/污点。
+    # 计算缺陷区域与整个镜片 ROI 的平均亮度差，辅助判断污点。
     try:
         defect_stats = img.get_statistics(roi=defect_rect)
         lens_stats = img.get_statistics(roi=lens_roi)
@@ -158,21 +151,6 @@ def get_roi_brightness_delta(img, defect_rect, lens_roi):
 
 def estimate_level(defect_type, area, length, brightness_delta):
     # 严重程度是演示用规则，可按真实样本继续调参。
-    if defect_type == "crack":
-        if length >= CRACK_MIN_LENGTH or area >= MEDIUM_PIXELS:
-            return "serious"
-        return "medium"
-
-    if defect_type == "edge_damage":
-        if area >= MEDIUM_PIXELS:
-            return "serious"
-        return "medium"
-
-    if defect_type == "coating_damage":
-        if area >= SERIOUS_PIXELS or brightness_delta >= COATING_BRIGHTNESS_DELTA * 2:
-            return "serious"
-        return "medium"
-
     if defect_type == "scratch":
         if length >= 70 or area >= MEDIUM_PIXELS:
             return "medium"
@@ -299,7 +277,7 @@ def find_intensity_blobs(img, roi):
 
 
 def find_edge_blobs(img, roi):
-    # 边缘检测主要用于补充划痕/裂纹这类线状缺陷。
+    # 边缘检测主要用于补充划痕这类线状缺陷。
     if not ENABLE_EDGE_CANDIDATES:
         return []
 
@@ -347,22 +325,13 @@ def classify_defect(blob, roi, img):
     short_side = max(1, min(w, h))
     aspect_ratio = float(length) / float(short_side)
     density = blob_density(blob)
-    near_edge = is_near_roi_edge(x, y, w, h, roi)
     brightness_delta = get_roi_brightness_delta(img, (x, y, w, h), roi)
 
-    defect_type = "unknown"
-    confidence = 0.55
+    defect_type = None
+    confidence = 0.0
 
-    # 规则优先级：严重边缘破损/裂纹 > 划痕 > 灰尘 > 镀膜/污点 > 未知。
-    if near_edge and (area >= MIN_PIXELS * 2 or length >= SCRATCH_MIN_LENGTH):
-        defect_type = "edge_damage"
-        confidence = 0.72 + min(0.18, area / 1200.0)
-
-    if aspect_ratio >= CRACK_MIN_ASPECT_RATIO and length >= CRACK_MIN_LENGTH:
-        defect_type = "crack"
-        confidence = 0.82 + min(0.15, (length - CRACK_MIN_LENGTH) / 160.0)
-
-    elif aspect_ratio >= SCRATCH_MIN_ASPECT_RATIO and length >= SCRATCH_MIN_LENGTH:
+    # 只保留三类：划痕、灰尘颗粒、污点。
+    if aspect_ratio >= SCRATCH_MIN_ASPECT_RATIO and length >= SCRATCH_MIN_LENGTH:
         defect_type = "scratch"
         confidence = 0.76 + min(0.16, (aspect_ratio - SCRATCH_MIN_ASPECT_RATIO) / 25.0)
 
@@ -370,14 +339,13 @@ def classify_defect(blob, roi, img):
         defect_type = "dust"
         confidence = 0.70 + min(0.18, (DUST_MAX_PIXELS - area) / float(DUST_MAX_PIXELS))
 
-    elif area >= COATING_MIN_PIXELS and brightness_delta >= COATING_BRIGHTNESS_DELTA:
-        defect_type = "coating_damage"
-        confidence = 0.72 + min(0.20, brightness_delta / 160.0)
-
     elif area >= STAIN_MIN_PIXELS and aspect_ratio <= STAIN_MAX_ASPECT_RATIO:
         # density 较低时多为不规则斑块；较高时可能是较实的污点。
         defect_type = "stain"
-        confidence = 0.66 + min(0.18, abs(0.55 - density))
+        confidence = 0.66 + min(0.18, abs(0.55 - density) + brightness_delta / 255.0)
+
+    if defect_type is None:
+        return None
 
     confidence = clamp(confidence, 0.50, 0.98)
     level = estimate_level(defect_type, area, length, brightness_delta)
@@ -406,8 +374,6 @@ def build_result(defects):
         defect_type = defect["type"]
         if defect_type in summary:
             summary[defect_type] += 1
-        else:
-            summary["unknown"] += 1
 
         if LEVEL_SCORE[defect["level"]] > LEVEL_SCORE[overall_level]:
             overall_level = defect["level"]
@@ -436,8 +402,26 @@ def draw_debug(img, roi, defects):
 def send_json(uart, result):
     line = ujson.dumps(result)
     uart.write(line + "\n")
+    try:
+        usb.write((line + "\n").encode("utf-8"))
+    except Exception:
+        pass
     if PRINT_JSON_TO_IDE:
         print(line)
+
+
+def send_usb_image(img):
+    if not ENABLE_USB_IMAGE_STREAM:
+        return
+
+    try:
+        jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY)
+        usb.write(("IMG_BEGIN %d %d %d\n" % (jpg.size(), img.width(), img.height())).encode("utf-8"))
+        usb.write(jpg)
+        usb.write(b"IMG_END\n")
+    except Exception as exc:
+        if PRINT_JSON_TO_IDE:
+            print("USB image stream failed:", exc)
 
 
 # ============================================================
@@ -451,9 +435,11 @@ sensor.skip_frames(time=FRAME_SKIP_TIME_MS)
 sensor.set_auto_gain(True)
 sensor.set_auto_whitebal(False)
 
+usb = USB_VCP()
 uart = UART(UART_PORT, UART_BAUDRATE, timeout_char=UART_TIMEOUT_CHAR)
 clock = time.clock()
 last_send_ms = time.ticks_ms()
+last_image_ms = time.ticks_ms()
 
 while True:
     clock.tick()
@@ -464,7 +450,9 @@ while True:
     blobs = find_defect_candidates(img, LENS_ROI)
     defects = []
     for blob in blobs:
-        defects.append(classify_defect(blob, LENS_ROI, img))
+        defect = classify_defect(blob, LENS_ROI, img)
+        if defect is not None:
+            defects.append(defect)
 
     result = build_result(defects)
     draw_debug(img, LENS_ROI, defects)
@@ -473,3 +461,6 @@ while True:
     if time.ticks_diff(now_ms, last_send_ms) >= SEND_INTERVAL_MS:
         send_json(uart, result)
         last_send_ms = now_ms
+    if time.ticks_diff(now_ms, last_image_ms) >= USB_IMAGE_INTERVAL_MS:
+        send_usb_image(img)
+        last_image_ms = now_ms

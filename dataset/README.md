@@ -10,11 +10,7 @@ dataset/
 │   ├── normal/
 │   ├── scratch/
 │   ├── dust/
-│   ├── stain/
-│   ├── coating_damage/
-│   ├── crack/
-│   ├── edge_damage/
-│   └── unknown/
+│   └── stain/
 ├── val/
 └── test/
 ```

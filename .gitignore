@@ -4,14 +4,8 @@ __pycache__/
 .venv/
 .venv_windows_host/
 
-# Android / Gradle
-.gradle/
-.kotlin/
-app/build/
-build/
-local.properties
-
 # PyInstaller output
+build/
 dist/
 *.spec
 
@@ -34,3 +28,8 @@ models/**
 # Keep packaged demo artifacts here.
 !release/
 !release/**
+
+# Local generated files
+.venv_training/
+outputs/
+generate_openmv_lens_defect_pptx.js

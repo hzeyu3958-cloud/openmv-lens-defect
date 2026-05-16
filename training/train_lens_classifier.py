@@ -9,10 +9,6 @@ DEFAULT_CLASSES = [
     "scratch",
     "dust",
     "stain",
-    "coating_damage",
-    "crack",
-    "edge_damage",
-    "unknown",
 ]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 

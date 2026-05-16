@@ -11,7 +11,7 @@ OpenMV N6 拍图
 -> 电脑训练模型
 -> 把模型文件传回 OpenMV N6
 -> N6 运行模型并输出 JSON
--> Windows 上位机显示检测结果
+-> Windows 上位机显示检测结果和 OpenMV 实时画面
 ```
 
 上位机功能包括：
@@ -22,6 +22,8 @@ OpenMV N6 拍图
 - 整体严重程度
 - 各类缺陷数量
 - 缺陷详情列表
+- OpenMV 实时画面预览
+- 识别到划痕、灰尘颗粒、污点时，按 JSON 坐标在电脑画面上自动画红圈
 - 最近一次 JSON 原始数据
 - 历史检测记录
 - 历史记录 CSV 导出
@@ -31,7 +33,7 @@ OpenMV N6 拍图
 
 ## 2. 推荐 USB 连接方式
 
-如果你不用手机 APK，也不想用蓝牙，推荐：
+推荐优先使用 USB 连接：
 
 ```text
 OpenMV N6 -> USB 线 -> Windows 电脑
@@ -132,6 +134,32 @@ models/lens_defect_classifier_int8.tflite
 models/lens_defect_labels.txt
 ```
 
+## 6.1 电脑二级异常检测复核
+
+如果要使用“两级算法”，先采集一批正常镜片图片，然后训练电脑端二级异常检测模型：
+
+```text
+training/train_stage2_anomaly.bat
+```
+
+训练输出：
+
+```text
+models/lens_stage2_anomaly.npz
+```
+
+上位机“1 检测显示”页默认会尝试加载这个模型。启用后流程变为：
+
+```text
+OpenMV 规则算法输出可疑点
+-> Windows 收到 OpenMV 实时画面
+-> 电脑二级异常检测模型复核
+-> 只保留二级确认的缺陷，并补充电脑端发现的异常区域
+-> 屏幕红圈显示
+```
+
+注意：二级异常模型只需要正常样本即可启动，但正常样本必须干净、光照稳定、背景一致。建议先采集 `normal` 100 张以上。
+
 ## 7. 把模型传回 OpenMV N6
 
 1. 用 USB 连接 OpenMV N6。
@@ -157,7 +185,7 @@ models/lens_defect_labels.txt
 openmv/n6_classifier_main.py
 ```
 
-然后上位机打开“1 检测显示”页，点击“开始接收检测 JSON”，即可显示 N6 模型输出结果。
+然后上位机打开“1 检测显示”页，点击“开始接收 JSON 和画面”，即可显示 N6 模型输出结果和 OpenMV 实时画面。
 
 ## 9. 运行源码版
 
@@ -199,8 +227,8 @@ dist/LensDefectHost.exe
 4. 点击“刷新串口”。
 5. 选择 OpenMV 或蓝牙串口对应的 COM 口。
 6. 波特率选择 `115200`。
-7. 点击“开始接收”。
-8. OpenMV 每发送一行 JSON，上位机会刷新检测结果。
+7. 点击“开始接收 JSON 和画面”。
+8. OpenMV 每发送一行 JSON，上位机会刷新检测结果；如果脚本开启了 `ENABLE_USB_IMAGE_STREAM`，上位机会同步刷新画面。
 
 如果没有硬件，也可以点击“模拟一条”测试界面显示效果。
 
