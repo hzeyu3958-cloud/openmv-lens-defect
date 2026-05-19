@@ -1140,7 +1140,7 @@ class LensDefectHostApp:
         DEFAULT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         python_exe = find_training_python()
         command = (
-            '"%s" "%s" --dataset "%s" --output "%s" --epochs 20 --image-size 128'
+            '"%s" "%s" --dataset "%s" --output "%s" --epochs 20 --image-size 128 --model tiny_depthwise'
             % (python_exe, script, dataset_dir, DEFAULT_MODELS_DIR)
         )
         subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))

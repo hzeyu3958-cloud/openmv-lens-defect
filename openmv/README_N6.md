@@ -102,6 +102,8 @@ lens_defect_classifier_int8.tflite
 lens_defect_labels.txt
 ```
 
+训练脚本默认使用 `tiny_depthwise` 轻量模型，流程是电脑训练、导出 INT8 TFLite、再复制给 N6。N6 端只负责推理，不在板子上训练。
+
 然后在 OpenMV IDE 里运行：
 
 ```text
