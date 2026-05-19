@@ -20,6 +20,14 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=128)
+    parser.add_argument(
+        "--model",
+        choices=("tiny_depthwise", "tiny_cnn"),
+        default="tiny_depthwise",
+        help="tiny_depthwise is smaller and better for OpenMV/N6. tiny_cnn keeps the old Conv2D model.",
+    )
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--dropout", type=float, default=0.25)
     return parser.parse_args()
 
 
@@ -99,6 +107,67 @@ def save_confusion_matrix(model, dataset, labels, path):
     return str(path)
 
 
+def conv_block(tf, filters, stride=1):
+    return [
+        tf.keras.layers.Conv2D(filters, 3, strides=stride, padding="same", use_bias=False),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.ReLU(max_value=6.0),
+    ]
+
+
+def depthwise_block(tf, filters, stride=1):
+    return [
+        tf.keras.layers.DepthwiseConv2D(3, strides=stride, padding="same", use_bias=False),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.ReLU(max_value=6.0),
+        tf.keras.layers.Conv2D(filters, 1, padding="same", use_bias=False),
+        tf.keras.layers.BatchNormalization(),
+        tf.keras.layers.ReLU(max_value=6.0),
+    ]
+
+
+def build_tiny_depthwise_model(tf, image_size, class_count, dropout):
+    layers = [
+        tf.keras.layers.Input(shape=(image_size, image_size, 3)),
+        tf.keras.layers.Rescaling(1.0 / 255.0),
+    ]
+    layers += conv_block(tf, 16, stride=2)
+    layers += depthwise_block(tf, 24, stride=1)
+    layers += depthwise_block(tf, 32, stride=2)
+    layers += depthwise_block(tf, 48, stride=1)
+    layers += depthwise_block(tf, 64, stride=2)
+    layers += depthwise_block(tf, 96, stride=1)
+    layers += [
+        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.Dropout(dropout),
+        tf.keras.layers.Dense(class_count, activation="softmax"),
+    ]
+    return tf.keras.Sequential(layers, name="lens_tiny_depthwise")
+
+
+def build_tiny_cnn_model(tf, image_size, class_count, dropout):
+    return tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(image_size, image_size, 3)),
+        tf.keras.layers.Rescaling(1.0 / 255.0),
+        tf.keras.layers.Conv2D(16, 3, padding="same", activation="relu"),
+        tf.keras.layers.MaxPooling2D(),
+        tf.keras.layers.Conv2D(32, 3, padding="same", activation="relu"),
+        tf.keras.layers.MaxPooling2D(),
+        tf.keras.layers.Conv2D(64, 3, padding="same", activation="relu"),
+        tf.keras.layers.MaxPooling2D(),
+        tf.keras.layers.Conv2D(96, 3, padding="same", activation="relu"),
+        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.Dropout(dropout),
+        tf.keras.layers.Dense(class_count, activation="softmax"),
+    ], name="lens_tiny_cnn")
+
+
+def build_model(tf, model_name, image_size, class_count, dropout):
+    if model_name == "tiny_cnn":
+        return build_tiny_cnn_model(tf, image_size, class_count, dropout)
+    return build_tiny_depthwise_model(tf, image_size, class_count, dropout)
+
+
 def main():
     args = parse_args()
     dataset_dir = Path(args.dataset).resolve()
@@ -119,6 +188,7 @@ def main():
     if sum(class_counts["train"].values()) == 0:
         raise RuntimeError("No training images found under %s" % (dataset_dir / "train"))
     print("Class counts:", json.dumps(class_counts, ensure_ascii=False))
+    print("Model:", args.model)
 
     ensure_class_dirs(dataset_dir / "train", labels)
     train_ds = tf.keras.utils.image_dataset_from_directory(
@@ -159,31 +229,26 @@ def main():
             shuffle=False,
         )
 
+    autotune = tf.data.AUTOTUNE
     augment = tf.keras.Sequential([
         tf.keras.layers.RandomFlip("horizontal"),
         tf.keras.layers.RandomRotation(0.05),
         tf.keras.layers.RandomZoom(0.08),
         tf.keras.layers.RandomContrast(0.15),
     ])
+    train_fit_ds = train_ds.map(
+        lambda images, batch_labels: (augment(images, training=True), batch_labels),
+        num_parallel_calls=autotune,
+    ).prefetch(autotune)
+    train_eval_ds = train_ds.prefetch(autotune)
+    val_fit_ds = val_ds.prefetch(autotune) if val_ds is not None else None
+    test_eval_ds = test_ds.prefetch(autotune) if test_ds is not None else None
 
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(args.image_size, args.image_size, 3)),
-        tf.keras.layers.Rescaling(1.0 / 255.0),
-        augment,
-        tf.keras.layers.Conv2D(16, 3, padding="same", activation="relu"),
-        tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Conv2D(32, 3, padding="same", activation="relu"),
-        tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Conv2D(64, 3, padding="same", activation="relu"),
-        tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Conv2D(96, 3, padding="same", activation="relu"),
-        tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Dropout(0.25),
-        tf.keras.layers.Dense(len(labels), activation="softmax"),
-    ])
+    model = build_model(tf, args.model, args.image_size, len(labels), args.dropout)
+    model.summary()
 
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
         loss="categorical_crossentropy",
         metrics=["accuracy"],
     )
@@ -205,8 +270,8 @@ def main():
     ]
 
     history = model.fit(
-        train_ds,
-        validation_data=val_ds,
+        train_fit_ds,
+        validation_data=val_fit_ds,
         epochs=args.epochs,
         callbacks=callbacks,
     )
@@ -217,11 +282,11 @@ def main():
         model = tf.keras.models.load_model(keras_path)
 
     metrics = {
-        "train": evaluate_split(model, train_ds, "train"),
-        "val": evaluate_split(model, val_ds, "val"),
-        "test": evaluate_split(model, test_ds, "test"),
+        "train": evaluate_split(model, train_eval_ds, "train"),
+        "val": evaluate_split(model, val_fit_ds, "val"),
+        "test": evaluate_split(model, test_eval_ds, "test"),
     }
-    confusion_source = test_ds if test_ds is not None else val_ds
+    confusion_source = test_eval_ds if test_eval_ds is not None else val_fit_ds
     confusion_split = "test" if test_ds is not None else "val"
     confusion_path = None
     if confusion_source is not None:
@@ -268,6 +333,9 @@ def main():
         "image_size": args.image_size,
         "batch_size": args.batch_size,
         "epochs_requested": args.epochs,
+        "model": args.model,
+        "learning_rate": args.learning_rate,
+        "dropout": args.dropout,
         "labels": labels,
         "class_counts": class_counts,
         "metrics": metrics,

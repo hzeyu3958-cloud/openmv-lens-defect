@@ -149,7 +149,7 @@ stain 污点/油污：100 张以上
 上位机“3 训练和部署”页可以启动训练。也可以手动运行：
 
 ```bat
-.venv_training\Scripts\python.exe training\train_lens_classifier.py --dataset dataset --output models --epochs 30 --batch-size 8 --image-size 128
+.venv_training\Scripts\python.exe training\train_lens_classifier.py --dataset dataset --output models --epochs 30 --batch-size 8 --image-size 128 --model tiny_depthwise
 ```
 
 训练完成后会生成：
@@ -157,6 +157,12 @@ stain 污点/油污：100 张以上
 ```text
 models/lens_defect_classifier_int8.tflite
 models/lens_defect_labels.txt
+```
+
+默认 `tiny_depthwise` 是给 OpenMV/N6 准备的轻量模型，参数量比普通 CNN 更小，导出的 `int8.tflite` 更适合放到 N6 上运行。需要对比旧模型时可以改成：
+
+```bat
+--model tiny_cnn
 ```
 
 ## 7. 二级异常检测

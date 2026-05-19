@@ -115,6 +115,8 @@ dataset/train/scratch/
 training/train_lens_classifier.py
 ```
 
+默认训练模型为 `tiny_depthwise`，也就是面向 OpenMV/N6 的轻量深度可分离卷积模型。它会在电脑上训练，最后导出给 N6 运行的 `INT8 TFLite` 模型。
+
 如果电脑没有 TensorFlow，需要先安装：
 
 ```text
