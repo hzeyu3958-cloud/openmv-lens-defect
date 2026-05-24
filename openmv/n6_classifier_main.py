@@ -27,15 +27,18 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 MODEL_CANDIDATES = (
+    "/rom/lens_defect_classifier_int8.tflite",
     "/lens_defect_classifier_int8.tflite",
     "/flash/lens_defect_classifier_int8.tflite",
     "/sdcard/lens_defect_classifier_int8.tflite",
 )
 
 LABEL_CANDIDATES = (
+    "/rom/lens_defect_labels.txt",
     "/lens_defect_labels.txt",
     "/flash/lens_defect_labels.txt",
     "/sdcard/lens_defect_labels.txt",
+    "/rom/lens_defect_classifier_int8.txt",
     "/lens_defect_classifier_int8.txt",
     "/flash/lens_defect_classifier_int8.txt",
     "/sdcard/lens_defect_classifier_int8.txt",
@@ -64,9 +67,10 @@ DEFECT_SWITCH_MIN_SCORE = 0.52
 NORMAL_SWITCH_MIN_SCORE = 0.55
 
 ENABLE_USB_IMAGE_STREAM = True
-USB_IMAGE_INTERVAL_MS = 500
-USB_IMAGE_JPEG_QUALITY = 45
-USB_IMAGE_JPEG_SUBSAMPLING = getattr(image, "JPEG_SUBSAMPLING_420", None)
+USB_IMAGE_INTERVAL_MS = 300
+USB_IMAGE_JPEG_QUALITY = 40
+USB_IMAGE_JPEG_SUBSAMPLING = None
+SEND_PREVIEW_ROI_ONLY = True
 
 DISABLE_AUTO_GAIN_AFTER_START = True
 DISABLE_AUTO_WHITEBAL_AFTER_START = True
@@ -302,23 +306,38 @@ def send_json(result):
     send_line(ujson.dumps(result))
 
 
-def send_usb_image(img):
+def send_usb_image(img, roi=None):
     if not ENABLE_USB_IMAGE_STREAM:
         return
 
     try:
-        width = img.width()
-        height = img.height()
+        preview_roi = clipped_roi(img, roi) if (SEND_PREVIEW_ROI_ONLY and roi is not None) else None
+        width = preview_roi[2] if preview_roi is not None else img.width()
+        height = preview_roi[3] if preview_roi is not None else img.height()
         try:
             if USB_IMAGE_JPEG_SUBSAMPLING is None:
                 raise TypeError("JPEG subsampling is not available")
-            jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY, subsampling=USB_IMAGE_JPEG_SUBSAMPLING)
+            if preview_roi is not None:
+                jpg = img.compress(
+                    roi=preview_roi,
+                    quality=USB_IMAGE_JPEG_QUALITY,
+                    subsampling=USB_IMAGE_JPEG_SUBSAMPLING,
+                )
+            else:
+                jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY, subsampling=USB_IMAGE_JPEG_SUBSAMPLING)
         except TypeError:
-            jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY)
+            if preview_roi is not None:
+                jpg = img.compress(roi=preview_roi, quality=USB_IMAGE_JPEG_QUALITY)
+            else:
+                jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY)
         usb.write(("IMG_BEGIN %d %d %d\n" % (jpg.size(), width, height)).encode("utf-8"))
         usb.write(jpg)
         usb.write(b"IMG_END\n")
     except Exception as exc:
+        try:
+            usb.write(("ERR USB_IMAGE_STREAM_FAILED %s\n" % exc).encode("utf-8"))
+        except Exception:
+            pass
         if PRINT_JSON_TO_IDE:
             print("USB image stream failed:", exc)
 
@@ -329,7 +348,7 @@ def fatal_error_loop(message):
         "has_defect": False,
         "defect_count": 0,
         "summary": build_summary("normal"),
-        "overall_level": "normal",
+        "overall_level": "error",
         "defects": [],
         "timestamp": time.ticks_ms(),
         "error": message,
@@ -475,5 +494,5 @@ while True:
         send_json(result)
         last_send_ms = now_ms
     if time.ticks_diff(now_ms, last_image_ms) >= USB_IMAGE_INTERVAL_MS:
-        send_usb_image(img)
+        send_usb_image(img, source_roi)
         last_image_ms = now_ms

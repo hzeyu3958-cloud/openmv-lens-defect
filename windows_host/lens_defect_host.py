@@ -107,6 +107,7 @@ CLASS_DISPLAY_ORDER = [DEFECT_TYPE_NAME[class_name] for class_name in DEFECT_TYP
 
 LEVEL_NAME = {
     "normal": "正常",
+    "error": "错误",
     "light": "轻微",
     "medium": "中等",
     "serious": "严重",
@@ -1437,10 +1438,21 @@ class LensDefectHostApp:
         result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
         self.add_history(result, raw_line)
-        self.status_var.set("状态：%s 收到一条有效 JSON" % now_text())
+        if result.get("error"):
+            self.status_var.set("状态：OpenMV 错误：%s" % result.get("error"))
+        else:
+            self.status_var.set("状态：%s 收到一条有效 JSON" % now_text())
 
     def normalize_detection_result(self, result):
         clean_result = dict(result)
+        if result.get("error"):
+            clean_result["defects"] = []
+            clean_result["summary"] = {defect_type: 0 for defect_type in SUMMARY_TYPES}
+            clean_result["defect_count"] = 0
+            clean_result["has_defect"] = False
+            clean_result["overall_level"] = "error"
+            return clean_result
+
         source_defects = result.get("defects") or []
         has_defect_list = "defects" in result
         defects = [
@@ -1477,6 +1489,9 @@ class LensDefectHostApp:
         return clean_result
 
     def display_class_result(self, result):
+        if result.get("error"):
+            return "error", "模型错误", None
+
         if not result.get("has_defect", False):
             return "normal", "正常镜片", None
 
@@ -1546,6 +1561,7 @@ class LensDefectHostApp:
             self.confidence_result_var.set("置信度：%.2f" % float(confidence))
         if hasattr(self, "class_result_label"):
             color = {
+                "error": "#B3261E",
                 "normal": "#1E6B5C",
                 "scratch": "#B3261E",
                 "stain": "#9A5B00",
@@ -1555,6 +1571,8 @@ class LensDefectHostApp:
         self.count_var.set("缺陷总数：%d" % defect_count)
         self.level_var.set("整体严重程度：%s" % level_name(overall_level))
         self.lens_track_var.set(self.format_lens_track_text(result.get("lens")))
+        if result.get("error"):
+            self.status_var.set("状态：OpenMV 错误：%s" % result.get("error"))
 
         if self.summary_tree is not None:
             self.summary_tree.delete(*self.summary_tree.get_children())
