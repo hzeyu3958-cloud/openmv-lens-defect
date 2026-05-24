@@ -217,9 +217,9 @@ def main():
         tf.keras.layers.MaxPooling2D(),
         tf.keras.layers.Conv2D(64, 3, padding="same", activation="relu"),
         tf.keras.layers.MaxPooling2D(pool_size=(16, 16)),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dropout(0.20),
-        tf.keras.layers.Dense(len(labels), activation="softmax"),
+        tf.keras.layers.Conv2D(len(labels), 1, padding="valid", activation=None),
+        tf.keras.layers.GlobalAveragePooling2D(),
+        tf.keras.layers.Softmax(),
     ])
 
     model.compile(
