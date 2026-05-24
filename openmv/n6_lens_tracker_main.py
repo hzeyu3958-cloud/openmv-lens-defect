@@ -310,7 +310,6 @@ def build_result(lens, fps, frame_w, frame_h):
         "defect_count": 0,
         "summary": {
             "scratch": 0,
-            "dust": 0,
             "stain": 0,
         },
         "overall_level": "normal",

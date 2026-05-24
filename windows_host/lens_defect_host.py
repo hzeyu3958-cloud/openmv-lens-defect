@@ -21,29 +21,46 @@ except ImportError:
     list_ports = None
 
 try:
-    from PIL import Image, ImageDraw, ImageStat, ImageTk
+    from PIL import Image, ImageDraw, ImageFilter, ImageStat, ImageTk
 except ImportError:
     Image = None
     ImageDraw = None
+    ImageFilter = None
     ImageStat = None
     ImageTk = None
 
+STAGE2_IMPORT_ERROR = None
 try:
     import cv2
-    import numpy as np
-    from stage2_anomaly import Stage2AnomalyModel, merge_with_rule_defects
-except ImportError:
+except Exception as exc:
     cv2 = None
+    STAGE2_IMPORT_ERROR = exc
+
+try:
+    import numpy as np
+except Exception as exc:
     np = None
+    if STAGE2_IMPORT_ERROR is None:
+        STAGE2_IMPORT_ERROR = exc
+
+if cv2 is not None and np is not None:
+    try:
+        from stage2_anomaly import Stage2AnomalyModel, merge_with_rule_defects
+    except Exception as exc:
+        Stage2AnomalyModel = None
+        merge_with_rule_defects = None
+        STAGE2_IMPORT_ERROR = exc
+else:
     Stage2AnomalyModel = None
     merge_with_rule_defects = None
 
 
 APP_TITLE = "OpenMV N6 眼镜片缺陷识别上位机"
 DEFAULT_BAUDRATE = "115200"
-READ_TIMEOUT_SECONDS = 0.2
+READ_TIMEOUT_SECONDS = 0.02
 CAPTURE_TIMEOUT_SECONDS = 12
-FRAME_TIMEOUT_SECONDS = 3
+FRAME_TIMEOUT_SECONDS = 2.0
+AUTO_START_RECEIVE = True
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent if APP_DIR.name in ("windows_host", "dist") else APP_DIR
@@ -56,10 +73,24 @@ IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 METADATA_FILENAME = "metadata.csv"
 SPLIT_TARGET_RATIOS = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_RECOMMENDED_IMAGES_PER_CLASS = 100
+HOST_DEFECT_CONFIRM_UPDATES = 2
+HOST_NORMAL_CONFIRM_UPDATES = 2
+STAGE2_MIN_INTERVAL_SECONDS = 0.8
+FAST_REVIEW_ENABLED = True
+FAST_REVIEW_PROMOTE_NORMAL = False
+FAST_REVIEW_MIN_INTERVAL_SECONDS = 0.35
+FAST_REVIEW_DEFECT_CONFIRM_FRAMES = 3
+FAST_REVIEW_IOU_THRESHOLD = 0.12
+FAST_REVIEW_CLASSIFIER_AREA_RATIO = 0.18
+FAST_REVIEW_STRONG_SCRATCH_CONFIDENCE = 0.88
+FAST_REVIEW_STRONG_STAIN_CONFIDENCE = 0.84
+FAST_REVIEW_STAIN_MIN_AREA_RATIO = 0.012
+FAST_REVIEW_STAIN_MAX_AREA_RATIO = 0.10
+FAST_REVIEW_STAIN_MIN_DELTA = 18.0
+FAST_REVIEW_STAIN_MIN_FILL_RATIO = 0.16
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
-    "dust",
     "stain",
 )
 
@@ -69,8 +100,7 @@ SUMMARY_TYPES = list(SUPPORTED_DEFECT_TYPES)
 DEFECT_TYPE_NAME = {
     "normal": "正常",
     "scratch": "划痕",
-    "dust": "灰尘颗粒",
-    "stain": "污点/油污",
+    "stain": "污渍",
 }
 
 CLASS_DISPLAY_ORDER = [DEFECT_TYPE_NAME[class_name] for class_name in DEFECT_TYPE_ORDER]
@@ -308,8 +338,8 @@ class LensDefectHostApp:
     def __init__(self, root):
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("1180x780")
-        self.root.minsize(1020, 680)
+        self.root.geometry("1100x720")
+        self.root.minsize(940, 620)
 
         self.ui_queue = queue.Queue()
         self.reader = SerialLineReader(self.ui_queue)
@@ -320,15 +350,25 @@ class LensDefectHostApp:
         self.stage2_model = None
         self.stage2_model_path = None
         self.stage2_model_mtime = None
+        self.last_stage2_infer_time = 0.0
+        self.last_fast_review_time = 0.0
+        self.last_fast_review_key = None
+        self.fast_review_candidate = None
+        self.fast_review_candidate_count = 0
+        self.stable_detection_result = None
+        self.pending_detection_class = None
+        self.pending_detection_count = 0
 
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
         self.status_var = tk.StringVar(value="状态：未连接")
-        self.stage2_enabled_var = tk.BooleanVar(value=True)
+        self.stage2_enabled_var = tk.BooleanVar(value=False)
         self.stage2_model_var = tk.StringVar(value=str(DEFAULT_STAGE2_MODEL))
-        self.stage2_status_var = tk.StringVar(value="二级复核：未加载")
+        self.stage2_status_var = tk.StringVar(value="高速复核：已启用；二级模型未勾选")
 
         self.has_defect_var = tk.StringVar(value="是否检测到缺陷：暂无数据")
+        self.class_result_var = tk.StringVar(value="识别结果：暂无数据")
+        self.confidence_result_var = tk.StringVar(value="置信度：--")
         self.count_var = tk.StringVar(value="缺陷总数：0")
         self.level_var = tk.StringVar(value="整体严重程度：暂无数据")
         self.lens_track_var = tk.StringVar(value="镜片跟踪：暂无数据")
@@ -349,25 +389,32 @@ class LensDefectHostApp:
         self.openmv_folder_var = tk.StringVar(value="")
         self.live_image_photo = None
         self.capture_preview_photo = None
+        self.summary_tree = None
+        self.defect_tree = None
+        self.raw_text = None
+        self.history_tree = None
 
         self._create_widgets()
         self.refresh_ports()
         self.load_history()
         self.refresh_dataset_counts()
         self.root.after(80, self._poll_ui_queue)
+        self.root.after(700, self.preload_stage2_model)
+        if AUTO_START_RECEIVE:
+            self.root.after(500, self.start_receive)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _create_widgets(self):
         self._configure_style()
 
-        root_frame = ttk.Frame(self.root, padding=12)
+        root_frame = ttk.Frame(self.root, padding=8)
         root_frame.pack(fill=tk.BOTH, expand=True)
 
         title = ttk.Label(root_frame, text=APP_TITLE, style="Title.TLabel")
         title.pack(anchor="w")
 
-        serial_frame = ttk.LabelFrame(root_frame, text="USB/串口连接", padding=10)
-        serial_frame.pack(fill=tk.X, pady=(10, 8))
+        serial_frame = ttk.LabelFrame(root_frame, text="USB/串口连接", padding=8)
+        serial_frame.pack(fill=tk.X, pady=(6, 6))
 
         ttk.Label(serial_frame, text="COM 口").pack(side=tk.LEFT)
         self.port_combo = ttk.Combobox(serial_frame, textvariable=self.port_var, width=32, state="readonly")
@@ -385,12 +432,12 @@ class LensDefectHostApp:
         ttk.Button(serial_frame, text="刷新串口", command=self.refresh_ports).pack(side=tk.LEFT, padx=4)
         ttk.Label(serial_frame, text="提示：OpenMV N6 USB 连接电脑后会出现一个 COM 口").pack(side=tk.LEFT, padx=12)
 
-        ttk.Label(root_frame, textvariable=self.status_var, style="Status.TLabel").pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(root_frame, textvariable=self.status_var, style="Status.TLabel").pack(fill=tk.X, pady=(0, 6))
 
         self.notebook = ttk.Notebook(root_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        self.detect_tab = ttk.Frame(self.notebook, padding=8)
+        self.detect_tab = ttk.Frame(self.notebook, padding=6)
         self.dataset_tab = ttk.Frame(self.notebook, padding=8)
         self.train_tab = ttk.Frame(self.notebook, padding=8)
 
@@ -405,15 +452,64 @@ class LensDefectHostApp:
     def _configure_style(self):
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 16, "bold"))
         style.configure("Status.TLabel", font=("Microsoft YaHei UI", 10), foreground="#1E6B5C")
         style.configure("Result.TLabel", font=("Microsoft YaHei UI", 11))
-        style.configure("Treeview", rowheight=26, font=("Microsoft YaHei UI", 10))
+        style.configure("Treeview", rowheight=24, font=("Microsoft YaHei UI", 10))
         style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"))
 
     def _create_detect_tab(self):
         button_frame = ttk.Frame(self.detect_tab)
         button_frame.pack(fill=tk.X)
+        ttk.Button(button_frame, text="开始接收识别结果和画面", command=self.start_receive).pack(side=tk.LEFT, padx=4)
+        ttk.Button(button_frame, text="停止接收", command=self.stop_receive).pack(side=tk.LEFT, padx=4)
+
+        result_frame = ttk.Frame(self.detect_tab)
+        result_frame.pack(fill=tk.X, pady=(6, 0))
+        self.class_result_label = tk.Label(
+            result_frame,
+            textvariable=self.class_result_var,
+            font=("Microsoft YaHei UI", 18, "bold"),
+            bg="#F8F8F8",
+            fg="#333333",
+            relief="groove",
+            anchor="w",
+            padx=12,
+            pady=7,
+        )
+        self.class_result_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(
+            result_frame,
+            textvariable=self.confidence_result_var,
+            style="Result.TLabel",
+            width=18,
+            anchor="center",
+        ).pack(side=tk.LEFT, padx=(10, 0), fill=tk.Y)
+
+        stage2_frame = ttk.Frame(self.detect_tab)
+        stage2_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Checkbutton(stage2_frame, text="启用电脑二级复核", variable=self.stage2_enabled_var).pack(side=tk.LEFT, padx=4)
+        ttk.Entry(stage2_frame, textvariable=self.stage2_model_var, width=46).pack(side=tk.LEFT, padx=4)
+        ttk.Button(stage2_frame, text="选择模型", command=self.choose_stage2_model).pack(side=tk.LEFT, padx=4)
+        ttk.Button(stage2_frame, text="加载模型", command=self.load_stage2_model_from_ui).pack(side=tk.LEFT, padx=4)
+        ttk.Label(stage2_frame, textvariable=self.stage2_status_var).pack(side=tk.LEFT, padx=8)
+
+        live_frame = ttk.LabelFrame(self.detect_tab, text="OpenMV 实时画面", padding=6)
+        live_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.live_image_label = tk.Label(
+            live_frame,
+            textvariable=self.live_image_var,
+            compound="top",
+            bg="#20242A",
+            relief="groove",
+            width=84,
+            height=26,
+            anchor="center",
+            justify="center",
+        )
+        self.live_image_label.pack(fill=tk.BOTH, expand=True)
+        self.live_image_label.bind("<Configure>", self.on_live_image_resize)
+        return
         ttk.Button(button_frame, text="开始接收 JSON 和画面", command=self.start_receive).pack(side=tk.LEFT, padx=4)
         ttk.Button(button_frame, text="停止接收", command=self.stop_receive).pack(side=tk.LEFT, padx=4)
         ttk.Button(button_frame, text="清空记录", command=self.clear_history).pack(side=tk.LEFT, padx=4)
@@ -500,8 +596,8 @@ class LensDefectHostApp:
             compound="top",
             bg="#F8F8F8",
             relief="groove",
-            width=48,
-            height=14,
+            width=80,
+            height=24,
             anchor="center",
             justify="center",
         )
@@ -695,7 +791,8 @@ class LensDefectHostApp:
 
         self.port_combo["values"] = ports
         if ports and not self.port_var.get():
-            self.port_var.set(ports[0])
+            preferred = [item for item in ports if "COM8" in item or "USB" in item or "OpenMV" in item]
+            self.port_var.set(preferred[0] if preferred else ports[0])
             self.status_var.set("状态：找到 %d 个串口，请选择 OpenMV N6 对应 COM 口" % len(ports))
         elif not ports:
             self.port_var.set("")
@@ -1235,17 +1332,19 @@ class LensDefectHostApp:
 
     def get_stage2_model(self, force_reload=False):
         if not self.stage2_enabled_var.get():
-            self.stage2_status_var.set("二级复核：已关闭")
+            self.stage2_status_var.set("高速复核：已启用；二级模型已关闭")
             return None
         if Stage2AnomalyModel is None:
-            self.stage2_status_var.set("二级复核：缺少 OpenCV")
+            detail = str(STAGE2_IMPORT_ERROR) if STAGE2_IMPORT_ERROR is not None else "缺少 OpenCV 或 NumPy"
+            self.stage2_status_var.set("二级复核：依赖加载失败：%s" % detail)
             return None
 
-        path = Path(self.stage2_model_var.get().strip() or DEFAULT_STAGE2_MODEL)
-        if not path.exists():
+        path = self.resolve_stage2_model_path()
+        if path is None:
             self.stage2_model = None
             self.stage2_status_var.set("二级复核：未训练")
             return None
+        self.stage2_model_var.set(str(path))
 
         mtime = path.stat().st_mtime
         if force_reload or self.stage2_model is None or self.stage2_model_path != path or self.stage2_model_mtime != mtime:
@@ -1258,7 +1357,45 @@ class LensDefectHostApp:
         )
         return self.stage2_model
 
+    def resolve_stage2_model_path(self):
+        raw_text = self.stage2_model_var.get().strip()
+        candidates = []
+        if raw_text:
+            candidates.append(Path(raw_text))
+        candidates.extend([
+            DEFAULT_STAGE2_MODEL,
+            PROJECT_ROOT / "models" / "lens_stage2_anomaly.npz",
+            Path.cwd() / "models" / "lens_stage2_anomaly.npz",
+            APP_DIR / "models" / "lens_stage2_anomaly.npz",
+            APP_DIR.parent / "models" / "lens_stage2_anomaly.npz",
+        ])
+
+        seen = set()
+        for candidate in candidates:
+            if not candidate.is_absolute():
+                candidate = PROJECT_ROOT / candidate
+            try:
+                candidate = candidate.resolve()
+            except Exception:
+                pass
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists():
+                return candidate
+        return None
+
+    def preload_stage2_model(self):
+        if not self.stage2_enabled_var.get():
+            return
+        try:
+            self.get_stage2_model(force_reload=True)
+        except Exception as exc:
+            self.stage2_status_var.set("二级复核：加载失败：%s" % exc)
+
     def _poll_ui_queue(self):
+        latest_live_payload = None
         while True:
             try:
                 message = self.ui_queue.get_nowait()
@@ -1279,9 +1416,12 @@ class LensDefectHostApp:
             elif message.kind == "capture_saved":
                 self.apply_capture_result(message.payload)
             elif message.kind == "live_image":
-                self.update_live_image(message.payload)
+                latest_live_payload = message.payload
 
-        self.root.after(80, self._poll_ui_queue)
+        if latest_live_payload is not None:
+            self.update_live_image(latest_live_payload)
+
+        self.root.after(20, self._poll_ui_queue)
 
     def handle_json_line(self, raw_line):
         self._set_raw_text(raw_line)
@@ -1294,6 +1434,7 @@ class LensDefectHostApp:
             return
 
         result = self.normalize_detection_result(result)
+        result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
         self.add_history(result, raw_line)
         self.status_var.set("状态：%s 收到一条有效 JSON" % now_text())
@@ -1335,57 +1476,119 @@ class LensDefectHostApp:
         clean_result["overall_level"] = overall_level
         return clean_result
 
+    def display_class_result(self, result):
+        if not result.get("has_defect", False):
+            return "normal", "正常镜片", None
+
+        defects = result.get("defects") or []
+        if defects:
+            primary = max(defects, key=lambda item: float(item.get("confidence", 0) or 0))
+            defect_type = primary.get("type", "")
+            confidence = primary.get("confidence", None)
+            return defect_type, defect_type_name(defect_type), confidence
+
+        summary = result.get("summary") or {}
+        active = [(key, int(summary.get(key, 0) or 0)) for key in SUMMARY_TYPES]
+        active = [item for item in active if item[1] > 0]
+        if active:
+            defect_type = max(active, key=lambda item: item[1])[0]
+            return defect_type, defect_type_name(defect_type), None
+        return "normal", "正常镜片", None
+
+    def stabilize_detection_result(self, result):
+        class_key, _class_text, _confidence = self.display_class_result(result)
+        if self.stable_detection_result is None:
+            self.stable_detection_result = result
+            self.pending_detection_class = None
+            self.pending_detection_count = 0
+            return result
+
+        stable_key, _stable_text, _stable_confidence = self.display_class_result(self.stable_detection_result)
+        if class_key == stable_key:
+            self.stable_detection_result = result
+            self.pending_detection_class = None
+            self.pending_detection_count = 0
+            return result
+
+        if class_key != self.pending_detection_class:
+            self.pending_detection_class = class_key
+            self.pending_detection_count = 1
+        else:
+            self.pending_detection_count += 1
+
+        required_count = HOST_NORMAL_CONFIRM_UPDATES if class_key == "normal" else HOST_DEFECT_CONFIRM_UPDATES
+        if self.pending_detection_count >= required_count:
+            self.stable_detection_result = result
+            self.pending_detection_class = None
+            self.pending_detection_count = 0
+            return result
+
+        held = dict(self.stable_detection_result)
+        held["stabilizer"] = {
+            "holding": stable_key,
+            "candidate": class_key,
+            "candidate_count": self.pending_detection_count,
+            "required_count": required_count,
+        }
+        return held
+
     def update_result_ui(self, result, render_live_image=True):
         self.latest_detection_result = result
         has_defect = bool(result.get("has_defect", False))
         defect_count = int(result.get("defect_count", 0))
         overall_level = result.get("overall_level", "normal")
+        class_key, class_text, confidence = self.display_class_result(result)
 
+        self.class_result_var.set("识别结果：%s" % class_text)
+        if confidence is None:
+            self.confidence_result_var.set("置信度：--")
+        else:
+            self.confidence_result_var.set("置信度：%.2f" % float(confidence))
+        if hasattr(self, "class_result_label"):
+            color = {
+                "normal": "#1E6B5C",
+                "scratch": "#B3261E",
+                "stain": "#9A5B00",
+            }.get(class_key, "#333333")
+            self.class_result_label.configure(fg=color)
         self.has_defect_var.set("是否检测到缺陷：%s" % ("是" if has_defect else "否"))
         self.count_var.set("缺陷总数：%d" % defect_count)
         self.level_var.set("整体严重程度：%s" % level_name(overall_level))
         self.lens_track_var.set(self.format_lens_track_text(result.get("lens")))
 
-        self.summary_tree.delete(*self.summary_tree.get_children())
-        summary = result.get("summary") or {}
-        for defect_type in SUMMARY_TYPES:
-            self.summary_tree.insert("", tk.END, values=(defect_type_name(defect_type), summary.get(defect_type, 0)))
+        if self.summary_tree is not None:
+            self.summary_tree.delete(*self.summary_tree.get_children())
+            summary = result.get("summary") or {}
+            for defect_type in SUMMARY_TYPES:
+                self.summary_tree.insert("", tk.END, values=(defect_type_name(defect_type), summary.get(defect_type, 0)))
 
-        self.defect_tree.delete(*self.defect_tree.get_children())
-        defects = result.get("defects") or []
-        for defect in defects:
-            self.defect_tree.insert(
-                "",
-                tk.END,
-                values=(
-                    defect_type_name(defect.get("type", "")),
-                    "%.2f" % float(defect.get("confidence", 0)),
-                    level_name(defect.get("level", "normal")),
-                    defect.get("x", 0),
-                    defect.get("y", 0),
-                    defect.get("w", 0),
-                    defect.get("h", 0),
-                    defect.get("area", 0),
-                    defect.get("length", 0),
-                    "%.2f" % float(defect.get("aspect_ratio", 0)),
-                ),
-            )
+        if self.defect_tree is not None:
+            self.defect_tree.delete(*self.defect_tree.get_children())
+            defects = result.get("defects") or []
+            for defect in defects:
+                self.defect_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        defect_type_name(defect.get("type", "")),
+                        "%.2f" % float(defect.get("confidence", 0)),
+                        level_name(defect.get("level", "normal")),
+                        defect.get("x", 0),
+                        defect.get("y", 0),
+                        defect.get("w", 0),
+                        defect.get("h", 0),
+                        defect.get("area", 0),
+                        defect.get("length", 0),
+                        "%.2f" % float(defect.get("aspect_ratio", 0)),
+                    ),
+                )
 
         if render_live_image and self.latest_live_image_payload is not None:
             self.render_live_image(self.latest_live_image_payload)
 
     def update_live_image(self, payload):
         self.latest_live_image_payload = payload
-        self.live_image_var.set(
-            "OpenMV 画面：%s\n尺寸：%dx%d，大小：%d 字节"
-            % (
-                payload.get("receive_time", now_text()),
-                payload.get("width", 0),
-                payload.get("height", 0),
-                payload.get("byte_count", 0),
-            )
-        )
-
+        self.live_image_var.set("")
         if Image is None or ImageTk is None:
             self.live_image_label.configure(image="")
             return
@@ -1399,9 +1602,9 @@ class LensDefectHostApp:
         try:
             with Image.open(BytesIO(payload["image_bytes"])) as image:
                 display_image = image.convert("RGB")
+                self.apply_fast_cv_review_to_live_image(display_image, payload)
                 self.apply_stage2_to_live_image(display_image, payload)
-                self.draw_detection_circles(display_image, payload)
-                display_image.thumbnail((440, 260))
+                display_image = self.fill_live_image_area(display_image)
                 self.live_image_photo = ImageTk.PhotoImage(display_image.copy())
             self.live_image_label.configure(image=self.live_image_photo, compound="top")
         except Exception as exc:
@@ -1409,10 +1612,305 @@ class LensDefectHostApp:
             self.live_image_label.configure(image="")
             self.live_image_var.set("OpenMV 画面：预览失败：%s" % exc)
 
+    def fill_live_image_area(self, image):
+        width = max(1, self.live_image_label.winfo_width() - 4)
+        height = max(1, self.live_image_label.winfo_height() - 4)
+        if width <= 4 or height <= 4:
+            width, height = 640, 480
+        resampling = getattr(Image, "Resampling", Image).BICUBIC
+        source_w, source_h = image.size
+        scale = min(float(width) / float(source_w), float(height) / float(source_h), 1.8)
+        resized_w = max(1, int(source_w * scale))
+        resized_h = max(1, int(source_h * scale))
+        resized = image.resize((resized_w, resized_h), resampling)
+        filled = Image.new("RGB", (width, height), "#20242A")
+        left = max(0, (width - resized_w) // 2)
+        top = max(0, (height - resized_h) // 2)
+        filled.paste(resized, (left, top))
+        if ImageFilter is not None:
+            filled = filled.filter(ImageFilter.UnsharpMask(radius=1.2, percent=220, threshold=2))
+        return filled
+
+    def on_live_image_resize(self, _event):
+        if self.latest_live_image_payload is not None:
+            self.render_live_image(self.latest_live_image_payload)
+
+    def fast_review_iou(self, first, second):
+        ax = int(first.get("x", 0))
+        ay = int(first.get("y", 0))
+        aw = int(first.get("w", 0))
+        ah = int(first.get("h", 0))
+        bx = int(second.get("x", 0))
+        by = int(second.get("y", 0))
+        bw = int(second.get("w", 0))
+        bh = int(second.get("h", 0))
+        if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+            return 0.0
+
+        left = max(ax, bx)
+        top = max(ay, by)
+        right = min(ax + aw, bx + bw)
+        bottom = min(ay + ah, by + bh)
+        intersection = max(0, right - left) * max(0, bottom - top)
+        union = aw * ah + bw * bh - intersection
+        if union <= 0:
+            return 0.0
+        return float(intersection) / float(union)
+
+    def confirm_fast_review_detection(self, detection):
+        if detection is None:
+            self.fast_review_candidate = None
+            self.fast_review_candidate_count = 0
+            return False
+
+        same_candidate = (
+            isinstance(self.fast_review_candidate, dict)
+            and self.fast_review_candidate.get("type") == detection.get("type")
+            and self.fast_review_iou(self.fast_review_candidate, detection) >= FAST_REVIEW_IOU_THRESHOLD
+        )
+        if same_candidate:
+            self.fast_review_candidate_count += 1
+            self.fast_review_candidate = detection
+        else:
+            self.fast_review_candidate = detection
+            self.fast_review_candidate_count = 1
+
+        if self.fast_review_candidate_count < FAST_REVIEW_DEFECT_CONFIRM_FRAMES:
+            return False
+
+        detection["fast_review_confirmed_frames"] = self.fast_review_candidate_count
+        return True
+
+    def fast_review_current_is_classifier_roi(self, result):
+        model_name = str(result.get("model", "")).lower()
+        if "classifier" in model_name and not result.get("pc_fast_review"):
+            return True
+
+        defects = result.get("defects") or []
+        if len(defects) != 1:
+            return False
+
+        defect = defects[0]
+        frame = result.get("frame") or {}
+        frame_w = self._positive_int(frame.get("w"))
+        frame_h = self._positive_int(frame.get("h"))
+        if frame_w <= 0 or frame_h <= 0:
+            return False
+
+        defect_w = self._positive_int(defect.get("w"))
+        defect_h = self._positive_int(defect.get("h"))
+        defect_area_ratio = float(defect_w * defect_h) / float(max(1, frame_w * frame_h))
+        return defect_area_ratio >= FAST_REVIEW_CLASSIFIER_AREA_RATIO
+
+    def should_apply_fast_review_detection(self, detection):
+        detection_type = detection.get("type")
+        if detection_type not in SUPPORTED_DEFECT_TYPES:
+            return False
+
+        try:
+            confidence = float(detection.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        current_key, _current_text, _current_confidence = self.display_class_result(self.latest_detection_result)
+        if current_key == "normal":
+            if not FAST_REVIEW_PROMOTE_NORMAL:
+                return False
+            if detection_type == "scratch":
+                return confidence >= FAST_REVIEW_STRONG_SCRATCH_CONFIDENCE
+            if detection_type == "stain":
+                return confidence >= FAST_REVIEW_STRONG_STAIN_CONFIDENCE
+            return False
+
+        if current_key == detection_type:
+            return True
+
+        # The OpenMV classifier reports one broad ROI box. A confirmed PC-side
+        # shape check is more reliable for scratch-vs-stain correction.
+        if self.fast_review_current_is_classifier_roi(self.latest_detection_result):
+            return True
+
+        if detection_type == "scratch":
+            return confidence >= FAST_REVIEW_STRONG_SCRATCH_CONFIDENCE
+        if detection_type == "stain":
+            return confidence >= FAST_REVIEW_STRONG_STAIN_CONFIDENCE
+        return False
+
+    def apply_fast_cv_review_to_live_image(self, image, payload):
+        if not FAST_REVIEW_ENABLED or cv2 is None or np is None:
+            return
+        if not isinstance(self.latest_detection_result, dict):
+            return
+
+        payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
+        if payload_key == self.last_fast_review_key:
+            return
+        self.last_fast_review_key = payload_key
+        now = time.monotonic()
+        if now - self.last_fast_review_time < FAST_REVIEW_MIN_INTERVAL_SECONDS:
+            return
+        self.last_fast_review_time = now
+
+        detection = self.fast_cv_detect_defect(image)
+        if detection is None:
+            self.confirm_fast_review_detection(None)
+            return
+
+        if not self.confirm_fast_review_detection(detection):
+            return
+
+        if not self.should_apply_fast_review_detection(detection):
+            return
+
+        refined = dict(self.latest_detection_result)
+        refined["frame"] = {"w": image.width, "h": image.height}
+        refined["roi"] = {"x": 0, "y": 0, "w": image.width, "h": image.height}
+        refined["defects"] = [detection]
+        refined["pc_fast_review"] = True
+        refined = self.normalize_detection_result(refined)
+        refined = self.stabilize_detection_result(refined)
+        self.update_result_ui(refined, render_live_image=False)
+
+    def fast_cv_detect_defect(self, image):
+        rgb = np.array(image)
+        frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape[:2]
+        if width < 32 or height < 32:
+            return None
+
+        mask = np.zeros((height, width), dtype=np.uint8)
+        center = (width // 2, height // 2)
+        axes = (max(2, int(width * 0.48)), max(2, int(height * 0.43)))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+        edge_ignore = max(8, int(min(width, height) * 0.05))
+        mask = np.where(distance > edge_ignore, 255, 0).astype(np.uint8)
+        if cv2.countNonZero(mask) <= 0:
+            return None
+
+        mean_value = float(np.mean(gray[mask > 0]))
+        std_value = float(np.std(gray[mask > 0]))
+        contrast_delta = max(18.0, std_value * 1.2)
+
+        stain = self.fast_cv_find_stain(gray, mask, mean_value, contrast_delta)
+        if stain is not None:
+            return stain
+
+        scratch = self.fast_cv_find_scratch(gray, mask)
+        if scratch is not None:
+            return scratch
+        return None
+
+    def fast_cv_find_stain(self, gray, mask, mean_value, contrast_delta):
+        dark_limit = max(0, int(mean_value - contrast_delta))
+        dark_mask = np.where(gray <= dark_limit, 255, 0).astype(np.uint8)
+        dark_mask = cv2.bitwise_and(dark_mask, mask)
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+
+        contours, _hierarchy = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        min_area = max(2600.0, float(mask_area) * FAST_REVIEW_STAIN_MIN_AREA_RATIO)
+        max_area = float(mask_area) * FAST_REVIEW_STAIN_MAX_AREA_RATIO
+        best = None
+        best_area = 0.0
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < min_area or area > max_area:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+            rect_mean = float(np.mean(gray[y:y + h, x:x + w]))
+            signed_delta = rect_mean - mean_value
+            fill_ratio = area / float(max(1, w * h))
+            if signed_delta > -FAST_REVIEW_STAIN_MIN_DELTA or fill_ratio < FAST_REVIEW_STAIN_MIN_FILL_RATIO:
+                continue
+            if area > best_area:
+                best_area = area
+                best = {
+                    "type": "stain",
+                    "confidence": 0.86,
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "area": int(area),
+                    "length": int(max(w, h)),
+                    "aspect_ratio": round(float(max(w, h)) / float(max(1, min(w, h))), 2),
+                    "level": "medium" if area >= min_area * 2 else "light",
+                    "source": "pc_fast_review",
+                }
+        return best
+
+    def fast_cv_find_scratch(self, gray, mask):
+        edges = cv2.Canny(gray, 30, 60)
+        edges = cv2.bitwise_and(edges, mask)
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(edges, 8)
+        candidates = []
+        height, width = gray.shape[:2]
+        for index in range(1, component_count):
+            x, y, w, h, area = stats[index]
+            length = max(int(w), int(h))
+            short_side = max(1, min(int(w), int(h)))
+            aspect_ratio = float(length) / float(short_side)
+            if int(area) < 28:
+                continue
+            if length < 26 or short_side > 26 or aspect_ratio < 1.8:
+                continue
+            center_x = int(x) + int(w) / 2.0
+            center_y = int(y) + int(h) / 2.0
+            if center_x < width * 0.16 or center_x > width * 0.84:
+                continue
+            if center_y < height * 0.16 or center_y > height * 0.84:
+                continue
+            candidates.append({
+                "x": int(x),
+                "y": int(y),
+                "w": int(w),
+                "h": int(h),
+                "area": int(area),
+                "length": int(length),
+                "aspect_ratio": aspect_ratio,
+            })
+
+        strong = [item for item in candidates if item["length"] >= 70 and item["aspect_ratio"] >= 2.6]
+        medium = [item for item in candidates if item["length"] >= 28 and item["aspect_ratio"] >= 2.4]
+        if not strong and len(medium) < 3:
+            return None
+
+        selected = strong if strong else medium
+        left = min(item["x"] for item in selected)
+        top = min(item["y"] for item in selected)
+        right = max(item["x"] + item["w"] for item in selected)
+        bottom = max(item["y"] + item["h"] for item in selected)
+        total_area = sum(item["area"] for item in selected)
+        length = max(right - left, bottom - top)
+        short_side = max(1, min(right - left, bottom - top))
+        confidence = min(0.94, 0.76 + len(selected) * 0.04 + min(0.08, length / 500.0))
+        return {
+            "type": "scratch",
+            "confidence": round(confidence, 2),
+            "x": int(left),
+            "y": int(top),
+            "w": int(right - left),
+            "h": int(bottom - top),
+            "area": int(total_area),
+            "length": int(length),
+            "aspect_ratio": round(float(length) / float(short_side), 2),
+            "level": "medium" if length >= 70 or total_area >= 180 else "light",
+            "source": "pc_fast_review",
+        }
+
     def apply_stage2_to_live_image(self, image, payload):
         if not isinstance(self.latest_detection_result, dict):
             return
         if not self.stage2_enabled_var.get():
+            return
+        now = time.monotonic()
+        if now - self.last_stage2_infer_time < STAGE2_MIN_INTERVAL_SECONDS:
             return
 
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
@@ -1427,6 +1925,7 @@ class LensDefectHostApp:
         if analysis_mask is None:
             return
 
+        self.last_stage2_infer_time = now
         rgb = np.array(image)
         frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         stage2_result = model.infer(frame, analysis_mask)
@@ -1451,6 +1950,7 @@ class LensDefectHostApp:
             "added_stage2_count": int(stage2_result.get("added_stage2_count", 0)),
         }
         refined = self.normalize_detection_result(refined)
+        refined = self.stabilize_detection_result(refined)
         self.update_result_ui(refined, render_live_image=False)
 
     def build_stage2_analysis_mask(self, image, payload, result):
@@ -1567,6 +2067,8 @@ class LensDefectHostApp:
         )
 
     def add_history(self, result, raw_line):
+        if self.history_tree is None:
+            return
         record = {
             "receive_time": now_text(),
             "result": result,
@@ -1578,6 +2080,8 @@ class LensDefectHostApp:
         self._insert_history_row(record)
 
     def _insert_history_row(self, record):
+        if self.history_tree is None:
+            return
         result = record["result"]
         status = "有缺陷" if result.get("has_defect") else "正常"
         values = (
@@ -1590,6 +2094,8 @@ class LensDefectHostApp:
         self.history_tree.insert("", 0, values=values)
 
     def load_history(self):
+        if self.history_tree is None:
+            return
         if not HISTORY_JSONL.exists():
             return
 
@@ -1617,14 +2123,23 @@ class LensDefectHostApp:
         if not messagebox.askyesno("确认", "确定清空界面和历史记录吗？"):
             return
         self.history_records.clear()
-        self.history_tree.delete(*self.history_tree.get_children())
-        self.defect_tree.delete(*self.defect_tree.get_children())
+        if self.history_tree is not None:
+            self.history_tree.delete(*self.history_tree.get_children())
+        if self.defect_tree is not None:
+            self.defect_tree.delete(*self.defect_tree.get_children())
         self._reset_summary()
         self.has_defect_var.set("是否检测到缺陷：暂无数据")
         self.count_var.set("缺陷总数：0")
         self.level_var.set("整体严重程度：暂无数据")
         self.lens_track_var.set("镜片跟踪：暂无数据")
         self.latest_detection_result = None
+        self.last_fast_review_time = 0.0
+        self.last_fast_review_key = None
+        self.fast_review_candidate = None
+        self.fast_review_candidate_count = 0
+        self.stable_detection_result = None
+        self.pending_detection_class = None
+        self.pending_detection_count = 0
         self._set_raw_text("暂无数据")
         if self.latest_live_image_payload is not None:
             self.render_live_image(self.latest_live_image_payload)
@@ -1663,16 +2178,14 @@ class LensDefectHostApp:
     def mock_one_result(self):
         sample = {
             "has_defect": True,
-            "defect_count": 3,
+            "defect_count": 2,
             "summary": {
                 "scratch": 1,
-                "dust": 1,
                 "stain": 1,
             },
             "overall_level": "medium",
             "defects": [
                 {"type": "scratch", "confidence": 0.86, "x": 120, "y": 80, "w": 70, "h": 5, "area": 350, "length": 70, "aspect_ratio": 14.0, "level": "medium"},
-                {"type": "dust", "confidence": 0.75, "x": 210, "y": 130, "w": 6, "h": 5, "area": 30, "length": 6, "aspect_ratio": 1.2, "level": "light"},
                 {"type": "stain", "confidence": 0.68, "x": 88, "y": 112, "w": 22, "h": 18, "area": 180, "length": 22, "aspect_ratio": 1.22, "level": "light"},
             ],
             "timestamp": int(time.time() * 1000) % 10000000,
@@ -1692,11 +2205,15 @@ class LensDefectHostApp:
         self.handle_json_line(json.dumps(sample, ensure_ascii=False))
 
     def _reset_summary(self):
+        if self.summary_tree is None:
+            return
         self.summary_tree.delete(*self.summary_tree.get_children())
         for defect_type in SUMMARY_TYPES:
             self.summary_tree.insert("", tk.END, values=(defect_type_name(defect_type), 0))
 
     def _set_raw_text(self, value):
+        if self.raw_text is None:
+            return
         pretty_value = value
         try:
             pretty_value = json.dumps(json.loads(value), ensure_ascii=False, indent=2)

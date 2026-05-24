@@ -10,10 +10,9 @@ import numpy as np
 from stage2_anomaly import Stage2AnomalyModel, merge_with_rule_defects
 
 
-SUPPORTED_DEFECT_TYPES = ("scratch", "dust", "stain")
+SUPPORTED_DEFECT_TYPES = ("scratch", "stain")
 DEFECT_TYPE_NAME = {
     "scratch": "划痕",
-    "dust": "灰尘颗粒",
     "stain": "污点/油污",
 }
 LEVEL_SCORE = {
@@ -42,8 +41,6 @@ MIN_COMPONENT_PEAK_DELTA = 34
 CANNY_LOW = 50
 CANNY_HIGH = 90
 
-DUST_MAX_AREA = 45
-DUST_MAX_ASPECT_RATIO = 2.0
 SCRATCH_MIN_ASPECT_RATIO = 5.0
 SCRATCH_MIN_LENGTH = 24
 STAIN_MIN_AREA = 220
@@ -65,8 +62,6 @@ def estimate_level(defect_type, area, length):
     if defect_type == "scratch":
         if length >= 70 or area >= MEDIUM_AREA:
             return "medium"
-        return "light"
-    if defect_type == "dust":
         return "light"
     if defect_type == "stain":
         if area >= MEDIUM_AREA:
@@ -301,7 +296,6 @@ def contour_to_defect(contour, lens_area, diff_map):
     short_side = max(1, min(w, h))
     aspect_ratio = float(length) / float(short_side)
     lens_scale = max(1.0, lens_area ** 0.5)
-    dust_max_area = max(DUST_MAX_AREA, int(lens_area * 0.00008))
     stain_min_area = max(STAIN_MIN_AREA, int(lens_area * 0.00010))
     stain_max_area = max(stain_min_area * 2, int(lens_area * 0.00075))
     stain_max_side = max(24, int(lens_scale * 0.13))
@@ -317,9 +311,6 @@ def contour_to_defect(contour, lens_area, diff_map):
     ):
         defect_type = "scratch"
         confidence = 0.76 + min(0.16, (aspect_ratio - SCRATCH_MIN_ASPECT_RATIO) / 25.0)
-    elif area <= dust_max_area and aspect_ratio <= DUST_MAX_ASPECT_RATIO:
-        defect_type = "dust"
-        confidence = 0.70 + min(0.18, (dust_max_area - area) / float(max(1, dust_max_area)))
     elif (
         stain_min_area <= area <= stain_max_area
         and aspect_ratio <= STAIN_MAX_ASPECT_RATIO

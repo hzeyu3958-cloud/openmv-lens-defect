@@ -9,6 +9,8 @@
 #    and, optionally, UART3 for a Bluetooth serial module.
 
 import csi
+import image
+import sys
 import time
 import ujson
 import pyb
@@ -40,22 +42,31 @@ LABEL_CANDIDATES = (
 )
 
 PIXFORMAT = csi.RGB565
-FRAMESIZE = csi.QVGA
+FRAMESIZE = csi.XGA
 STARTUP_STABLE_MS = 2000
 
-# Set this after the camera arrives. None means center-square crop.
-# Example for QVGA: INFERENCE_ROI = (40, 30, 240, 180)
-INFERENCE_ROI = None
+# Match the data-collection crop in n6_usb_image_capture.py.
+# Ratios map to roughly (160, 60, 460, 300) on a 640 x 400 frame.
+INFERENCE_ROI_RATIO = (0.25, 0.15, 0.72, 0.75)
 MODEL_INPUT_SIZE_FALLBACK = 128
 
 CONFIDENCE_THRESHOLD = 0.45
-SEND_INTERVAL_MS = 500
-DRAW_DEBUG = True
+SEND_INTERVAL_MS = 300
+DRAW_DEBUG = False
 PRINT_JSON_TO_IDE = False
 
+# Temporal stability: require repeated agreement before changing the result.
+STABLE_DEFECT_CONFIRM_FRAMES = 3
+STABLE_DEFECT_SWITCH_FRAMES = 4
+STABLE_NORMAL_CONFIRM_FRAMES = 5
+STABLE_DEFECT_HOLD_FRAMES = 6
+DEFECT_SWITCH_MIN_SCORE = 0.52
+NORMAL_SWITCH_MIN_SCORE = 0.55
+
 ENABLE_USB_IMAGE_STREAM = True
-USB_IMAGE_INTERVAL_MS = 700
-USB_IMAGE_JPEG_QUALITY = 70
+USB_IMAGE_INTERVAL_MS = 500
+USB_IMAGE_JPEG_QUALITY = 45
+USB_IMAGE_JPEG_SUBSAMPLING = getattr(image, "JPEG_SUBSAMPLING_420", None)
 
 DISABLE_AUTO_GAIN_AFTER_START = True
 DISABLE_AUTO_WHITEBAL_AFTER_START = True
@@ -69,7 +80,6 @@ UART_BAUDRATE = 115200
 DEFAULT_LABELS = (
     "normal",
     "scratch",
-    "dust",
     "stain",
 )
 
@@ -78,18 +88,32 @@ SUPPORTED_LABELS = DEFAULT_LABELS
 LEVEL_MAP = {
     "normal": "normal",
     "scratch": "medium",
-    "dust": "light",
     "stain": "light",
 }
 
 SUMMARY_TYPES = (
     "scratch",
-    "dust",
     "stain",
 )
 
 
-usb = pyb.USB_VCP()
+class StdOutPort:
+    def write(self, data):
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        elif hasattr(data, "bytearray"):
+            data = data.bytearray()
+        sys.stdout.buffer.write(data)
+
+
+def open_usb_output_port():
+    try:
+        return pyb.USB_VCP()
+    except Exception:
+        return StdOutPort()
+
+
+usb = open_usb_output_port()
 uart = None
 
 
@@ -198,8 +222,20 @@ def clipped_roi(img, roi):
     return x, y, w, h
 
 
+def scaled_roi(img, ratio):
+    if ratio is None:
+        return None
+    x_ratio, y_ratio, w_ratio, h_ratio = ratio
+    return (
+        int(img.width() * x_ratio),
+        int(img.height() * y_ratio),
+        int(img.width() * w_ratio),
+        int(img.height() * h_ratio),
+    )
+
+
 def prepare_model_image(img, input_w, input_h):
-    roi = clipped_roi(img, INFERENCE_ROI)
+    roi = clipped_roi(img, scaled_roi(img, INFERENCE_ROI_RATIO))
     x_scale = float(input_w) / float(roi[2])
     y_scale = float(input_h) / float(roi[3])
     return img.copy(roi=roi, x_scale=x_scale, y_scale=y_scale, copy_to_fb=False), roi
@@ -273,7 +309,12 @@ def send_usb_image(img):
     try:
         width = img.width()
         height = img.height()
-        jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY)
+        try:
+            if USB_IMAGE_JPEG_SUBSAMPLING is None:
+                raise TypeError("JPEG subsampling is not available")
+            jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY, subsampling=USB_IMAGE_JPEG_SUBSAMPLING)
+        except TypeError:
+            jpg = img.compress(quality=USB_IMAGE_JPEG_QUALITY)
         usb.write(("IMG_BEGIN %d %d %d\n" % (jpg.size(), width, height)).encode("utf-8"))
         usb.write(jpg)
         usb.write(b"IMG_END\n")
@@ -319,6 +360,56 @@ def best_label(scores, labels):
     return label, best_score
 
 
+stable_label = "normal"
+stable_score = 1.0
+candidate_label = None
+candidate_count = 0
+candidate_score = 0.0
+defect_hold_frames = 0
+
+
+def stabilize_label(label, score):
+    global stable_label, stable_score, candidate_label, candidate_count, candidate_score, defect_hold_frames
+
+    if label == stable_label:
+        stable_score = stable_score * 0.70 + score * 0.30
+        candidate_label = None
+        candidate_count = 0
+        candidate_score = 0.0
+        if label != "normal":
+            defect_hold_frames = STABLE_DEFECT_HOLD_FRAMES
+        return stable_label, stable_score
+
+    if label != candidate_label:
+        candidate_label = label
+        candidate_count = 1
+        candidate_score = score
+    else:
+        candidate_count += 1
+        candidate_score = candidate_score * 0.55 + score * 0.45
+
+    if label == "normal":
+        if stable_label != "normal" and defect_hold_frames > 0:
+            defect_hold_frames -= 1
+        if candidate_count >= STABLE_NORMAL_CONFIRM_FRAMES and defect_hold_frames <= 0 and score >= NORMAL_SWITCH_MIN_SCORE:
+            stable_label = "normal"
+            stable_score = candidate_score
+            candidate_label = None
+            candidate_count = 0
+            candidate_score = 0.0
+        return stable_label, stable_score
+
+    required = STABLE_DEFECT_CONFIRM_FRAMES if stable_label == "normal" else STABLE_DEFECT_SWITCH_FRAMES
+    if candidate_count >= required and candidate_score >= DEFECT_SWITCH_MIN_SCORE:
+        stable_label = label
+        stable_score = candidate_score
+        defect_hold_frames = STABLE_DEFECT_HOLD_FRAMES
+        candidate_label = None
+        candidate_count = 0
+        candidate_score = 0.0
+    return stable_label, stable_score
+
+
 if ENABLE_UART_OUTPUT and UART is not None:
     try:
         uart = UART(UART_ID, baudrate=UART_BAUDRATE)
@@ -362,8 +453,16 @@ while True:
 
     outputs = model.predict([net_img])
     scores = flatten_scores(outputs[0]) if outputs else []
-    label, score = best_label(scores, labels)
+    raw_label, raw_score = best_label(scores, labels)
+    label, score = stabilize_label(raw_label, raw_score)
     result = build_result(label, score, source_roi, img.width(), img.height())
+    result["raw_label"] = raw_label
+    result["raw_score"] = safe_round(raw_score, 2)
+    result["stability"] = {
+        "stable_label": stable_label,
+        "candidate_label": candidate_label or "",
+        "candidate_count": candidate_count,
+    }
 
     if DRAW_DEBUG:
         img.draw_rectangle(source_roi, color=(0, 255, 0))

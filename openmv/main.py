@@ -49,8 +49,6 @@ EDGE_MIN_PIXELS = 12
 
 # 缺陷分类参数
 EDGE_MARGIN = 10
-DUST_MAX_PIXELS = 45
-DUST_MAX_ASPECT_RATIO = 2.0
 SCRATCH_MIN_ASPECT_RATIO = 5.0
 SCRATCH_MIN_LENGTH = 24
 STAIN_MIN_PIXELS = 60
@@ -73,13 +71,11 @@ USB_IMAGE_JPEG_QUALITY = 70
 # 调试绘图颜色。灰度图下 color 是 0~255。
 COLOR_MAP = {
     "scratch": 255,
-    "dust": 210,
     "stain": 170,
 }
 
 DEFECT_TYPES = [
     "scratch",
-    "dust",
     "stain",
 ]
 
@@ -154,9 +150,6 @@ def estimate_level(defect_type, area, length, brightness_delta):
     if defect_type == "scratch":
         if length >= 70 or area >= MEDIUM_PIXELS:
             return "medium"
-        return "light"
-
-    if defect_type == "dust":
         return "light"
 
     if defect_type == "stain":
@@ -330,14 +323,10 @@ def classify_defect(blob, roi, img):
     defect_type = None
     confidence = 0.0
 
-    # 只保留三类：划痕、灰尘颗粒、污点。
+    # Only keep scratch and stain as defect classes.
     if aspect_ratio >= SCRATCH_MIN_ASPECT_RATIO and length >= SCRATCH_MIN_LENGTH:
         defect_type = "scratch"
         confidence = 0.76 + min(0.16, (aspect_ratio - SCRATCH_MIN_ASPECT_RATIO) / 25.0)
-
-    elif area <= DUST_MAX_PIXELS and aspect_ratio <= DUST_MAX_ASPECT_RATIO:
-        defect_type = "dust"
-        confidence = 0.70 + min(0.18, (DUST_MAX_PIXELS - area) / float(DUST_MAX_PIXELS))
 
     elif area >= STAIN_MIN_PIXELS and aspect_ratio <= STAIN_MAX_ASPECT_RATIO:
         # density 较低时多为不规则斑块；较高时可能是较实的污点。

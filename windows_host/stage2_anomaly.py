@@ -9,6 +9,16 @@ DEFAULT_THRESHOLD_PERCENTILE = 99.7
 DEFAULT_MIN_STD = 0.025
 DEFAULT_MIN_AREA_RATIO = 0.00008
 DEFAULT_RULE_OVERLAP_RATIO = 0.015
+STAIN_CONFIRM_MIN_OVERLAP = 0.08
+STAIN_CONFIRM_SCORE_FACTOR = 1.55
+STAGE2_STAIN_SCORE_FACTOR = 1.65
+STAGE2_STAIN_MIN_AREA = 180
+ALLOW_STAGE2_ONLY_DEFECTS = False
+STAGE2_ONLY_SCRATCH_SCORE_FACTOR = 1.0
+STAGE2_ONLY_SCRATCH_MIN_LENGTH = 24
+STAGE2_ONLY_SCRATCH_MIN_ASPECT_RATIO = 5.0
+STAGE2_ONLY_STAIN_SCORE_FACTOR = 1.85
+KEEP_UNCONFIRMED_RULE_DEFECTS = False
 
 FEATURE_NAMES = ("gray", "local_residual", "gradient", "bright_spot", "dark_spot")
 
@@ -140,16 +150,15 @@ class Stage2AnomalyModel:
 
         patch_candidate = np.where(score >= self.threshold, 255, 0).astype(np.uint8)
         patch_candidate = cv2.bitwise_and(patch_candidate, patch_mask)
-        patch_candidate = cv2.morphologyEx(
-            patch_candidate,
-            cv2.MORPH_OPEN,
-            np.ones((3, 3), dtype=np.uint8),
-        )
+        # Thin scratches can be only one or two pixels wide in the 192px patch.
+        # A 3x3 open erases them, so preserve line candidates and let contour
+        # shape/score filters reject small noise later.
         patch_candidate = cv2.morphologyEx(
             patch_candidate,
             cv2.MORPH_CLOSE,
-            np.ones((5, 5), dtype=np.uint8),
+            np.ones((3, 3), dtype=np.uint8),
         )
+        patch_candidate = cv2.dilate(patch_candidate, np.ones((2, 2), dtype=np.uint8), iterations=1)
 
         x, y, w, h = bounds
         full_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
@@ -220,8 +229,6 @@ def contour_to_stage2_defect(contour, lens_area, score_map, threshold):
 
     if aspect_ratio >= 5.0 and length >= 24 and short_side <= max(8, int((lens_area ** 0.5) * 0.03)):
         defect_type = "scratch"
-    elif area <= max(45, int(lens_area * 0.00010)) and aspect_ratio <= 2.0:
-        defect_type = "dust"
     else:
         defect_type = "stain"
 
@@ -265,6 +272,30 @@ def rect_iou(a, b):
     return float(inter) / float(union)
 
 
+def is_stage2_only_defect(defect, stage2_result):
+    threshold = float(stage2_result.get("threshold", 0.0))
+    score = float(defect.get("score", 0.0) or 0.0)
+    defect_type = defect.get("type", "")
+    length = int(defect.get("length", 0) or 0)
+    area = int(defect.get("area", 0) or 0)
+    aspect_ratio = float(defect.get("aspect_ratio", 0.0) or 0.0)
+
+    if defect_type == "scratch":
+        return (
+            score >= threshold * STAGE2_ONLY_SCRATCH_SCORE_FACTOR
+            and length >= STAGE2_ONLY_SCRATCH_MIN_LENGTH
+            and aspect_ratio >= STAGE2_ONLY_SCRATCH_MIN_ASPECT_RATIO
+        )
+
+    if defect_type == "stain":
+        return (
+            score >= threshold * STAGE2_ONLY_STAIN_SCORE_FACTOR
+            and area >= STAGE2_STAIN_MIN_AREA
+        )
+
+    return False
+
+
 def merge_with_rule_defects(rule_defects, stage2_result, max_defects=20, overlap_ratio=DEFAULT_RULE_OVERLAP_RATIO):
     if not stage2_result.get("available"):
         return list(rule_defects), stage2_result
@@ -272,26 +303,46 @@ def merge_with_rule_defects(rule_defects, stage2_result, max_defects=20, overlap
     stage2_mask = stage2_result["mask"]
     score_map = stage2_result["score_map"]
     confirmed = []
+    kept = []
     for defect in rule_defects:
         x, y, w, h = defect["x"], defect["y"], defect["w"], defect["h"]
         score_roi = score_map[y:y + h, x:x + w]
         peak = float(np.max(score_roi)) if score_roi.size else 0.0
         overlap = rect_overlap_ratio(defect, stage2_mask)
-        if overlap >= overlap_ratio or peak >= stage2_result["threshold"] * 0.95:
+        defect_type = defect.get("type", "")
+        if defect_type == "stain":
+            is_confirmed = overlap >= STAIN_CONFIRM_MIN_OVERLAP and peak >= stage2_result["threshold"] * STAIN_CONFIRM_SCORE_FACTOR
+        else:
+            is_confirmed = overlap >= overlap_ratio or peak >= stage2_result["threshold"] * 0.95
+        if is_confirmed:
             updated = dict(defect)
             updated["stage2_confirmed"] = True
             updated["stage2_score"] = safe_round(peak)
             updated["confidence"] = safe_round(min(0.99, float(updated["confidence"]) + 0.06))
             confirmed.append(updated)
+            kept.append(updated)
+        elif KEEP_UNCONFIRMED_RULE_DEFECTS:
+            updated = dict(defect)
+            updated["stage2_confirmed"] = False
+            updated["stage2_score"] = safe_round(peak)
+            kept.append(updated)
 
     added = []
-    for stage2_defect in stage2_result.get("defects", []):
-        if any(rect_iou(stage2_defect, old) > 0.20 for old in confirmed):
-            continue
-        added.append(stage2_defect)
+    if ALLOW_STAGE2_ONLY_DEFECTS:
+        for stage2_defect in stage2_result.get("defects", []):
+            if any(rect_iou(stage2_defect, old) > 0.20 for old in kept):
+                continue
+            if not is_stage2_only_defect(stage2_defect, stage2_result):
+                continue
+            updated = dict(stage2_defect)
+            updated["stage2_added"] = True
+            updated["stage2_confirmed"] = True
+            updated["stage2_score"] = safe_round(updated.get("score", 0.0))
+            added.append(updated)
 
-    merged = confirmed + added
+    merged = kept + added
     merged.sort(key=lambda item: (item.get("stage2_score", item.get("score", 0.0)), item["area"]), reverse=True)
     stage2_result["confirmed_rule_count"] = len(confirmed)
+    stage2_result["unconfirmed_rule_count"] = max(0, len(kept) - len(confirmed))
     stage2_result["added_stage2_count"] = len(added)
     return merged[:max_defects], stage2_result

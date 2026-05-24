@@ -1,5 +1,6 @@
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,7 +8,6 @@ from pathlib import Path
 DEFAULT_CLASSES = [
     "normal",
     "scratch",
-    "dust",
     "stain",
 ]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -36,6 +36,33 @@ def count_images(split_dir, labels):
     return counts
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def count_unique_hashes(split_dir, labels):
+    counts = {}
+    for label in labels:
+        hashes = {file_sha256(path) for path in image_files(split_dir / label)}
+        counts[label] = len(hashes)
+    return counts
+
+
+def build_class_weight(train_counts, labels):
+    non_zero_counts = [train_counts[label] for label in labels if train_counts[label] > 0]
+    if not non_zero_counts:
+        return None
+    max_count = max(non_zero_counts)
+    return {
+        index: float(max_count) / float(max(1, train_counts[label]))
+        for index, label in enumerate(labels)
+    }
+
+
 def split_has_images(split_dir, labels):
     if not split_dir.exists():
         return False
@@ -53,7 +80,11 @@ def check_dataset(dataset_dir):
     if not train_dir.exists():
         raise RuntimeError("Missing dataset/train folder: %s" % train_dir)
 
-    class_dirs = [path.name for path in train_dir.iterdir() if path.is_dir()]
+    class_dirs = [
+        path.name
+        for path in train_dir.iterdir()
+        if path.is_dir() and path.name in DEFAULT_CLASSES and image_files(path)
+    ]
     if not class_dirs:
         raise RuntimeError("No class folders found under %s" % train_dir)
 
@@ -116,9 +147,17 @@ def main():
         "val": count_images(dataset_dir / "val", labels),
         "test": count_images(dataset_dir / "test", labels),
     }
+    unique_counts = {
+        "train": count_unique_hashes(dataset_dir / "train", labels),
+        "val": count_unique_hashes(dataset_dir / "val", labels),
+        "test": count_unique_hashes(dataset_dir / "test", labels),
+    }
     if sum(class_counts["train"].values()) == 0:
         raise RuntimeError("No training images found under %s" % (dataset_dir / "train"))
     print("Class counts:", json.dumps(class_counts, ensure_ascii=False))
+    print("Unique image hashes:", json.dumps(unique_counts, ensure_ascii=False))
+    class_weight = build_class_weight(class_counts["train"], labels)
+    print("Class weights:", json.dumps(class_weight, ensure_ascii=False))
 
     ensure_class_dirs(dataset_dir / "train", labels)
     train_ds = tf.keras.utils.image_dataset_from_directory(
@@ -161,10 +200,10 @@ def main():
 
     augment = tf.keras.Sequential([
         tf.keras.layers.RandomFlip("horizontal"),
-        tf.keras.layers.RandomRotation(0.05),
-        tf.keras.layers.RandomZoom(0.08),
-        tf.keras.layers.RandomContrast(0.15),
-    ])
+        tf.keras.layers.RandomRotation(0.04),
+        tf.keras.layers.RandomZoom(0.06),
+        tf.keras.layers.RandomContrast(0.12),
+    ], name="train_augmentation")
 
     model = tf.keras.Sequential([
         tf.keras.layers.Input(shape=(args.image_size, args.image_size, 3)),
@@ -176,9 +215,10 @@ def main():
         tf.keras.layers.MaxPooling2D(),
         tf.keras.layers.Conv2D(64, 3, padding="same", activation="relu"),
         tf.keras.layers.MaxPooling2D(),
-        tf.keras.layers.Conv2D(96, 3, padding="same", activation="relu"),
-        tf.keras.layers.GlobalAveragePooling2D(),
-        tf.keras.layers.Dropout(0.25),
+        tf.keras.layers.Conv2D(64, 3, padding="same", activation="relu"),
+        tf.keras.layers.MaxPooling2D(pool_size=(16, 16)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dropout(0.20),
         tf.keras.layers.Dense(len(labels), activation="softmax"),
     ])
 
@@ -209,6 +249,7 @@ def main():
         validation_data=val_ds,
         epochs=args.epochs,
         callbacks=callbacks,
+        class_weight=class_weight,
     )
     write_history_csv(history, output_dir / "training_history.csv")
 
@@ -270,6 +311,8 @@ def main():
         "epochs_requested": args.epochs,
         "labels": labels,
         "class_counts": class_counts,
+        "unique_hash_counts": unique_counts,
+        "class_weight": class_weight,
         "metrics": metrics,
         "artifacts": {
             "keras": str(keras_path),
