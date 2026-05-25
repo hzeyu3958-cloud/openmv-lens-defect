@@ -156,6 +156,7 @@ FAST_REVIEW_YOLO_BOX_LOCK_MIN_IOU = 0.025
 FAST_REVIEW_YOLO_BOX_LOCK_MAX_CENTER_DISTANCE_RATIO = 0.20
 FAST_REVIEW_YOLO_BOX_LOCK_EXPAND_RATIO = 0.45
 FAST_REVIEW_YOLO_BOX_LOCK_CLASS_MARGIN = 0.07
+FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE = 0.88
 FAST_REVIEW_LENS_CONTOUR_MIN_WIDTH_RATIO = 0.28
 FAST_REVIEW_LENS_CONTOUR_MIN_HEIGHT_RATIO = 0.20
 FAST_REVIEW_LENS_CONTOUR_MIN_CENTER_Y_RATIO = 0.30
@@ -231,6 +232,7 @@ YOLO_ROI_INFERENCE_ENABLED = True
 YOLO_ROI_PADDING_RATIO = 0.18
 YOLO_ROI_MIN_SIZE_RATIO = 0.28
 YOLO_ROI_MAX_AREA_RATIO = 0.70
+YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES = 8
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
@@ -866,6 +868,7 @@ class LensDefectHostApp:
         self.yolo_missing_signature = None
         self.last_yolo_infer_time = 0.0
         self.last_yolo_payload_key = None
+        self.yolo_roi_miss_count = 0
         self.last_stage2_infer_time = 0.0
         self.last_fast_review_time = 0.0
         self.last_fast_review_key = None
@@ -2298,6 +2301,11 @@ class LensDefectHostApp:
         y = max(0, min(y, image_h - 1))
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
+        high_confidence_yolo_roi = (
+            defect_type == "scratch"
+            and str(defect.get("source", "")) == "yolo_onnx_roi"
+            and self.confidence_float(defect) >= FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE
+        )
         if self.defect_looks_like_side_glare_line(
             defect,
             display_gray=display_gray,
@@ -2309,7 +2317,7 @@ class LensDefectHostApp:
             scaled_box=(x, y, w, h),
         ):
             return False
-        if self.defect_looks_like_internal_reflection(
+        if not high_confidence_yolo_roi and self.defect_looks_like_internal_reflection(
             defect,
             display_gray=display_gray,
             image_w=image_w,
@@ -2317,7 +2325,7 @@ class LensDefectHostApp:
             scaled_box=(x, y, w, h),
         ):
             return False
-        if self.defect_looks_like_reflection_shadow(
+        if not high_confidence_yolo_roi and self.defect_looks_like_reflection_shadow(
             defect,
             display_gray=display_gray,
             image_w=image_w,
@@ -2365,7 +2373,7 @@ class LensDefectHostApp:
             min_overlap = FAST_REVIEW_EDGE_FILTER_SCRATCH_MIN_OVERLAP
         else:
             min_overlap = FAST_REVIEW_EDGE_FILTER_STAIN_MIN_OVERLAP
-        if overlap < min_overlap:
+        if overlap < min_overlap and not high_confidence_yolo_roi:
             return False
 
         if distance is None:
@@ -2373,7 +2381,10 @@ class LensDefectHostApp:
         center_x = max(0, min(image_w - 1, int(x + w / 2)))
         center_y = max(0, min(image_h - 1, int(y + h / 2)))
         if mask[center_y, center_x] == 0:
-            return False
+            if not high_confidence_yolo_roi:
+                return False
+            if not self.defect_box_is_inside_roi(defect, roi, source_w, source_h):
+                return False
 
         min_center_distance = max(6, int(min(image_w, image_h) * 0.018))
         if defect_type == "stain":
@@ -2386,7 +2397,7 @@ class LensDefectHostApp:
                 min_center_distance,
                 int(min(image_w, image_h) * FAST_REVIEW_EDGE_FILTER_SCRATCH_CENTER_DISTANCE_RATIO),
             )
-        if distance[center_y, center_x] < min_center_distance:
+        if distance[center_y, center_x] < min_center_distance and not high_confidence_yolo_roi:
             return False
 
         if defect_type == "stain":
@@ -2412,7 +2423,7 @@ class LensDefectHostApp:
                 "yolo_onnx_roi",
             )
             percentile = 58 if is_line_source else 50
-            if float(np.percentile(inner, percentile)) < min_box_distance:
+            if float(np.percentile(inner, percentile)) < min_box_distance and not high_confidence_yolo_roi:
                 return False
             if touches_roi_edge and is_line_source:
                 return False
@@ -3235,9 +3246,20 @@ class LensDefectHostApp:
         if inference_roi is not None:
             detections = detector.detect_roi(image, inference_roi)
             yolo_mode = "roi"
+            if detections:
+                self.yolo_roi_miss_count = 0
+            else:
+                self.yolo_roi_miss_count += 1
+                if self.yolo_roi_miss_count >= YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES:
+                    full_detections = detector.detect(image)
+                    if full_detections:
+                        detections = full_detections
+                        yolo_mode = "roi_full_fallback"
+                    self.yolo_roi_miss_count = 0
         else:
             detections = detector.detect(image)
             yolo_mode = "full"
+            self.yolo_roi_miss_count = 0
         if not detections:
             return
 

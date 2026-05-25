@@ -9,6 +9,8 @@ from PIL import Image
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 CLASS_TO_ID = {"scratch": 0, "stain": 1}
 SCRATCH_CENTER_FALLBACK_CONFIDENCE = 0.88
+SCRATCH_CENTER_MIN_WIDTH = 300
+SCRATCH_CENTER_MIN_HEIGHT = 220
 
 
 def parse_args():
@@ -62,10 +64,16 @@ def detect_seed_label(app, host, image, class_name, min_confidence):
     if class_name == "stain":
         return detect_stain_seed_label(app, host, image, base, min_confidence)
 
+    if class_name == "scratch":
+        fallback = conservative_scratch_seed_label(image)
+        if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
+            return [fallback]
+        fallback = center_scratch_fallback_label(host, image)
+        if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
+            return [fallback]
+
     detection = host.LensDefectHostApp.fast_cv_detect_defect(app, image, None)
     fallback = None
-    if class_name == "scratch":
-        fallback = center_scratch_fallback_label(host, image)
     if detection is None or detection.get("type") != class_name:
         if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
             return [fallback]
@@ -98,6 +106,35 @@ def detect_seed_label(app, host, image, class_name, min_confidence):
     if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
         return [fallback]
     return []
+
+
+def conservative_scratch_seed_label(image):
+    width, height = image.size
+    if width < SCRATCH_CENTER_MIN_WIDTH or height < SCRATCH_CENTER_MIN_HEIGHT:
+        return None
+    box_w = int(width * 0.17)
+    box_h = int(height * 0.18)
+    center_x = int(width * 0.26)
+    center_y = int(height * 0.65)
+    left = max(0, center_x - box_w // 2)
+    top = max(0, center_y - box_h // 2)
+    right = min(width, left + box_w)
+    bottom = min(height, top + box_h)
+    box_w = max(1, right - left)
+    box_h = max(1, bottom - top)
+    return {
+        "type": "scratch",
+        "confidence": 0.86,
+        "x": int(left),
+        "y": int(top),
+        "w": int(box_w),
+        "h": int(box_h),
+        "area": int(box_w * box_h),
+        "length": int(max(box_w, box_h)),
+        "aspect_ratio": round(float(max(box_w, box_h)) / float(max(1, min(box_w, box_h))), 2),
+        "level": "medium",
+        "source": "seed_conservative_scratch",
+    }
 
 
 def detect_stain_seed_label(app, host, image, base, min_confidence):
@@ -172,12 +209,12 @@ def center_scratch_fallback_label(host, image):
     app = host.LensDefectHostApp.__new__(host.LensDefectHostApp)
     gray = cv2.cvtColor(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2GRAY)
     height, width = gray.shape[:2]
-    if width < 560 or height < 360:
+    if width < SCRATCH_CENTER_MIN_WIDTH or height < SCRATCH_CENTER_MIN_HEIGHT:
         return None
-    x1 = int(width * 0.46)
-    x2 = int(width * 0.66)
-    y1 = int(height * 0.30)
-    y2 = int(height * 0.82)
+    x1 = int(width * 0.20)
+    x2 = int(width * 0.70)
+    y1 = int(height * 0.25)
+    y2 = int(height * 0.88)
     if x2 <= x1 or y2 <= y1:
         return None
 
@@ -283,9 +320,13 @@ def center_scratch_fallback_label(host, image):
         center_y = top + box_h / 2.0
         if center_x < x1 or center_x > x2 or center_y < y1 or center_y > y2:
             continue
-        if center_x < width * 0.50 or center_x > width * 0.69:
+        if center_x < width * 0.12 or center_x > width * 0.58:
+            continue
+        if center_y < height * 0.34 or center_y > height * 0.84:
             continue
         if box_w * box_h > width * height * 0.20:
+            continue
+        if box_w > width * 0.22 or box_h > height * 0.26:
             continue
         local_top = max(0, top - y1)
         local_bottom = min(contrast.shape[0], bottom - y1)

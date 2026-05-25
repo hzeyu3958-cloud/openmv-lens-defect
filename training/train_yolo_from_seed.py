@@ -13,6 +13,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--image-size", type=int, default=640)
     parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--name", default="lens_yolo")
     return parser.parse_args()
 
 
@@ -47,7 +48,7 @@ def main():
         batch=int(args.batch),
         device="cpu",
         project=str((project_root / "outputs" / "yolo_training").resolve()),
-        name="lens_yolo",
+        name=args.name,
         exist_ok=True,
     )
     best_pt = Path(result.save_dir) / "weights" / "best.pt"
