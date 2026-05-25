@@ -2132,7 +2132,10 @@ class LensDefectHostApp:
             return result
         mask = self.build_detection_mask(display_image, payload, result)
         if mask is None or cv2.countNonZero(mask) <= 0:
-            return result
+            refined = dict(result)
+            refined["defects"] = []
+            refined["edge_filter"] = {"removed": len(defects), "reason": "empty_lens_mask"}
+            return self.normalize_detection_result(refined)
         edge_distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
         display_gray = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2GRAY)
 
@@ -4475,9 +4478,12 @@ class LensDefectHostApp:
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
 
-        mask = self.build_lens_ellipse_mask(image, (x, y, w, h)) if used_auto_roi else None
-        if mask is None and used_auto_roi:
+        roi_rect = (x, y, w, h)
+        mask = self.build_lens_ellipse_mask(image, roi_rect) if used_auto_roi else None
+        if used_auto_roi and not self.lens_mask_is_reliable(mask, roi_rect):
             mask = self.build_lens_contour_mask(image, (x, y, w, h))
+        if not self.lens_mask_is_reliable(mask, roi_rect):
+            mask = None
         if mask is None:
             mask = np.zeros((image_h, image_w), dtype=np.uint8)
             center = (x + w // 2, y + h // 2)
@@ -4485,7 +4491,11 @@ class LensDefectHostApp:
             cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
         edge_ignore = max(8, int(min(w, h) * FAST_REVIEW_INNER_MASK_MARGIN_RATIO))
         distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-        return np.where(distance > edge_ignore, 255, 0).astype(np.uint8)
+        inner_mask = np.where(distance > edge_ignore, 255, 0).astype(np.uint8)
+        if cv2.countNonZero(inner_mask) <= 0:
+            fallback_ignore = max(4, int(min(w, h) * 0.10))
+            inner_mask = np.where(distance > fallback_ignore, 255, 0).astype(np.uint8)
+        return inner_mask
 
     def build_stage2_analysis_mask(self, image, payload, result):
         return self.build_detection_mask(image, payload, result)
@@ -4507,28 +4517,31 @@ class LensDefectHostApp:
 
         frame_area = float(max(1, image_w * image_h))
         min_area = frame_area * FAST_REVIEW_AUTO_ROI_MIN_AREA_RATIO
+        min_box_area = frame_area * 0.045
         min_w = max(24, int(image_w * FAST_REVIEW_AUTO_ROI_MIN_WIDTH_RATIO))
         min_h = max(18, int(image_h * FAST_REVIEW_AUTO_ROI_MIN_HEIGHT_RATIO))
         best_box = None
         best_score = 0.0
         for contour in contours:
             area = float(cv2.contourArea(contour))
-            if area < min_area:
-                continue
             x, y, w, h = cv2.boundingRect(contour)
+            box_area = float(max(1, w * h))
+            if area < min_area and box_area < min_box_area:
+                continue
             if w < min_w or h < min_h:
                 continue
             aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
             if aspect_ratio > 3.6:
                 continue
-            fill_ratio = area / float(max(1, w * h))
-            if fill_ratio < 0.04:
+            fill_ratio = area / box_area
+            if fill_ratio < 0.035 and box_area < frame_area * 0.10:
                 continue
             center_x = (x + w / 2.0) / float(max(1, image_w))
             center_y = (y + h / 2.0) / float(max(1, image_h))
-            center_penalty = abs(center_x - 0.50) * 0.40 + abs(center_y - 0.52) * 0.25
+            center_penalty = abs(center_x - 0.45) * 0.18 + abs(center_y - 0.58) * 0.18
             bottom_bonus = min(0.18, max(0.0, (y + h) / float(max(1, image_h)) - 0.55))
-            score = (area / frame_area) + fill_ratio * 0.18 + bottom_bonus - center_penalty
+            size_score = min(0.45, box_area / frame_area)
+            score = size_score + fill_ratio * 0.16 + bottom_bonus - center_penalty
             if score > best_score:
                 best_score = score
                 best_box = (x, y, w, h)
