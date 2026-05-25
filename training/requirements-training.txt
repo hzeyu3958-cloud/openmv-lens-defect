@@ -1,1 +1,6 @@
-tensorflow
+tensorflow==2.21.0
+opencv-python==4.13.0.92
+onnx==1.21.0
+torch==2.5.1
+torchvision==0.20.1
+ultralytics==8.4.53

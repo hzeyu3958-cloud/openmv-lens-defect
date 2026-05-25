@@ -27,7 +27,7 @@ STARTUP_STABLE_MS = 2000
 
 # Current N6 preview falls back to about 640 x 400. Keep this ROI tight around
 # the real lens so frame/background edges do not become false defects.
-LENS_ROI = (150, 90, 380, 260)
+LENS_ROI = (120, 90, 430, 280)
 
 # Real-time lens tracking. When enabled, defect detection follows the tracked
 # lens rectangle instead of using the fixed LENS_ROI above.
@@ -54,7 +54,7 @@ TRACK_EDGE_CANNY_HIGH = 85
 TRACK_EDGE_BINARY_THRESHOLD = 180
 TRACK_MIN_CONFIDENCE = 0.16
 
-SEND_INTERVAL_MS = 120
+SEND_INTERVAL_MS = 150
 PRINT_JSON_TO_IDE = False
 DRAW_DEBUG = False
 
@@ -66,10 +66,12 @@ STABLE_DEFECT_HOLD_FRAMES = 4
 
 # USB 发给上位机的实时画面。上位机识别 IMG_BEGIN/IMG_END 后显示。
 ENABLE_USB_IMAGE_STREAM = True
-USB_IMAGE_INTERVAL_MS = 300
-USB_IMAGE_JPEG_QUALITY = 38
+USB_IMAGE_INTERVAL_MS = 260
+USB_IMAGE_JPEG_QUALITY = 88
 USB_IMAGE_JPEG_SUBSAMPLING = None
-SEND_PREVIEW_ROI_ONLY = True
+SEND_PREVIEW_ROI_ONLY = False
+USB_WRITE_CHUNK_SIZE = 4096
+USB_WRITE_CHUNK_DELAY_MS = 0
 
 # 预留给单片机的口：开启后会把同一条检测 JSON 从 UART 发出。
 # 接线示例：OpenMV TX -> 单片机 RX，OpenMV GND -> 单片机 GND。
@@ -102,13 +104,22 @@ CANNY_HIGH = 90
 EDGE_BINARY_THRESHOLD = 180
 EDGE_MIN_PIXELS = 35
 
-EDGE_MARGIN = 32
+EDGE_MARGIN = 42
 SCRATCH_MIN_ASPECT_RATIO = 2.8
 SCRATCH_MIN_LENGTH = 45
 SCRATCH_MAX_SHORT_SIDE = 20
-SCRATCH_MAX_PIXELS = 2200
+SCRATCH_MAX_PIXELS = 4200
 SCRATCH_MAX_AREA_RATIO = 0.05
 SCRATCH_EDGE_MAX_AREA_RATIO = 0.0008
+SCRATCH_DARK_MAX_SHORT_SIDE = 8
+SCRATCH_DARK_MAX_PIXELS = 1800
+EDGE_STAIN_MAX_AREA_RATIO = 0.045
+EDGE_STAIN_MIN_DENSITY = 0.38
+EDGE_STAIN_MAX_ASPECT_RATIO = 1.35
+DARK_STAIN_MIN_PIXELS = 650
+DARK_STAIN_MIN_SHORT_SIDE = 10
+DARK_STAIN_MIN_LENGTH = 55
+DARK_STAIN_MAX_LINE_ASPECT = 18.0
 STAIN_MIN_PIXELS = 2800
 STAIN_MIN_DENSITY = 0.24
 STAIN_MIN_BRIGHTNESS_DELTA = 14
@@ -121,7 +132,9 @@ STAIN_CLUSTER_MIN_TOTAL_AREA = 900
 STAIN_CLUSTER_MIN_TOTAL_LENGTH = 150
 STAIN_CLUSTER_MIN_BOX_FILL = 0.055
 STAIN_CLUSTER_MIN_BOX_SHORT_SIDE = 26
-STAIN_CLUSTER_MIN_BRIGHTNESS_DELTA = 34
+STAIN_CLUSTER_MIN_BRIGHTNESS_DELTA = 20
+STAIN_CLUSTER_LINE_LIKE_MAX_FILL = 0.12
+STAIN_CLUSTER_LINE_LIKE_MIN_ASPECT = 2.4
 SERIOUS_PIXELS = 9216
 MEDIUM_PIXELS = 2253
 
@@ -160,6 +173,16 @@ def open_usb_output_port():
 
 
 usb = open_usb_output_port()
+
+
+def boot_log(text):
+    try:
+        usb.write((text + "\n").encode("utf-8"))
+    except Exception:
+        pass
+
+
+boot_log("BOOT rule detector loaded")
 uart = None
 tracked_roi = None
 track_lost_frames = 0
@@ -644,6 +667,17 @@ def classify_defect(blob, roi, img):
         return None
     if near_edge and area_ratio >= 0.03 and not is_dark_defect:
         return None
+    if near_edge and (
+        area_ratio >= EDGE_STAIN_MAX_AREA_RATIO
+        or density < EDGE_STAIN_MIN_DENSITY
+        or short_side <= SCRATCH_MAX_SHORT_SIDE
+        or aspect_ratio >= EDGE_STAIN_MAX_ASPECT_RATIO
+    ):
+        return None
+    if near_edge and area_ratio <= 0.015 and (
+        aspect_ratio >= SCRATCH_MIN_ASPECT_RATIO or not is_dark_defect
+    ):
+        return None
 
     defect_type = None
     confidence = 0.0
@@ -653,6 +687,21 @@ def classify_defect(blob, roi, img):
         or short_side >= STAIN_CLUSTER_MIN_BOX_SHORT_SIDE
         or area > SCRATCH_MAX_PIXELS
     )
+    dark_stain_shape = (
+        is_dark_defect
+        and length >= DARK_STAIN_MIN_LENGTH
+        and area >= DARK_STAIN_MIN_PIXELS
+        and area_ratio <= STAIN_MAX_AREA_RATIO
+        and short_side >= DARK_STAIN_MIN_SHORT_SIDE
+        and aspect_ratio <= DARK_STAIN_MAX_LINE_ASPECT
+    )
+    thin_dark_scratch = (
+        not is_dark_defect
+        or (
+            short_side <= SCRATCH_DARK_MAX_SHORT_SIDE
+            and area <= SCRATCH_DARK_MAX_PIXELS
+        )
+    )
 
     if (
         not edge_scratch_noise
@@ -661,9 +710,13 @@ def classify_defect(blob, roi, img):
         and short_side <= SCRATCH_MAX_SHORT_SIDE
         and area <= SCRATCH_MAX_PIXELS
         and area_ratio <= SCRATCH_MAX_AREA_RATIO
+        and thin_dark_scratch
     ):
         defect_type = "scratch"
         confidence = 0.76 + min(0.16, (aspect_ratio - SCRATCH_MIN_ASPECT_RATIO) / 25.0)
+    elif dark_stain_shape:
+        defect_type = "stain"
+        confidence = 0.70 + min(0.18, brightness_delta / 180.0 + density * 0.08)
     elif (
         area >= STAIN_MIN_PIXELS
         and area_ratio <= STAIN_MAX_AREA_RATIO
@@ -794,6 +847,7 @@ def scratch_cluster_to_stain(cluster, roi):
     height = max(1, bottom - top)
     length = max(width, height)
     short_side = max(1, min(width, height))
+    aspect_ratio = float(length) / float(short_side)
     box_area = max(1, width * height)
     density = float(total_area) / float(box_area)
     roi_area = max(1, roi[2] * roi[3])
@@ -809,6 +863,8 @@ def scratch_cluster_to_stain(cluster, roi):
         return None
     if density < STAIN_CLUSTER_MIN_BOX_FILL and short_side < STAIN_CLUSTER_MIN_BOX_SHORT_SIDE:
         return None
+    if aspect_ratio >= STAIN_CLUSTER_LINE_LIKE_MIN_ASPECT and density <= STAIN_CLUSTER_LINE_LIKE_MAX_FILL:
+        return None
 
     confidence = clamp(max_confidence + 0.04 + min(0.10, density), 0.58, 0.96)
     return {
@@ -820,7 +876,7 @@ def scratch_cluster_to_stain(cluster, roi):
         "h": height,
         "area": total_area,
         "length": length,
-        "aspect_ratio": safe_round(float(length) / float(short_side), 2),
+        "aspect_ratio": safe_round(aspect_ratio, 2),
         "density": safe_round(density, 2),
         "area_ratio": safe_round(area_ratio, 3),
         "brightness_delta": safe_round(max_delta, 1),
@@ -973,6 +1029,24 @@ def send_line(text):
         print(text)
 
 
+def fatal_error_loop(message):
+    boot_log("ERR " + message)
+    result = {
+        "has_defect": False,
+        "defect_count": 0,
+        "summary": {"scratch": 0, "stain": 0},
+        "overall_level": "error",
+        "defects": [],
+        "timestamp": time.ticks_ms(),
+        "model": "rule_detector",
+        "error": message,
+    }
+    while True:
+        result["timestamp"] = time.ticks_ms()
+        send_line(ujson.dumps(result))
+        time.sleep_ms(1000)
+
+
 def send_usb_image(img, roi=None):
     if not ENABLE_USB_IMAGE_STREAM:
         return
@@ -992,8 +1066,22 @@ def send_usb_image(img, roi=None):
             jpg = preview.compress(quality=USB_IMAGE_JPEG_QUALITY, subsampling=USB_IMAGE_JPEG_SUBSAMPLING)
         except TypeError:
             jpg = preview.compress(quality=USB_IMAGE_JPEG_QUALITY)
-        usb.write(("IMG_BEGIN %d %d %d\n" % (jpg.size(), width, height)).encode("utf-8"))
-        usb.write(jpg)
+        jpg_size = jpg.size()
+        usb.write(("IMG_BEGIN %d %d %d\n" % (jpg_size, width, height)).encode("utf-8"))
+        try:
+            jpg_bytes = jpg.bytearray()
+        except Exception:
+            jpg_bytes = None
+        if jpg_bytes is None:
+            usb.write(jpg)
+        else:
+            offset = 0
+            while offset < jpg_size:
+                next_offset = min(jpg_size, offset + USB_WRITE_CHUNK_SIZE)
+                usb.write(jpg_bytes[offset:next_offset])
+                offset = next_offset
+                if USB_WRITE_CHUNK_DELAY_MS > 0:
+                    time.sleep_ms(USB_WRITE_CHUNK_DELAY_MS)
         usb.write(b"IMG_END\n")
     except Exception as exc:
         if PRINT_JSON_TO_IDE:
@@ -1007,20 +1095,25 @@ if ENABLE_UART_OUTPUT and UART is not None:
         print("UART init failed:", exc)
         uart = None
 
-csi0 = csi.CSI()
-csi0.reset()
-csi0.pixformat(PIXFORMAT)
-framesize_ready = False
-for framesize in PREFERRED_FRAMESIZES:
-    try:
-        csi0.framesize(framesize)
-        framesize_ready = True
-        break
-    except Exception as exc:
-        print("framesize failed:", framesize, exc)
-if not framesize_ready:
-    raise RuntimeError("No supported framesize")
-csi0.snapshot(time=STARTUP_STABLE_MS)
+boot_log("BOOT camera init start")
+try:
+    csi0 = csi.CSI()
+    csi0.reset()
+    csi0.pixformat(PIXFORMAT)
+    framesize_ready = False
+    for framesize in PREFERRED_FRAMESIZES:
+        try:
+            csi0.framesize(framesize)
+            framesize_ready = True
+            break
+        except Exception as exc:
+            boot_log("ERR framesize failed: %s" % exc)
+    if not framesize_ready:
+        fatal_error_loop("No supported framesize")
+    csi0.snapshot(time=STARTUP_STABLE_MS)
+    boot_log("BOOT camera init ok")
+except Exception as exc:
+    fatal_error_loop("camera init failed: %s" % exc)
 
 if DISABLE_AUTO_GAIN_AFTER_START:
     try:

@@ -24,6 +24,11 @@ dataset/**
 models/**
 !models/
 !models/README.md
+*.pt
+
+# Local training datasets and dependency caches.
+dataset_yolo_seed/
+downloads/
 
 # Keep packaged demo artifacts here.
 !release/

@@ -21,6 +21,8 @@ FRAMESIZE = csi.XGA
 FALLBACK_FRAMESIZE = csi.VGA
 JPEG_QUALITY = 80
 JPEG_SUBSAMPLING = None
+USB_WRITE_CHUNK_SIZE = 1024
+USB_WRITE_CHUNK_DELAY_MS = 3
 
 # 如果只想拍镜片区域，可以设置 ROI，例如 (40, 30, 240, 180)。
 # None 表示保存整张图，后期训练时电脑端会自动缩放。
@@ -115,7 +117,20 @@ def capture_and_send():
 
     # Image.size() 返回压缩后 JPEG 字节数；Image 可直接作为字节流写入 USB。
     send_line("IMG_BEGIN %d %d %d" % (jpg.size(), width, height))
-    usb.write(jpg)
+    try:
+        jpg_bytes = jpg.bytearray()
+    except Exception:
+        jpg_bytes = None
+    if jpg_bytes is None:
+        usb.write(jpg)
+    else:
+        offset = 0
+        while offset < jpg.size():
+            next_offset = min(jpg.size(), offset + USB_WRITE_CHUNK_SIZE)
+            usb.write(jpg_bytes[offset:next_offset])
+            offset = next_offset
+            if USB_WRITE_CHUNK_DELAY_MS > 0:
+                time.sleep_ms(USB_WRITE_CHUNK_DELAY_MS)
     send_line("IMG_END")
 
 
