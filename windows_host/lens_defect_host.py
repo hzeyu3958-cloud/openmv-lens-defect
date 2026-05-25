@@ -2409,6 +2409,7 @@ class LensDefectHostApp:
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
                 "yolo_onnx",
+                "yolo_onnx_roi",
             )
             percentile = 58 if is_line_source else 50
             if float(np.percentile(inner, percentile)) < min_box_distance:
@@ -2459,6 +2460,7 @@ class LensDefectHostApp:
         source = str(defect.get("source", ""))
         if source not in (
             "yolo_onnx",
+            "yolo_onnx_roi",
             "pc_fast_review_line",
             "pc_fast_bright_scratch",
             "pc_fast_bright_crosshatch",
@@ -2498,7 +2500,7 @@ class LensDefectHostApp:
         if center_x < side_boundary:
             return False
 
-        if source == "yolo_onnx":
+        if source in ("yolo_onnx", "yolo_onnx_roi"):
             return True
 
         if display_gray is None:
@@ -2534,6 +2536,7 @@ class LensDefectHostApp:
             "pc_fast_bright_crosshatch",
             "pc_fast_curvilinear_scratch",
             "yolo_onnx",
+            "yolo_onnx_roi",
         ):
             return False
 
@@ -2589,7 +2592,7 @@ class LensDefectHostApp:
         if weak_wide_center_cross and strong_glare_near_box:
             return True
 
-        if source == "yolo_onnx" and strong_glare_near_box and aspect <= 2.0:
+        if source in ("yolo_onnx", "yolo_onnx_roi") and strong_glare_near_box and aspect <= 2.0:
             return True
         return False
 
@@ -2605,6 +2608,7 @@ class LensDefectHostApp:
             "pc_fast_bright_crosshatch",
             "pc_fast_curvilinear_scratch",
             "yolo_onnx",
+            "yolo_onnx_roi",
         ):
             return False
 
