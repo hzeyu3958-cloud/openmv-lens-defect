@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
@@ -138,6 +139,23 @@ FAST_REVIEW_FRAME_TALL_LINE_MIN_ASPECT = 2.2
 FAST_REVIEW_FRAME_TALL_LINE_MAX_WIDTH_RATIO = 0.085
 FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS = 145.0
 FAST_REVIEW_GLARE_LINE_MIN_LOCAL_DELTA = 18.0
+FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_DELTA = 14.5
+FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_ASPECT = 2.05
+FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_SLENDER_RATIO = 0.60
+FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY = 182.0
+FAST_REVIEW_REFLECTION_GLARE_MIN_LOCAL_DELTA = 48.0
+FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA = 72.0
+FAST_REVIEW_REFLECTION_SHADOW_MAX_SIGNED_DELTA = -2.0
+FAST_REVIEW_CENTER_CROSS_WEAK_MIN_TOTAL_LENGTH = 900.0
+FAST_REVIEW_CENTER_CROSS_WEAK_MIN_SLENDER_RATIO = 0.68
+FAST_REVIEW_CENTER_CROSS_WEAK_MIN_FILL_RATIO = 0.25
+FAST_REVIEW_REFLECTION_SCRATCH_MAX_TOTAL_LENGTH = 860.0
+FAST_REVIEW_REFLECTION_SCRATCH_MAX_LINE_COUNT = 24
+FAST_REVIEW_YOLO_BOX_LOCK_MIN_CONFIDENCE = 0.10
+FAST_REVIEW_YOLO_BOX_LOCK_MIN_IOU = 0.025
+FAST_REVIEW_YOLO_BOX_LOCK_MAX_CENTER_DISTANCE_RATIO = 0.20
+FAST_REVIEW_YOLO_BOX_LOCK_EXPAND_RATIO = 0.45
+FAST_REVIEW_YOLO_BOX_LOCK_CLASS_MARGIN = 0.07
 FAST_REVIEW_LENS_CONTOUR_MIN_WIDTH_RATIO = 0.28
 FAST_REVIEW_LENS_CONTOUR_MIN_HEIGHT_RATIO = 0.20
 FAST_REVIEW_LENS_CONTOUR_MIN_CENTER_Y_RATIO = 0.30
@@ -183,7 +201,7 @@ FAST_REVIEW_CENTER_CROSS_BOX_MAX_X_RATIO = 0.69
 FAST_REVIEW_CENTER_CROSS_MIN_LINE_COUNT = 5
 FAST_REVIEW_CENTER_CROSS_MIN_ANGLE_GROUPS = 3
 FAST_REVIEW_CENTER_CROSS_MIN_SLENDER_LINES = 4
-FAST_REVIEW_CENTER_CROSS_MIN_TOTAL_LENGTH = 145.0
+FAST_REVIEW_CENTER_CROSS_MIN_TOTAL_LENGTH = 180.0
 FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA = 5.0
 FAST_REVIEW_CENTER_CROSS_MAX_BOX_AREA_RATIO = 0.20
 FAST_REVIEW_CENTER_CROSS_MAX_FILL_RATIO = 0.43
@@ -196,6 +214,12 @@ FAST_REVIEW_STAR_SCRATCH_MIN_FILL = 0.12
 FAST_REVIEW_STAR_SCRATCH_MAX_FILL = 0.62
 FAST_REVIEW_BRIGHT_SCRATCH_MIN_SIGNED_DELTA = 1.2
 FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA = -0.8
+FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_TOTAL_LENGTH = 54.0
+FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_COMPONENTS = 2
+FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_ASPECT = 1.55
+FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_FILL_RATIO = 0.34
+FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_LOCAL_DELTA = 4.5
+FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_BOX_RATIO = 0.090
 FAST_REVIEW_KEEP_PC_RESULT_SECONDS = 2.20
 YOLO_INPUT_SIZE = 640
 YOLO_CONFIDENCE_THRESHOLD = 0.08
@@ -203,6 +227,10 @@ YOLO_NMS_THRESHOLD = 0.45
 YOLO_MIN_INTERVAL_SECONDS = 0.10
 YOLO_MISSING_MODEL_RECHECK_SECONDS = 2.0
 YOLO_FALLBACK_INPUT_SIZES = (416, 512, 320, 640)
+YOLO_ROI_INFERENCE_ENABLED = True
+YOLO_ROI_PADDING_RATIO = 0.18
+YOLO_ROI_MIN_SIZE_RATIO = 0.28
+YOLO_ROI_MAX_AREA_RATIO = 0.70
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
@@ -211,6 +239,26 @@ SUPPORTED_DEFECT_TYPES = (
 
 DEFECT_TYPE_ORDER = ["normal"] + list(SUPPORTED_DEFECT_TYPES)
 SUMMARY_TYPES = list(SUPPORTED_DEFECT_TYPES)
+
+
+def ensure_local_module_paths():
+    candidates = [
+        APP_DIR,
+        APP_DIR / "windows_host",
+        APP_DIR.parent / "windows_host",
+        PROJECT_ROOT / "windows_host",
+    ]
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS))  # pylint: disable=protected-access
+    for candidate in candidates:
+        try:
+            resolved = str(candidate.resolve())
+        except Exception:
+            resolved = str(candidate)
+        if candidate.exists() and resolved not in sys.path:
+            sys.path.insert(0, resolved)
+
+ensure_local_module_paths()
 
 DEFECT_TYPE_NAME = {
     "normal": "正常",
@@ -380,6 +428,7 @@ def find_training_python():
 
 def ensure_stage2_runtime_loaded():
     global STAGE2_READY, STAGE2_IMPORT_ERROR, Stage2AnomalyModel, merge_with_rule_defects
+    ensure_local_module_paths()
     if STAGE2_READY:
         return True
     if cv2 is None or np is None:
@@ -400,10 +449,18 @@ def ensure_stage2_runtime_loaded():
     return True
 
 
+def cv_runtime_error_text():
+    if cv2 is None:
+        return "OpenCV 导入失败：%s" % STAGE2_IMPORT_ERROR
+    if np is None:
+        return "NumPy 导入失败：%s" % STAGE2_IMPORT_ERROR
+    return ""
+
+
 class YoloOnnxDetector:
     def __init__(self, model_path, labels_path=None, input_size=YOLO_INPUT_SIZE):
         if cv2 is None or np is None:
-            raise RuntimeError("缺少 OpenCV 或 NumPy，不能加载 YOLO ONNX 模型。")
+            raise RuntimeError("%s，不能加载 YOLO ONNX 模型。" % (cv_runtime_error_text() or "缺少 OpenCV 或 NumPy"))
         self.model_path = Path(model_path)
         if not self.model_path.exists():
             raise FileNotFoundError(str(self.model_path))
@@ -472,6 +529,29 @@ class YoloOnnxDetector:
             return []
         output_size, outputs = self._forward_with_compatible_size(rgb)
         return self._parse_outputs(outputs, frame_w, frame_h, output_size)
+
+    def detect_roi(self, image, roi):
+        if not isinstance(roi, dict):
+            return self.detect(image)
+        image_w, image_h = image.size
+        x = max(0, int(roi.get("x", 0) or 0))
+        y = max(0, int(roi.get("y", 0) or 0))
+        w = max(1, int(roi.get("w", 0) or 0))
+        h = max(1, int(roi.get("h", 0) or 0))
+        x = min(x, max(0, image_w - 1))
+        y = min(y, max(0, image_h - 1))
+        w = min(w, image_w - x)
+        h = min(h, image_h - y)
+        if w <= 4 or h <= 4:
+            return []
+        crop = image.crop((x, y, x + w, y + h))
+        detections = self.detect(crop)
+        for detection in detections:
+            detection["x"] = int(detection.get("x", 0) or 0) + x
+            detection["y"] = int(detection.get("y", 0) or 0) + y
+            detection["source"] = "yolo_onnx_roi"
+            detection["roi_inference"] = True
+        return detections
 
     def _forward_with_compatible_size(self, rgb):
         sizes = []
@@ -2015,8 +2095,13 @@ class LensDefectHostApp:
             return
 
         result = self.normalize_detection_result(result)
-        result = self.filter_edge_defects_for_live_image(result, self.latest_live_image_payload)
+        result = self.final_filter_result_for_current_image(
+            result,
+            self.latest_live_image_payload,
+            clear_recent=False,
+        )
         result = self.merge_recent_pc_defect_result(result)
+        result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
         result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
         self.add_history(result, raw_line)
@@ -2105,6 +2190,13 @@ class LensDefectHostApp:
                 merged[key] = dict(recent[key])
         return self.normalize_detection_result(merged)
 
+    def final_filter_result_for_current_image(self, result, payload, clear_recent=True):
+        filtered = self.filter_edge_defects_for_live_image(result, payload)
+        if clear_recent and (not isinstance(filtered, dict) or not filtered.get("has_defect")):
+            self.last_pc_defect_result = None
+            self.last_pc_defect_time = 0.0
+        return filtered
+
     def filter_edge_defects_for_live_image(self, result, payload):
         if cv2 is None or np is None or Image is None:
             return result
@@ -2130,6 +2222,11 @@ class LensDefectHostApp:
         defects = result.get("defects") or []
         if not defects:
             return result
+        roi, source_w, source_h = self.resolve_detection_roi_for_image(display_image, payload, result)
+        if isinstance(result, dict) and isinstance(roi, dict):
+            result = dict(result)
+            result["roi"] = dict(roi)
+            result["frame"] = {"w": int(source_w), "h": int(source_h)}
         mask = self.build_detection_mask(display_image, payload, result)
         if mask is None or cv2.countNonZero(mask) <= 0:
             refined = dict(result)
@@ -2139,10 +2236,6 @@ class LensDefectHostApp:
         edge_distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
         display_gray = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2GRAY)
 
-        frame = result.get("frame") or {}
-        source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or display_image.width
-        source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or display_image.height
-        roi = self._last_effective_roi or self.infer_effective_detection_roi(result, payload, display_image)
         filtered = []
         removed = 0
         for defect in defects:
@@ -2170,32 +2263,8 @@ class LensDefectHostApp:
         return self.normalize_detection_result(refined)
 
     def infer_effective_detection_roi(self, result, payload, display_image):
-        if not isinstance(result, dict):
-            return None
-        image_w, image_h = display_image.size
-        frame = result.get("frame") or {}
-        source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or image_w
-        source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image_h
-        lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
-        roi = result.get("roi") if isinstance(result.get("roi"), dict) else None
-        candidate = lens if lens is not None and lens.get("found", True) else roi
-        candidate = self.valid_roi_or_none(candidate, source_w, source_h)
-        if candidate is not None and self.roi_is_low_confidence(candidate, source_w, source_h):
-            candidate = None
-        if candidate is None or self.roi_is_full_frame(candidate, source_w, source_h):
-            auto_roi = self.detect_lens_roi_from_image(display_image)
-            if auto_roi is not None:
-                x_scale = float(source_w) / float(max(1, image_w))
-                y_scale = float(source_h) / float(max(1, image_h))
-                return {
-                    "x": int(auto_roi["x"] * x_scale),
-                    "y": int(auto_roi["y"] * y_scale),
-                    "w": int(auto_roi["w"] * x_scale),
-                    "h": int(auto_roi["h"] * y_scale),
-                    "source": "pc_auto_roi",
-                }
-            return self.center_fallback_roi(source_w, source_h)
-        return candidate
+        roi, _source_w, _source_h = self.resolve_detection_roi_for_image(display_image, payload, result)
+        return roi
 
     def should_keep_defect_inside_lens(
         self,
@@ -2235,6 +2304,22 @@ class LensDefectHostApp:
             roi=roi,
             source_w=source_w,
             source_h=source_h,
+            image_w=image_w,
+            image_h=image_h,
+            scaled_box=(x, y, w, h),
+        ):
+            return False
+        if self.defect_looks_like_internal_reflection(
+            defect,
+            display_gray=display_gray,
+            image_w=image_w,
+            image_h=image_h,
+            scaled_box=(x, y, w, h),
+        ):
+            return False
+        if self.defect_looks_like_reflection_shadow(
+            defect,
+            display_gray=display_gray,
             image_w=image_w,
             image_h=image_h,
             scaled_box=(x, y, w, h),
@@ -2322,6 +2407,7 @@ class LensDefectHostApp:
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
                 "pc_fast_center_cross_scratch",
+                "pc_fast_curvilinear_scratch",
                 "yolo_onnx",
             )
             percentile = 58 if is_line_source else 50
@@ -2377,6 +2463,7 @@ class LensDefectHostApp:
             "pc_fast_bright_scratch",
             "pc_fast_bright_crosshatch",
             "pc_fast_center_cross_scratch",
+            "pc_fast_curvilinear_scratch",
         ):
             return False
 
@@ -2436,6 +2523,172 @@ class LensDefectHostApp:
             roi_p90 >= FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS
             and roi_p90 - local_mean >= FAST_REVIEW_GLARE_LINE_MIN_LOCAL_DELTA
         )
+
+    def defect_looks_like_internal_reflection(self, defect, display_gray, image_w, image_h, scaled_box=None):
+        if defect.get("type") != "scratch" or display_gray is None:
+            return False
+        source = str(defect.get("source", ""))
+        if source not in (
+            "pc_fast_center_cross_scratch",
+            "pc_fast_bright_scratch",
+            "pc_fast_bright_crosshatch",
+            "pc_fast_curvilinear_scratch",
+            "yolo_onnx",
+        ):
+            return False
+
+        if scaled_box is None:
+            x = self._positive_int(defect.get("x"))
+            y = self._positive_int(defect.get("y"))
+            w = self._positive_int(defect.get("w"))
+            h = self._positive_int(defect.get("h"))
+        else:
+            x, y, w, h = scaled_box
+        if w <= 0 or h <= 0:
+            return False
+
+        x = max(0, min(int(x), image_w - 1))
+        y = max(0, min(int(y), image_h - 1))
+        w = max(1, min(int(w), image_w - x))
+        h = max(1, min(int(h), image_h - y))
+        box = display_gray[y:y + h, x:x + w]
+        if box.size <= 0:
+            return False
+
+        pad = max(10, int(min(image_w, image_h) * 0.035))
+        lx1 = max(0, x - pad)
+        ly1 = max(0, y - pad)
+        lx2 = min(image_w, x + w + pad)
+        ly2 = min(image_h, y + h + pad)
+        local = display_gray[ly1:ly2, lx1:lx2]
+        if local.size <= 0:
+            return False
+
+        box_p98 = float(np.percentile(box, 98.0))
+        local_mean = float(np.mean(local))
+        local_p995 = float(np.percentile(local, 99.5))
+        local_peak_delta = local_p995 - local_mean
+
+        aspect = float(max(w, h)) / float(max(1, min(w, h)))
+        local_delta = float(defect.get("local_bright_delta", 0) or 0)
+        line_count = int(defect.get("line_count", 0) or 0)
+        slender_count = int(defect.get("slender_line_count", 0) or 0)
+        slender_ratio = float(slender_count) / float(max(1, line_count))
+
+        weak_wide_center_cross = (
+            source == "pc_fast_center_cross_scratch"
+            and aspect <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_ASPECT
+            and local_delta <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_DELTA
+            and slender_ratio <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_SLENDER_RATIO
+        )
+        strong_glare_near_box = (
+            local_p995 >= FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY
+            and local_peak_delta >= FAST_REVIEW_REFLECTION_GLARE_MIN_LOCAL_DELTA
+            and box_p98 >= FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS
+        )
+        if weak_wide_center_cross and strong_glare_near_box:
+            return True
+
+        if source == "yolo_onnx" and strong_glare_near_box and aspect <= 2.0:
+            return True
+        return False
+
+    def defect_looks_like_reflection_shadow(self, defect, display_gray, image_w, image_h, scaled_box=None):
+        if display_gray is None:
+            return False
+        source = str(defect.get("source", ""))
+        if source not in (
+            "pc_fast_dark_stain",
+            "pc_fast_review",
+            "pc_fast_center_cross_scratch",
+            "pc_fast_bright_scratch",
+            "pc_fast_bright_crosshatch",
+            "pc_fast_curvilinear_scratch",
+            "yolo_onnx",
+        ):
+            return False
+
+        if scaled_box is None:
+            x = self._positive_int(defect.get("x"))
+            y = self._positive_int(defect.get("y"))
+            w = self._positive_int(defect.get("w"))
+            h = self._positive_int(defect.get("h"))
+        else:
+            x, y, w, h = scaled_box
+        if w <= 0 or h <= 0:
+            return False
+
+        x = max(0, min(int(x), image_w - 1))
+        y = max(0, min(int(y), image_h - 1))
+        w = max(1, min(int(w), image_w - x))
+        h = max(1, min(int(h), image_h - y))
+        box = display_gray[y:y + h, x:x + w]
+        if box.size <= 0:
+            return False
+
+        pad = max(12, int(min(image_w, image_h) * 0.045))
+        lx1 = max(0, x - pad)
+        ly1 = max(0, y - pad)
+        lx2 = min(image_w, x + w + pad)
+        ly2 = min(image_h, y + h + pad)
+        local = display_gray[ly1:ly2, lx1:lx2]
+        if local.size <= 0:
+            return False
+
+        box_mean = float(np.mean(box))
+        local_mean = float(np.mean(local))
+        local_p995 = float(np.percentile(local, 99.5))
+        glare_delta = local_p995 - local_mean
+        signed_delta = box_mean - local_mean
+        box_p98 = float(np.percentile(box, 98.0))
+        defect_type = defect.get("type")
+        if defect_type == "stain":
+            local_dark = float(defect.get("local_dark_delta", 0) or 0)
+            density = float(defect.get("density", 0) or 0)
+            angle_groups = int(defect.get("angle_groups", 0) or 0)
+            if (
+                glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 1.30
+                and signed_delta >= -7.0
+                and local_dark <= 9.5
+                and density <= 0.62
+            ):
+                return True
+            if (
+                glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.44
+                and signed_delta >= -2.5
+                and local_dark <= 3.5
+                and angle_groups <= 0
+            ):
+                return True
+            if (
+                glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.82
+                and signed_delta >= -6.0
+                and local_dark <= 8.5
+                and angle_groups <= 2
+            ):
+                return True
+        elif defect_type == "scratch":
+            local_delta = float(defect.get("local_bright_delta", 0) or 0)
+            line_count = int(defect.get("line_count", 0) or 0)
+            total_length = float(defect.get("total_line_length", 0) or 0)
+            if (
+                source == "pc_fast_center_cross_scratch"
+                and glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 1.10
+                and signed_delta >= 2.0
+                and local_delta <= 28.0
+            ):
+                return True
+            if (
+                glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA
+                and local_delta <= 16.0
+                and box_p98 < FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY
+                and (
+                    line_count <= FAST_REVIEW_REFLECTION_SCRATCH_MAX_LINE_COUNT
+                    or total_length <= FAST_REVIEW_REFLECTION_SCRATCH_MAX_TOTAL_LENGTH
+                )
+            ):
+                return True
+        return False
 
     def defect_box_is_inside_roi(self, defect, roi, source_w, source_h):
         if not isinstance(roi, dict):
@@ -2725,6 +2978,91 @@ class LensDefectHostApp:
             return 0.0
         return float(intersection) / float(union)
 
+    def detection_center_distance_ratio(self, first, second):
+        if not isinstance(first, dict) or not isinstance(second, dict):
+            return 1.0
+        ax = float(self._positive_int(first.get("x"))) + float(self._positive_int(first.get("w"))) / 2.0
+        ay = float(self._positive_int(first.get("y"))) + float(self._positive_int(first.get("h"))) / 2.0
+        bx = float(self._positive_int(second.get("x"))) + float(self._positive_int(second.get("w"))) / 2.0
+        by = float(self._positive_int(second.get("y"))) + float(self._positive_int(second.get("h"))) / 2.0
+        aw = float(max(1, self._positive_int(first.get("w"))))
+        ah = float(max(1, self._positive_int(first.get("h"))))
+        bw = float(max(1, self._positive_int(second.get("w"))))
+        bh = float(max(1, self._positive_int(second.get("h"))))
+        scale = max(aw, ah, bw, bh, 1.0)
+        return max(abs(ax - bx), abs(ay - by)) / scale
+
+    def expand_detection_box(self, detection, ratio, image_w, image_h):
+        if not isinstance(detection, dict):
+            return None
+        x = self._positive_int(detection.get("x"))
+        y = self._positive_int(detection.get("y"))
+        w = self._positive_int(detection.get("w"))
+        h = self._positive_int(detection.get("h"))
+        if w <= 0 or h <= 0:
+            return None
+        grow_x = max(2, int(w * ratio))
+        grow_y = max(2, int(h * ratio))
+        left = max(0, x - grow_x)
+        top = max(0, y - grow_y)
+        right = min(max(1, image_w), x + w + grow_x)
+        bottom = min(max(1, image_h), y + h + grow_y)
+        return {
+            "x": int(left),
+            "y": int(top),
+            "w": int(max(1, right - left)),
+            "h": int(max(1, bottom - top)),
+        }
+
+    def confidence_float(self, detection, default=0.0):
+        try:
+            return float(detection.get("confidence", default) or default)
+        except (AttributeError, TypeError, ValueError):
+            return float(default)
+
+    def merge_yolo_locked_box_with_review(self, yolo_detection, review_detection, image_w, image_h):
+        if (
+            not isinstance(yolo_detection, dict)
+            or str(yolo_detection.get("source", "")) not in ("yolo_onnx", "yolo_onnx_roi")
+        ):
+            return review_detection
+        if not isinstance(review_detection, dict):
+            return yolo_detection
+        expanded_yolo = self.expand_detection_box(
+            yolo_detection,
+            FAST_REVIEW_YOLO_BOX_LOCK_EXPAND_RATIO,
+            image_w,
+            image_h,
+        )
+        if expanded_yolo is None:
+            return review_detection
+        iou = self.fast_review_iou(expanded_yolo, review_detection)
+        center_distance = self.detection_center_distance_ratio(yolo_detection, review_detection)
+        if (
+            iou < FAST_REVIEW_YOLO_BOX_LOCK_MIN_IOU
+            and center_distance > FAST_REVIEW_YOLO_BOX_LOCK_MAX_CENTER_DISTANCE_RATIO
+        ):
+            return yolo_detection
+
+        merged = dict(yolo_detection)
+        yolo_type = yolo_detection.get("type")
+        review_type = review_detection.get("type")
+        yolo_confidence = self.confidence_float(yolo_detection)
+        review_confidence = self.confidence_float(review_detection)
+        if (
+            review_type in SUPPORTED_DEFECT_TYPES
+            and review_type != yolo_type
+            and review_confidence >= yolo_confidence + FAST_REVIEW_YOLO_BOX_LOCK_CLASS_MARGIN
+        ):
+            merged["type"] = review_type
+        merged["confidence"] = round(max(yolo_confidence, min(0.96, review_confidence)), 2)
+        merged["level"] = review_detection.get("level", yolo_detection.get("level", "medium"))
+        merged["pc_fast_review"] = True
+        merged["review_source"] = review_detection.get("source", "")
+        merged["review_iou"] = round(iou, 3)
+        merged["review_center_distance"] = round(center_distance, 3)
+        return merged
+
     def confirm_fast_review_detection(self, detection):
         if detection is None:
             self.fast_review_candidate = None
@@ -2850,6 +3188,19 @@ class LensDefectHostApp:
             image.width,
             image.height,
         )
+        current_yolo_defects = [
+            defect for defect in (self.latest_detection_result.get("defects") or [])
+            if isinstance(defect, dict) and str(defect.get("source", "")) in ("yolo_onnx", "yolo_onnx_roi")
+        ]
+        if current_yolo_defects:
+            best_yolo = max(current_yolo_defects, key=lambda item: self.confidence_float(item))
+            detection = self.merge_yolo_locked_box_with_review(
+                best_yolo,
+                detection,
+                image.width,
+                image.height,
+            )
+            refined["yolo_box_locked"] = True
         refined["defects"] = [detection]
         refined["pc_fast_review"] = True
         refined = self.normalize_detection_result(refined)
@@ -2875,31 +3226,62 @@ class LensDefectHostApp:
 
         self.last_yolo_payload_key = payload_key
         self.last_yolo_infer_time = now
-        detections = detector.detect(image)
+        base = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
+        inference_roi = self.yolo_inference_roi_for_image(image, payload, base)
+        if inference_roi is not None:
+            detections = detector.detect_roi(image, inference_roi)
+            yolo_mode = "roi"
+        else:
+            detections = detector.detect(image)
+            yolo_mode = "full"
         if not detections:
             return
 
-        base = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
         refined = dict(base)
         refined["frame"] = {"w": image.width, "h": image.height}
         refined["roi"] = self.best_live_detection_roi(base, image.width, image.height)
         refined["defects"] = detections
         refined["model"] = "yolo_onnx"
-        refined["yolo"] = {"enabled": True, "model_path": str(detector.model_path)}
+        refined["yolo"] = {
+            "enabled": True,
+            "model_path": str(detector.model_path),
+            "mode": yolo_mode,
+            "inference_roi": inference_roi or {},
+        }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
-        if not refined.get("has_defect"):
-            mask = self.build_detection_mask(image, payload, refined)
-            fallback_detection = self.fast_cv_detect_defect(image, mask)
-            if fallback_detection is not None and fallback_detection.get("type") == "scratch":
-                fallback_result = dict(refined)
-                fallback_result["defects"] = [fallback_detection]
-                fallback_result["pc_fast_review"] = True
-                fallback_result["yolo_edge_fallback"] = True
-                fallback_result = self.normalize_detection_result(fallback_result)
-                fallback_result = self.filter_edge_defects_for_image(fallback_result, payload, image)
-                if fallback_result.get("has_defect"):
-                    refined = fallback_result
+        mask = self.build_detection_mask(image, payload, refined)
+        fallback_detection = self.fast_cv_detect_defect(image, mask)
+        if refined.get("has_defect"):
+            yolo_defects = [
+                defect for defect in (refined.get("defects") or [])
+                if isinstance(defect, dict) and str(defect.get("source", "")) in ("yolo_onnx", "yolo_onnx_roi")
+            ]
+            if yolo_defects and fallback_detection is not None:
+                best_yolo = max(yolo_defects, key=lambda item: self.confidence_float(item))
+                merged_detection = self.merge_yolo_locked_box_with_review(
+                    best_yolo,
+                    fallback_detection,
+                    image.width,
+                    image.height,
+                )
+                locked_result = dict(refined)
+                locked_result["defects"] = [merged_detection]
+                locked_result["pc_fast_review"] = True
+                locked_result["yolo_box_locked"] = True
+                locked_result = self.normalize_detection_result(locked_result)
+                locked_result = self.filter_edge_defects_for_image(locked_result, payload, image)
+                if locked_result.get("has_defect"):
+                    refined = locked_result
+        elif fallback_detection is not None and fallback_detection.get("type") == "scratch":
+            fallback_result = dict(refined)
+            fallback_result["defects"] = [fallback_detection]
+            fallback_result["pc_fast_review"] = True
+            fallback_result["yolo_edge_fallback"] = True
+            fallback_result = self.normalize_detection_result(fallback_result)
+            fallback_result = self.filter_edge_defects_for_image(fallback_result, payload, image)
+            if fallback_result.get("has_defect"):
+                refined = fallback_result
         if refined.get("has_defect"):
             self.last_pc_defect_result = dict(refined)
             self.last_pc_defect_time = time.monotonic()
@@ -2917,6 +3299,49 @@ class LensDefectHostApp:
             if roi is not None and not self.roi_is_low_confidence(roi, image_w, image_h):
                 return roi
         return self.center_fallback_roi(image_w, image_h)
+
+    def yolo_inference_roi_for_image(self, image, payload, result):
+        if not YOLO_ROI_INFERENCE_ENABLED:
+            return None
+        roi, source_w, source_h = self.resolve_detection_roi_for_image(image, payload, result)
+        if not isinstance(roi, dict):
+            return None
+        image_w, image_h = image.size
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(roi.get("x")) * x_scale)
+        y = int(self._positive_int(roi.get("y")) * y_scale)
+        w = int(self._positive_int(roi.get("w")) * x_scale)
+        h = int(self._positive_int(roi.get("h")) * y_scale)
+        if w <= 4 or h <= 4:
+            return None
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+
+        frame_area = float(max(1, image_w * image_h))
+        roi_area_ratio = float(w * h) / frame_area
+        min_side = min(image_w, image_h)
+        if (
+            roi_area_ratio >= YOLO_ROI_MAX_AREA_RATIO
+            or w < int(min_side * YOLO_ROI_MIN_SIZE_RATIO)
+            or h < int(min_side * YOLO_ROI_MIN_SIZE_RATIO)
+        ):
+            return None
+
+        pad = max(8, int(min(w, h) * YOLO_ROI_PADDING_RATIO))
+        left = max(0, x - pad)
+        top = max(0, y - pad)
+        right = min(image_w, x + w + pad)
+        bottom = min(image_h, y + h + pad)
+        return {
+            "x": int(left),
+            "y": int(top),
+            "w": int(max(1, right - left)),
+            "h": int(max(1, bottom - top)),
+            "source": "pc_yolo_roi",
+        }
 
     def valid_roi_or_none(self, roi, image_w, image_h):
         if not isinstance(roi, dict):
@@ -3058,7 +3483,7 @@ class LensDefectHostApp:
         if scratch_is_long_slender:
             return scratch
         scratch_is_crosshatch = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+            scratch_source in ("pc_fast_review_line", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
             and scratch_strong
             and scratch_line_count >= 4
             and (
@@ -3072,7 +3497,7 @@ class LensDefectHostApp:
         if scratch_is_crosshatch and stain_area_ratio < FAST_REVIEW_SCRATCH_CROSSHATCH_STAIN_MAX_RATIO:
             return scratch
         scratch_is_star = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
             and scratch_strong
             and scratch_line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
             and (
@@ -3096,7 +3521,7 @@ class LensDefectHostApp:
         if scratch_is_star:
             return scratch
         bright_line_scratch = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
             and scratch_signed_delta >= FAST_REVIEW_BRIGHT_SCRATCH_MIN_SIGNED_DELTA
             and scratch_bright_delta >= max(6.0, scratch_dark_delta * 0.9)
             and scratch_total_line_length >= 82.0
@@ -3472,6 +3897,13 @@ class LensDefectHostApp:
                 or center_cross_detection.get("total_line_length", 0) > line_detection.get("total_line_length", 0) * 0.72
             ):
                 line_detection = center_cross_detection
+        curvilinear_detection = self.fast_cv_find_curvilinear_scratch(gray, mask, edge_distance)
+        if curvilinear_detection is not None:
+            if (
+                line_detection is None
+                or curvilinear_detection.get("total_line_length", 0) > line_detection.get("total_line_length", 0) * 0.64
+            ):
+                line_detection = curvilinear_detection
         if line_detection is not None:
             candidates.extend(line_detection.pop("candidates", []))
 
@@ -3735,6 +4167,206 @@ class LensDefectHostApp:
 
         return best
 
+    def fast_cv_find_curvilinear_scratch(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 120 or height < 90:
+            return None
+
+        local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=13, sigmaY=13)
+        signed_diff = gray.astype(np.int16) - local_background.astype(np.int16)
+        line_response = np.maximum(np.abs(signed_diff), 0).astype(np.uint8)
+        mask_values = line_response[mask > 0]
+        if mask_values.size <= 0:
+            return None
+
+        threshold = max(
+            FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_LOCAL_DELTA,
+            float(np.percentile(mask_values, 91.5)),
+        )
+        candidate_mask = np.where(line_response >= threshold, 255, 0).astype(np.uint8)
+        candidate_mask = cv2.bitwise_and(candidate_mask, mask)
+
+        gray_values = gray[mask > 0]
+        if gray_values.size > 0:
+            glare_limit = max(
+                FAST_REVIEW_GLARE_MASK_MIN_GRAY,
+                float(np.percentile(gray_values, 98.7)),
+            )
+            glare_mask = np.where(gray >= glare_limit, 255, 0).astype(np.uint8)
+            glare_mask = cv2.dilate(glare_mask, np.ones((13, 13), dtype=np.uint8), iterations=1)
+            candidate_mask = cv2.bitwise_and(candidate_mask, cv2.bitwise_not(glare_mask))
+
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 7))
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 1))
+        diagonal_kernel = np.eye(7, dtype=np.uint8)
+        anti_diagonal_kernel = np.fliplr(diagonal_kernel)
+        line_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, vertical_kernel)
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, horizontal_kernel))
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, diagonal_kernel))
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, anti_diagonal_kernel))
+        line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(line_mask, 8)
+        if component_count <= 1:
+            return None
+
+        min_edge_distance = max(
+            FAST_REVIEW_SCRATCH_MIN_EDGE_DISTANCE,
+            int(min(width, height) * FAST_REVIEW_SCRATCH_EDGE_MARGIN_RATIO),
+        )
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        components = []
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < 6 or w <= 0 or h <= 0:
+                continue
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            if length < 12 or aspect_ratio < 1.45:
+                continue
+            center_x = max(0, min(width - 1, int(x + w / 2)))
+            center_y = max(0, min(height - 1, int(y + h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance * 0.86:
+                continue
+            components.append({
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "area": area,
+                "length": length,
+                "aspect_ratio": aspect_ratio,
+            })
+
+        if len(components) < FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_COMPONENTS:
+            return None
+
+        clusters = []
+        for component in sorted(components, key=lambda item: item["length"], reverse=True):
+            cx = component["x"] + component["w"] / 2.0
+            cy = component["y"] + component["h"] / 2.0
+            best_cluster = None
+            best_distance = None
+            for cluster in clusters:
+                xs = []
+                ys = []
+                for item in cluster:
+                    xs.extend([item["x"], item["x"] + item["w"]])
+                    ys.extend([item["y"], item["y"] + item["h"]])
+                ccx = (min(xs) + max(xs)) / 2.0
+                ccy = (min(ys) + max(ys)) / 2.0
+                distance_value = max(abs(cx - ccx), abs(cy - ccy))
+                if distance_value <= 42 and (best_distance is None or distance_value < best_distance):
+                    best_cluster = cluster
+                    best_distance = distance_value
+            if best_cluster is None:
+                clusters.append([component])
+            else:
+                best_cluster.append(component)
+
+        best = None
+        best_score = 0.0
+        for cluster in clusters:
+            if len(cluster) < FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_COMPONENTS:
+                continue
+            left = min(item["x"] for item in cluster)
+            top = min(item["y"] for item in cluster)
+            right = max(item["x"] + item["w"] for item in cluster)
+            bottom = max(item["y"] + item["h"] for item in cluster)
+            left = max(0, left - 3)
+            top = max(0, top - 3)
+            right = min(width - 1, right + 4)
+            bottom = min(height - 1, bottom + 4)
+            box_w = max(1, right - left)
+            box_h = max(1, bottom - top)
+            box_area = box_w * box_h
+            box_ratio = float(box_area) / float(mask_area)
+            if box_ratio > FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_BOX_RATIO:
+                continue
+            length = max(box_w, box_h)
+            short_side = max(1, min(box_w, box_h))
+            aspect_ratio = float(length) / float(short_side)
+            if aspect_ratio < FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_ASPECT:
+                continue
+
+            roi_mask = mask[top:bottom, left:right]
+            if roi_mask.size <= 0:
+                continue
+            mask_overlap = float(cv2.countNonZero(roi_mask)) / float(max(1, box_area))
+            if mask_overlap < FAST_REVIEW_SCRATCH_MIN_MASK_OVERLAP:
+                continue
+            line_roi = line_mask[top:bottom, left:right]
+            active_area = int(cv2.countNonZero(line_roi))
+            if active_area <= 0:
+                continue
+            fill_ratio = float(active_area) / float(max(1, box_area))
+            if fill_ratio > FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_FILL_RATIO:
+                continue
+            total_length = float(sum(item["length"] for item in cluster))
+            if total_length < FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_TOTAL_LENGTH:
+                continue
+            diff_roi = line_response[top:bottom, left:right]
+            local_peak = float(np.percentile(diff_roi[line_roi > 0], 82.0))
+            if local_peak < FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_LOCAL_DELTA:
+                continue
+            if edge_distance is not None and not self.scratch_box_has_safe_edge_distance(
+                edge_distance,
+                left,
+                top,
+                right,
+                bottom,
+                min_edge_distance,
+                0.88,
+            ):
+                continue
+
+            signed_roi = signed_diff[top:bottom, left:right]
+            active_signed = signed_roi[line_roi > 0]
+            local_signed_delta = float(np.mean(active_signed)) if active_signed.size else 0.0
+            local_bright_delta = float(np.percentile(np.maximum(active_signed, 0), 85.0)) if active_signed.size else 0.0
+            local_dark_delta = float(np.percentile(np.maximum(-active_signed, 0), 85.0)) if active_signed.size else 0.0
+            score = total_length + local_peak * 4.0 + len(cluster) * 22.0
+            if score > best_score:
+                best_score = score
+                confidence = min(0.91, 0.78 + min(0.07, total_length / 700.0) + min(0.04, local_peak / 160.0))
+                best = {
+                    "type": "scratch",
+                    "confidence": round(confidence, 2),
+                    "x": int(left),
+                    "y": int(top),
+                    "w": int(box_w),
+                    "h": int(box_h),
+                    "area": int(active_area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "medium" if total_length >= 120 or length >= 70 else "light",
+                    "source": "pc_fast_curvilinear_scratch",
+                    "line_count": len(cluster),
+                    "total_line_length": round(total_length, 1),
+                    "fill_ratio": round(fill_ratio, 2),
+                    "local_signed_delta": round(local_signed_delta, 1),
+                    "local_bright_delta": round(local_bright_delta, 1),
+                    "local_dark_delta": round(local_dark_delta, 1),
+                    "strong_internal_scratch": bool(total_length >= 72.0 and fill_ratio <= 0.26),
+                    "candidates": [
+                        {
+                            "x": int(item["x"]),
+                            "y": int(item["y"]),
+                            "w": int(item["w"]),
+                            "h": int(item["h"]),
+                            "area": int(item["area"]),
+                            "length": int(item["length"]),
+                            "aspect_ratio": round(float(item["aspect_ratio"]), 2),
+                        }
+                        for item in cluster
+                    ],
+                }
+
+        return best
+
     def fast_cv_find_bright_crosshatch_scratch(self, gray, mask, edge_distance=None):
         local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=11, sigmaY=11)
         bright_diff = np.maximum(gray.astype(np.int16) - local_background.astype(np.int16), 0).astype(np.uint8)
@@ -3938,17 +4570,21 @@ class LensDefectHostApp:
 
     def fast_cv_find_center_cross_scratch(self, gray, mask, edge_distance=None):
         height, width = gray.shape[:2]
-        if width < 560 or height < 360:
+        if width < 180 or height < 120:
             return None
         frame_area = max(1, int(width * height))
         local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=9, sigmaY=9)
         bright_diff = np.maximum(gray.astype(np.int16) - local_background.astype(np.int16), 0).astype(np.uint8)
         dark_diff = np.maximum(local_background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
 
-        left_limit = int(width * FAST_REVIEW_CENTER_CROSS_MIN_X_RATIO)
-        right_limit = int(width * FAST_REVIEW_CENTER_CROSS_MAX_X_RATIO)
-        top_limit = int(height * FAST_REVIEW_CENTER_CROSS_MIN_Y_RATIO)
-        bottom_limit = int(height * FAST_REVIEW_CENTER_CROSS_MAX_Y_RATIO)
+        mask_points = cv2.findNonZero(mask)
+        if mask_points is None:
+            return None
+        mx, my, mw, mh = cv2.boundingRect(mask_points)
+        left_limit = max(0, int(mx + mw * 0.08))
+        right_limit = min(width, int(mx + mw * 0.92))
+        top_limit = max(0, int(my + mh * 0.08))
+        bottom_limit = min(height, int(my + mh * 0.92))
         if right_limit <= left_limit or bottom_limit <= top_limit:
             return None
 
@@ -4077,12 +4713,9 @@ class LensDefectHostApp:
             center_y = top + box_h / 2.0
             if center_x < left_limit or center_x > right_limit or center_y < top_limit or center_y > bottom_limit:
                 continue
-            if (
-                center_x < width * FAST_REVIEW_CENTER_CROSS_BOX_MIN_X_RATIO
-                or center_x > width * FAST_REVIEW_CENTER_CROSS_BOX_MAX_X_RATIO
-            ):
+            length = max(box_w, box_h)
+            if length < max(46, int(min(width, height) * 0.18)):
                 continue
-
             box_area = box_w * box_h
             box_area_ratio = float(box_area) / float(frame_area)
             if box_area_ratio > FAST_REVIEW_CENTER_CROSS_MAX_BOX_AREA_RATIO:
@@ -4115,8 +4748,26 @@ class LensDefectHostApp:
             ):
                 continue
 
-            length = max(box_w, box_h)
             aspect_ratio = float(length) / float(max(1, min(box_w, box_h)))
+            if aspect_ratio < 1.35:
+                continue
+            slender_ratio = float(slender_count) / float(max(1, len(cluster)))
+            weak_center_cross = local_peak <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_DELTA
+            if (
+                weak_center_cross
+                and total_line_length < FAST_REVIEW_CENTER_CROSS_WEAK_MIN_TOTAL_LENGTH
+                and (
+                    slender_ratio < FAST_REVIEW_CENTER_CROSS_WEAK_MIN_SLENDER_RATIO
+                    or fill_ratio < FAST_REVIEW_CENTER_CROSS_WEAK_MIN_FILL_RATIO
+                )
+            ):
+                continue
+            if (
+                aspect_ratio <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_ASPECT
+                and local_peak <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_DELTA
+                and slender_ratio <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_SLENDER_RATIO
+            ):
+                continue
             score = total_line_length + len(angle_groups) * 45.0 + slender_count * 18.0 + local_peak * 5.0
             if score > best_score:
                 best_score = score
@@ -4428,6 +5079,7 @@ class LensDefectHostApp:
             "added_stage2_count": int(stage2_result.get("added_stage2_count", 0)),
         }
         refined = self.normalize_detection_result(refined)
+        refined = self.filter_edge_defects_for_image(refined, payload, image)
         refined = self.stabilize_detection_result(refined)
         self.update_result_ui(refined, render_live_image=False)
 
@@ -4435,35 +5087,12 @@ class LensDefectHostApp:
         if cv2 is None or np is None:
             return None
 
-        image_w, image_h = image.size
-        result = result if isinstance(result, dict) else {}
-        frame = result.get("frame") or {}
-        source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or image_w
-        source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image_h
-
-        roi = result.get("roi") if isinstance(result.get("roi"), dict) else None
-        lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
-        if lens is not None and lens.get("found", True):
-            roi = lens
-        roi = self.valid_roi_or_none(roi, source_w, source_h)
-        if roi is not None and self.roi_is_low_confidence(roi, source_w, source_h):
-            roi = None
-        used_auto_roi = False
-        if roi is None or self.roi_is_full_frame(roi, source_w, source_h):
-            auto_roi = self.detect_lens_roi_from_image(image)
-            if auto_roi is not None:
-                roi = {
-                    "x": int(auto_roi["x"] * source_w / float(max(1, image_w))),
-                    "y": int(auto_roi["y"] * source_h / float(max(1, image_h))),
-                    "w": int(auto_roi["w"] * source_w / float(max(1, image_w))),
-                    "h": int(auto_roi["h"] * source_h / float(max(1, image_h))),
-                    "source": "pc_auto_roi",
-                }
-                used_auto_roi = True
-            else:
-                roi = self.center_fallback_roi(source_w, source_h)
+        roi, source_w, source_h = self.resolve_detection_roi_for_image(image, payload, result)
+        if not isinstance(roi, dict):
+            return None
         self._last_effective_roi = dict(roi)
 
+        image_w, image_h = image.size
         x_scale = float(image_w) / float(max(1, source_w))
         y_scale = float(image_h) / float(max(1, source_h))
         x = int(self._positive_int(roi.get("x")) * x_scale)
@@ -4478,17 +5107,10 @@ class LensDefectHostApp:
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
 
-        roi_rect = (x, y, w, h)
-        mask = self.build_lens_ellipse_mask(image, roi_rect) if used_auto_roi else None
-        if used_auto_roi and not self.lens_mask_is_reliable(mask, roi_rect):
-            mask = self.build_lens_contour_mask(image, (x, y, w, h))
-        if not self.lens_mask_is_reliable(mask, roi_rect):
-            mask = None
-        if mask is None:
-            mask = np.zeros((image_h, image_w), dtype=np.uint8)
-            center = (x + w // 2, y + h // 2)
-            axes = (max(2, int(w * 0.44)), max(2, int(h * 0.40)))
-            cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        mask = np.zeros((image_h, image_w), dtype=np.uint8)
+        center = (x + w // 2, y + h // 2)
+        axes = (max(2, int(w * 0.44)), max(2, int(h * 0.40)))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
         edge_ignore = max(8, int(min(w, h) * FAST_REVIEW_INNER_MASK_MARGIN_RATIO))
         distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
         inner_mask = np.where(distance > edge_ignore, 255, 0).astype(np.uint8)
@@ -4496,6 +5118,58 @@ class LensDefectHostApp:
             fallback_ignore = max(4, int(min(w, h) * 0.10))
             inner_mask = np.where(distance > fallback_ignore, 255, 0).astype(np.uint8)
         return inner_mask
+
+    def resolve_detection_roi_for_image(self, image, payload, result):
+        image_w, image_h = image.size
+        result = result if isinstance(result, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        frame = result.get("frame") or {}
+        source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or image_w
+        source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image_h
+
+        roi = result.get("roi") if isinstance(result.get("roi"), dict) else None
+        lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
+        if lens is not None and lens.get("found", True):
+            roi = lens
+        roi = self.valid_roi_or_none(roi, source_w, source_h)
+        if roi is not None and self.roi_is_low_confidence(roi, source_w, source_h):
+            roi = None
+
+        auto_roi = self.detect_lens_roi_from_image(image)
+        if auto_roi is not None:
+            scaled_auto = {
+                "x": int(auto_roi["x"] * source_w / float(max(1, image_w))),
+                "y": int(auto_roi["y"] * source_h / float(max(1, image_h))),
+                "w": int(auto_roi["w"] * source_w / float(max(1, image_w))),
+                "h": int(auto_roi["h"] * source_h / float(max(1, image_h))),
+                "source": "pc_auto_roi",
+            }
+            if roi is None or self.roi_is_full_frame(roi, source_w, source_h):
+                roi = scaled_auto
+            elif self.roi_should_prefer_auto(roi, scaled_auto, source_w, source_h):
+                roi = scaled_auto
+
+        if roi is None:
+            roi = self.center_fallback_roi(source_w, source_h)
+        return roi, source_w, source_h
+
+    def roi_should_prefer_auto(self, roi, auto_roi, source_w, source_h):
+        if not isinstance(roi, dict) or not isinstance(auto_roi, dict):
+            return False
+        if self.roi_is_full_frame(roi, source_w, source_h):
+            return True
+        current_area = self._positive_int(roi.get("w")) * self._positive_int(roi.get("h"))
+        auto_area = self._positive_int(auto_roi.get("w")) * self._positive_int(auto_roi.get("h"))
+        frame_area = max(1, source_w * source_h)
+        if current_area <= 0 or auto_area <= 0:
+            return False
+        current_ratio = float(current_area) / float(frame_area)
+        auto_ratio = float(auto_area) / float(frame_area)
+        if current_ratio >= 0.64 and 0.08 <= auto_ratio <= 0.62:
+            return True
+        if auto_area < current_area * 0.55 and auto_ratio >= 0.08:
+            return True
+        return False
 
     def build_stage2_analysis_mask(self, image, payload, result):
         return self.build_detection_mask(image, payload, result)
@@ -4944,11 +5618,67 @@ class LensDefectHostApp:
 
 
 def main():
-    if not acquire_single_instance_lock():
-        return
-    root = tk.Tk()
-    LensDefectHostApp(root)
-    root.mainloop()
+    if "--self-test-runtime" in sys.argv:
+        raise SystemExit(runtime_self_test())
+    try:
+        if not acquire_single_instance_lock():
+            return
+        root = tk.Tk()
+        LensDefectHostApp(root)
+        root.mainloop()
+    except Exception:
+        try:
+            log_path = PROJECT_ROOT / "outputs" / "host_startup_error.txt"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(traceback.format_exc(), encoding="utf-8")
+        except Exception:
+            pass
+        raise
+
+
+def runtime_self_test():
+    checks = {
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "executable": sys.executable,
+        "app_dir": str(APP_DIR),
+        "project_root": str(PROJECT_ROOT),
+        "cv2": None,
+        "numpy": None,
+        "stage2": None,
+        "yolo": None,
+    }
+    if cv2 is None:
+        checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
+    else:
+        checks["cv2"] = {"ok": True, "version": getattr(cv2, "__version__", "")}
+    if np is None:
+        checks["numpy"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
+    else:
+        checks["numpy"] = {"ok": True, "version": getattr(np, "__version__", "")}
+
+    stage2_ok = ensure_stage2_runtime_loaded()
+    checks["stage2"] = {"ok": bool(stage2_ok), "error": "" if stage2_ok else str(STAGE2_IMPORT_ERROR)}
+    try:
+        detector = YoloOnnxDetector(DEFAULT_YOLO_MODEL, DEFAULT_YOLO_LABELS)
+        checks["yolo"] = {
+            "ok": True,
+            "model": str(detector.model_path),
+            "labels": detector.labels,
+            "input_size": detector.input_size,
+        }
+    except Exception as exc:
+        checks["yolo"] = {"ok": False, "error": str(exc), "model": str(DEFAULT_YOLO_MODEL)}
+
+    ok = bool(checks["cv2"]["ok"] and checks["numpy"]["ok"] and checks["stage2"]["ok"] and checks["yolo"]["ok"])
+    text = json.dumps(checks, ensure_ascii=False, indent=2)
+    try:
+        output_path = PROJECT_ROOT / "outputs" / "runtime_self_test.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    print(text)
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ if not exist ".venv_windows_host\Scripts\python.exe" (
   --clean ^
   --onefile ^
   --windowed ^
+  --paths "windows_host" ^
+  --add-data "windows_host\stage2_anomaly.py;." ^
+  --collect-all "cv2" ^
+  --collect-all "numpy" ^
+  --hidden-import "stage2_anomaly" ^
   --name "LensDefectHost" ^
   "windows_host\lens_defect_host.py"
 
