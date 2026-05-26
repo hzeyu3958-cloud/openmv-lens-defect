@@ -56,7 +56,9 @@ def main():
     exported = Path(trained.export(format="onnx", imgsz=int(args.image_size), opset=12))
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exported, output)
-    labels = output.with_name("lens_yolo_labels.txt")
+    labels = output.with_name(output.stem + "_labels.txt")
+    if output.name == "lens_yolo.onnx":
+        labels = output.with_name("lens_yolo_labels.txt")
     labels.write_text("scratch\nstain\n", encoding="utf-8")
     metadata = {
         "input_size": int(args.image_size),
@@ -65,7 +67,10 @@ def main():
         "batch": int(args.batch),
         "data": str(data_yaml),
     }
-    output.with_name("lens_yolo_meta.json").write_text(
+    meta = output.with_name(output.stem + "_meta.json")
+    if output.name == "lens_yolo.onnx":
+        meta = output.with_name("lens_yolo_meta.json")
+    meta.write_text(
         json.dumps(metadata, ensure_ascii=True, indent=2),
         encoding="utf-8",
     )

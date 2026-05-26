@@ -17,7 +17,7 @@ if not exist ".venv_windows_host\Scripts\python.exe" (
 ".venv_windows_host\Scripts\pyinstaller.exe" ^
   --noconfirm ^
   --clean ^
-  --onefile ^
+  --onedir ^
   --windowed ^
   --paths "windows_host" ^
   --add-data "windows_host\stage2_anomaly.py;." ^
@@ -31,8 +31,14 @@ if not exist "release" (
     mkdir "release"
 )
 
-copy /Y "dist\LensDefectHost.exe" "release\LensDefectHost.exe" >nul
+if exist "dist\LensDefectHost\LensDefectHost.exe" (
+    xcopy /E /I /Y "dist\LensDefectHost\*" "release\" >nul
+) else (
+    copy /Y "dist\LensDefectHost.exe" "release\LensDefectHost.exe" >nul
+)
 del /F /Q "dist\LensDefectHost.exe" >nul 2>nul
+rmdir /S /Q "dist" >nul 2>nul
+rmdir /S /Q "build" >nul 2>nul
 del /F /Q "LensDefectHost.exe" >nul 2>nul
 del /F /Q "LensDefectHost_fixed.exe" >nul 2>nul
 del /F /Q "release\LensDefectHost_fixed.exe" >nul 2>nul

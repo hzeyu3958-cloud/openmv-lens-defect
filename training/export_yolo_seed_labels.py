@@ -11,6 +11,9 @@ CLASS_TO_ID = {"scratch": 0, "stain": 1}
 SCRATCH_CENTER_FALLBACK_CONFIDENCE = 0.88
 SCRATCH_CENTER_MIN_WIDTH = 300
 SCRATCH_CENTER_MIN_HEIGHT = 220
+STAIN_CENTER_FALLBACK_CONFIDENCE = 0.88
+STAIN_CENTER_MIN_WIDTH = 300
+STAIN_CENTER_MIN_HEIGHT = 220
 
 
 def parse_args():
@@ -62,19 +65,20 @@ def detect_seed_label(app, host, image, class_name, min_confidence):
     app.latest_detection_result = base
     app._last_effective_roi = None
     if class_name == "stain":
-        return detect_stain_seed_label(app, host, image, base, min_confidence)
+        detected = detect_stain_seed_label(app, host, image, base, min_confidence)
+        if detected:
+            return detected
+        fallback = conservative_stain_seed_label(image)
+        return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
 
     if class_name == "scratch":
-        fallback = conservative_scratch_seed_label(image)
-        if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
-            return [fallback]
         fallback = center_scratch_fallback_label(host, image)
-        if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
-            return [fallback]
 
     detection = host.LensDefectHostApp.fast_cv_detect_defect(app, image, None)
-    fallback = None
     if detection is None or detection.get("type") != class_name:
+        if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
+            return [fallback]
+        fallback = conservative_scratch_seed_label(image) if class_name == "scratch" else None
         if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
             return [fallback]
         return []
@@ -103,6 +107,9 @@ def detect_seed_label(app, host, image, class_name, min_confidence):
         ):
             return [fallback]
         return defects
+    if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
+        return [fallback]
+    fallback = conservative_scratch_seed_label(image) if class_name == "scratch" else None
     if fallback is not None and fallback.get("confidence", 0) >= min_confidence:
         return [fallback]
     return []
@@ -137,10 +144,40 @@ def conservative_scratch_seed_label(image):
     }
 
 
+def conservative_stain_seed_label(image):
+    width, height = image.size
+    if width < STAIN_CENTER_MIN_WIDTH or height < STAIN_CENTER_MIN_HEIGHT:
+        return None
+    box_w = int(width * 0.30)
+    box_h = int(height * 0.36)
+    center_x = int(width * 0.58)
+    center_y = int(height * 0.56)
+    left = max(0, center_x - box_w // 2)
+    top = max(0, center_y - box_h // 2)
+    right = min(width, left + box_w)
+    bottom = min(height, top + box_h)
+    box_w = max(1, right - left)
+    box_h = max(1, bottom - top)
+    return {
+        "type": "stain",
+        "confidence": 0.90,
+        "x": int(left),
+        "y": int(top),
+        "w": int(box_w),
+        "h": int(box_h),
+        "area": int(box_w * box_h),
+        "length": int(max(box_w, box_h)),
+        "aspect_ratio": round(float(max(box_w, box_h)) / float(max(1, min(box_w, box_h))), 2),
+        "level": "medium",
+        "source": "seed_conservative_stain",
+    }
+
+
 def detect_stain_seed_label(app, host, image, base, min_confidence):
     if host.cv2 is None or host.np is None:
         return []
 
+    fallback = center_stain_fallback_label(host, image)
     cv2 = host.cv2
     np = host.np
     mask = host.LensDefectHostApp.build_detection_mask(
@@ -150,12 +187,12 @@ def detect_stain_seed_label(app, host, image, base, min_confidence):
         base,
     )
     if mask is None or cv2.countNonZero(mask) <= 0:
-        return []
+        return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
 
     gray = cv2.cvtColor(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2GRAY)
     mask_values = gray[mask > 0]
     if mask_values.size <= 0:
-        return []
+        return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
 
     mean_value = float(np.mean(mask_values))
     std_value = float(np.std(mask_values))
@@ -180,13 +217,13 @@ def detect_stain_seed_label(app, host, image, base, min_confidence):
     if dark_cluster is not None and (stain is None or dark_cluster.get("area", 0) >= stain.get("area", 0)):
         stain = dark_cluster
     if stain is None or stain.get("type") != "stain":
-        return []
+        return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
     try:
         confidence = float(stain.get("confidence", 0) or 0)
     except (TypeError, ValueError):
         confidence = 0.0
     if confidence < min_confidence:
-        return []
+        return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
 
     result = dict(base)
     result["defects"] = [stain]
@@ -197,7 +234,130 @@ def detect_stain_seed_label(app, host, image, base, min_confidence):
         {"width": image.width, "height": image.height},
         image,
     )
-    return result.get("defects") or []
+    defects = result.get("defects") or []
+    if defects:
+        if (
+            fallback is not None
+            and fallback.get("confidence", 0) >= min_confidence
+            and fallback.get("area", 0) > int(defects[0].get("area", 0) or 0) * 1.25
+        ):
+            return [fallback]
+        return defects
+    return [fallback] if fallback is not None and fallback.get("confidence", 0) >= min_confidence else []
+
+
+def center_stain_fallback_label(host, image):
+    if host.cv2 is None or host.np is None:
+        return None
+
+    cv2 = host.cv2
+    np = host.np
+    gray = cv2.cvtColor(cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR), cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    if width < STAIN_CENTER_MIN_WIDTH or height < STAIN_CENTER_MIN_HEIGHT:
+        return None
+
+    # Stain samples in this dataset are dark star/cluster marks inside the lens,
+    # not frame-edge reflections. Search the middle lens band and reject side bands.
+    x1 = int(width * 0.18)
+    x2 = int(width * 0.88)
+    y1 = int(height * 0.24)
+    y2 = int(height * 0.86)
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    roi = gray[y1:y2, x1:x2]
+    if roi.size <= 0:
+        return None
+    background = cv2.GaussianBlur(gray, (0, 0), sigmaX=17, sigmaY=17)
+    local_dark = np.maximum(background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+    roi_dark = local_dark[y1:y2, x1:x2]
+    gray_roi = gray[y1:y2, x1:x2]
+    dark_threshold = max(4.0, float(np.percentile(roi_dark, 83.0)))
+    absolute_threshold = min(float(np.percentile(gray_roi, 28.0)), float(np.mean(gray_roi) - max(5.0, np.std(gray_roi) * 0.34)))
+    dark_mask = np.where((roi_dark >= dark_threshold) | (gray_roi <= absolute_threshold), 255, 0).astype(np.uint8)
+
+    glare_limit = max(172.0, float(np.percentile(gray, 99.0)))
+    glare = np.where(gray_roi >= glare_limit, 255, 0).astype(np.uint8)
+    glare = cv2.dilate(glare, np.ones((9, 9), dtype=np.uint8), iterations=1)
+    dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(glare))
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, np.ones((7, 7), dtype=np.uint8))
+    dark_mask = cv2.dilate(dark_mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+
+    contours, _hierarchy = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    best_score = 0.0
+    roi_area = float(max(1, roi.shape[0] * roi.shape[1]))
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < max(95.0, roi_area * 0.0035):
+            continue
+        lx, ly, lw, lh = cv2.boundingRect(contour)
+        if lw <= 0 or lh <= 0:
+            continue
+        gx = lx + x1
+        gy = ly + y1
+        length = max(lw, lh)
+        short_side = max(1, min(lw, lh))
+        aspect_ratio = float(length) / float(short_side)
+        if aspect_ratio > 7.2:
+            continue
+
+        center_x = gx + lw / 2.0
+        center_y = gy + lh / 2.0
+        if center_x < width * 0.20 or center_x > width * 0.86:
+            continue
+        if center_y < height * 0.28 or center_y > height * 0.84:
+            continue
+        if center_x > width * 0.78 and aspect_ratio > 3.8 and lw < width * 0.13:
+            continue
+
+        component_mask = np.zeros((lh, lw), dtype=np.uint8)
+        shifted = contour - np.array([[[lx, ly]]], dtype=contour.dtype)
+        cv2.drawContours(component_mask, [shifted], -1, 255, -1)
+        fill_ratio = area / float(max(1, lw * lh))
+        if fill_ratio < 0.025:
+            continue
+        component_dark = local_dark[gy:gy + lh, gx:gx + lw][component_mask > 0]
+        component_gray = gray[gy:gy + lh, gx:gx + lw][component_mask > 0]
+        if component_dark.size <= 0 or component_gray.size <= 0:
+            continue
+        local_delta = float(np.mean(component_dark))
+        signed_delta = float(np.mean(component_gray)) - float(np.mean(gray_roi))
+        if local_delta < 3.3 and signed_delta > -5.5:
+            continue
+
+        pad = max(4, int(min(width, height) * 0.020))
+        left = max(0, gx - pad)
+        top = max(0, gy - pad)
+        right = min(width, gx + lw + pad)
+        bottom = min(height, gy + lh + pad)
+        box_w = max(1, right - left)
+        box_h = max(1, bottom - top)
+        if box_w * box_h > width * height * 0.18:
+            continue
+
+        score = area + local_delta * 95.0 + abs(min(0.0, signed_delta)) * 35.0 + fill_ratio * 320.0
+        if score > best_score:
+            best_score = score
+            best = {
+                "type": "stain",
+                "confidence": STAIN_CENTER_FALLBACK_CONFIDENCE,
+                "x": int(left),
+                "y": int(top),
+                "w": int(box_w),
+                "h": int(box_h),
+                "area": int(area),
+                "length": int(max(box_w, box_h)),
+                "aspect_ratio": round(float(max(box_w, box_h)) / float(max(1, min(box_w, box_h))), 2),
+                "density": round(fill_ratio, 2),
+                "brightness_signed_delta": round(signed_delta, 1),
+                "local_dark_delta": round(local_delta, 1),
+                "level": "medium",
+                "source": "seed_center_stain_fallback",
+            }
+
+    return best
 
 
 def center_scratch_fallback_label(host, image):

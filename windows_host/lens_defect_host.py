@@ -5,6 +5,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -50,6 +51,7 @@ merge_with_rule_defects = None
 STAGE2_READY = False
 SINGLE_INSTANCE_MUTEX_HANDLE = None
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\LensDefectHostOpenMVN6"
+SINGLE_INSTANCE_LOCK_FILE_HANDLE = None
 
 
 APP_TITLE = "OpenMV N6 眼镜片缺陷识别上位机"
@@ -65,6 +67,7 @@ AUTO_START_RECEIVE = False
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent if APP_DIR.name in ("windows_host", "dist", "release") else APP_DIR
+SINGLE_INSTANCE_LOCK_FILE = Path(tempfile.gettempdir()) / "LensDefectHostOpenMVN6.lock"
 HISTORY_DIR = APP_DIR / "history"
 HISTORY_JSONL = HISTORY_DIR / "detection_history.jsonl"
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "dataset"
@@ -79,6 +82,8 @@ SPLIT_TARGET_RATIOS = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_RECOMMENDED_IMAGES_PER_CLASS = 100
 HOST_DEFECT_CONFIRM_UPDATES = 1
 HOST_NORMAL_CONFIRM_UPDATES = 2
+HOST_DEFECT_CLASS_CONFIRM_UPDATES = 2
+HOST_BLACK_STAIN_TO_SCRATCH_CONFIRM_UPDATES = 3
 STAGE2_MIN_INTERVAL_SECONDS = 1.2
 FAST_REVIEW_ENABLED = True
 FAST_REVIEW_PROMOTE_NORMAL = True
@@ -120,9 +125,12 @@ FAST_REVIEW_BRIGHT_SCRATCH_STRONG_MIN_LENGTH = 82.0
 FAST_REVIEW_BRIGHT_SCRATCH_MAX_BOX_AREA_RATIO = 0.075
 FAST_REVIEW_BRIGHT_SCRATCH_MAX_FILL_RATIO = 0.36
 FAST_REVIEW_EDGE_FILTER_STAIN_MIN_OVERLAP = 0.72
+FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_MIN_OVERLAP = 0.66
 FAST_REVIEW_EDGE_FILTER_SCRATCH_MIN_OVERLAP = 0.52
 FAST_REVIEW_EDGE_FILTER_STAIN_CENTER_DISTANCE_RATIO = 0.055
+FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_CENTER_DISTANCE_RATIO = 0.040
 FAST_REVIEW_EDGE_FILTER_STAIN_BOX_DISTANCE_RATIO = 0.040
+FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_BOX_DISTANCE_RATIO = 0.032
 FAST_REVIEW_EDGE_FILTER_STAIN_ROI_MARGIN_RATIO = 0.12
 FAST_REVIEW_EDGE_FILTER_STAIN_EDGE_ASPECT = 1.40
 FAST_REVIEW_EDGE_FILTER_SCRATCH_CENTER_DISTANCE_RATIO = 0.040
@@ -174,6 +182,27 @@ FAST_REVIEW_DARK_STAIN_SOLID_MIN_FILL = 0.24
 FAST_REVIEW_DARK_STAIN_MAX_WEAK_AREA_RATIO = 0.72
 FAST_REVIEW_DARK_STAIN_MAX_WEAK_BOX_RATIO = 1.05
 FAST_REVIEW_DARK_STAIN_WEAK_LOCAL_DELTA = 5.2
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_LOCAL_DELTA = 5.6
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MIN_SIGNED_DELTA = -11.5
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_SIGNED_DELTA = -4.0
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_ANGLE_GROUPS = 2
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_ASPECT = 1.90
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_LENGTH = 105
+FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_AREA = 2600
+FAST_REVIEW_DARK_STAIN_SAFE_MIN_CONFIDENCE = 0.90
+FAST_REVIEW_DARK_STAIN_SAFE_MIN_AREA = 900
+FAST_REVIEW_DARK_STAIN_SAFE_MIN_LENGTH = 48
+FAST_REVIEW_DARK_STAIN_SAFE_MIN_DENSITY = 0.40
+FAST_REVIEW_DARK_STAIN_SAFE_MAX_DENSITY = 0.68
+FAST_REVIEW_DARK_STAIN_SAFE_STRONG_SIGNED_DELTA = -24.0
+FAST_REVIEW_DARK_STAIN_SAFE_STRONG_LOCAL_DELTA = 12.0
+FAST_REVIEW_DARK_STAIN_SAFE_STAR_SIGNED_DELTA = -30.0
+FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_AREA = 1800
+FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_LENGTH = 82
+FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_ASPECT = 2.0
+FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_DENSITY = 0.55
+FAST_REVIEW_DARK_STAIN_SAFE_MIN_MASK_OVERLAP = 0.58
+FAST_REVIEW_DARK_STAIN_SAFE_BOX_DISTANCE_RATIO = 0.014
 FAST_REVIEW_WEAK_SCRATCH_MAX_AREA_RATIO = 0.006
 FAST_REVIEW_WEAK_SCRATCH_MAX_BOX_RATIO = 0.025
 FAST_REVIEW_ROI_CONTAINMENT_TOLERANCE_RATIO = 0.025
@@ -207,6 +236,45 @@ FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA = 5.0
 FAST_REVIEW_CENTER_CROSS_MAX_BOX_AREA_RATIO = 0.20
 FAST_REVIEW_CENTER_CROSS_MAX_FILL_RATIO = 0.43
 FAST_REVIEW_CENTER_CROSS_MAX_VERTICAL_RATIO = 0.48
+FAST_REVIEW_DARK_STAR_STAIN_MAX_BRIGHT_DELTA = 13.0
+FAST_REVIEW_DARK_STAR_STAIN_MIN_DARK_FRACTION = 0.34
+FAST_REVIEW_BLACK_STAIN_MIN_DARK_FRACTION = 0.22
+FAST_REVIEW_BLACK_STAIN_MIN_FILL_RATIO = 0.12
+FAST_REVIEW_BLACK_STAIN_MAX_BRIGHT_DELTA = 20.0
+FAST_REVIEW_BLACK_STAIN_MAX_ASPECT = 3.00
+FAST_REVIEW_BLACK_STAIN_MIN_ANGLE_GROUPS = 3
+FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_DARK_FRACTION = 0.08
+FAST_REVIEW_BLACK_STAIN_RADIAL_MAX_BRIGHT_FRACTION = 0.46
+FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_LINES = 3
+FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_ANGLE_GROUPS = 2
+FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_TOTAL_LENGTH = 42.0
+FAST_REVIEW_BLACK_STAIN_RADIAL_MAX_SIGNED_DELTA = 8.0
+FAST_REVIEW_BLACK_STAIN_LOCK_SECONDS = 1.15
+FAST_REVIEW_BLACK_STAIN_LOCK_MIN_IOU = 0.035
+FAST_REVIEW_BLACK_STAIN_LOCK_MAX_CENTER_DISTANCE_RATIO = 0.62
+FAST_REVIEW_DARK_X_STAIN_MIN_LINES = 4
+FAST_REVIEW_DARK_X_STAIN_MIN_ANGLE_GROUPS = 3
+FAST_REVIEW_DARK_X_STAIN_MIN_TOTAL_LENGTH = 130.0
+FAST_REVIEW_DARK_X_STAIN_MIN_DARK_FRACTION = 0.22
+FAST_REVIEW_DARK_X_STAIN_MAX_BRIGHT_FRACTION = 0.30
+FAST_REVIEW_DARK_X_STAIN_MIN_BOX_RATIO = 0.018
+FAST_REVIEW_DARK_X_STAIN_MAX_BOX_RATIO = 0.18
+FAST_REVIEW_DARK_X_STAIN_MAX_SIGNED_DELTA = -4.5
+FAST_REVIEW_DARK_X_STAIN_MAX_ASPECT = 1.95
+FAST_REVIEW_DARK_STAR_LINE_MIN_LINES = 7
+FAST_REVIEW_DARK_STAR_LINE_MIN_ANGLE_GROUPS = 3
+FAST_REVIEW_DARK_STAR_LINE_MIN_TOTAL_LENGTH = 250.0
+FAST_REVIEW_DARK_STAR_LINE_MIN_BOX_AREA_RATIO = 0.020
+FAST_REVIEW_DARK_STAR_LINE_MAX_BOX_AREA_RATIO = 0.135
+FAST_REVIEW_DARK_STAR_LINE_MIN_ASPECT = 0.45
+FAST_REVIEW_DARK_STAR_LINE_MAX_ASPECT = 3.4
+FAST_REVIEW_DARK_STAR_LINE_MIN_DARK_FRACTION = 0.18
+FAST_REVIEW_DARK_STAR_LINE_MIN_SIGNED_DELTA = -5.0
+FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_P95 = 165.0
+FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_DELTA = 42.0
+FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_FRACTION = 0.14
+FAST_REVIEW_DARK_STAR_LINE_MAX_X_RATIO = 0.78
+FAST_REVIEW_DARK_STAR_LINE_MAX_Y_RATIO = 0.82
 FAST_REVIEW_GLARE_MASK_PERCENTILE = 97.5
 FAST_REVIEW_GLARE_MASK_MIN_GRAY = 175.0
 FAST_REVIEW_STAR_SCRATCH_MIN_LINES = 4
@@ -215,6 +283,11 @@ FAST_REVIEW_STAR_SCRATCH_MIN_FILL = 0.12
 FAST_REVIEW_STAR_SCRATCH_MAX_FILL = 0.62
 FAST_REVIEW_BRIGHT_SCRATCH_MIN_SIGNED_DELTA = 1.2
 FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA = -0.8
+FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_ANGLE_GROUPS = 4
+FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_LOCAL_DELTA = 9.0
+FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_SIGNED_DELTA = 12.0
+FAST_REVIEW_CENTER_RADIAL_STAIN_MAX_SIGNED_DELTA = -6.0
+FAST_REVIEW_CENTER_RADIAL_STAIN_MAX_BOX_RATIO = 0.16
 FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_TOTAL_LENGTH = 54.0
 FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_COMPONENTS = 2
 FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_ASPECT = 1.55
@@ -233,6 +306,9 @@ YOLO_ROI_PADDING_RATIO = 0.18
 YOLO_ROI_MIN_SIZE_RATIO = 0.28
 YOLO_ROI_MAX_AREA_RATIO = 0.70
 YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES = 8
+YOLO_AUTO_ROI_SIDE_CLIP_MARGIN_RATIO = 0.025
+YOLO_AUTO_ROI_EDGE_PARTIAL_SIZE_RATIO = 0.92
+YOLO_AUTO_ROI_MAX_CENTER_X_DRIFT_RATIO = 0.27
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
@@ -332,11 +408,41 @@ def metadata_path(dataset_dir):
 
 
 def acquire_single_instance_lock():
-    global SINGLE_INSTANCE_MUTEX_HANDLE
+    global SINGLE_INSTANCE_MUTEX_HANDLE, SINGLE_INSTANCE_LOCK_FILE_HANDLE
     if sys.platform != "win32":
         return True
     kernel32 = ctypes.windll.kernel32
-    handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = (
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    )
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    lock_path = str(SINGLE_INSTANCE_LOCK_FILE)
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    CREATE_ALWAYS = 2
+    FILE_ATTRIBUTE_TEMPORARY = 0x00000100
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    file_handle = kernel32.CreateFileW(
+        ctypes.c_wchar_p(lock_path),
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        None,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY,
+        None,
+    )
+    if file_handle is None or file_handle == INVALID_HANDLE_VALUE:
+        return False
+    SINGLE_INSTANCE_LOCK_FILE_HANDLE = file_handle
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, True, SINGLE_INSTANCE_MUTEX_NAME)
     if not handle:
         return True
     already_exists = kernel32.GetLastError() == 183
@@ -876,6 +982,8 @@ class LensDefectHostApp:
         self.fast_review_candidate_count = 0
         self.last_pc_defect_result = None
         self.last_pc_defect_time = 0.0
+        self.last_black_stain_result = None
+        self.last_black_stain_time = 0.0
         self.stable_detection_result = None
         self.pending_detection_class = None
         self.pending_detection_count = 0
@@ -2284,6 +2392,13 @@ class LensDefectHostApp:
         if defect.get("type") not in SUPPORTED_DEFECT_TYPES:
             return False
 
+        if self.defect_is_safe_center_radial_stain(defect, source_w, source_h):
+            return True
+        if self.defect_is_safe_dark_star_line_stain(defect, source_w, source_h):
+            return True
+        if self.defect_is_safe_dark_x_stain(defect, source_w, source_h):
+            return True
+
         if not self.defect_center_is_inside_middle_zone(defect, roi, source_w, source_h):
             return False
 
@@ -2301,10 +2416,33 @@ class LensDefectHostApp:
         y = max(0, min(y, image_h - 1))
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
+        defect_source = str(defect.get("source", ""))
         high_confidence_yolo_roi = (
-            defect_type == "scratch"
-            and str(defect.get("source", "")) == "yolo_onnx_roi"
+            defect_source == "yolo_onnx_roi"
             and self.confidence_float(defect) >= FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE
+        )
+        high_confidence_yolo_roi_scratch = high_confidence_yolo_roi and defect_type == "scratch"
+        safe_middle_dark_scratch = (
+            defect_type == "scratch"
+            and defect_source == "pc_fast_dark_scratch"
+            and self.confidence_float(defect) >= 0.90
+            and self.dark_stain_candidate_looks_like_weak_scratch_shadow(defect, mask)
+        )
+        strong_middle_stain = (
+            defect_type == "stain"
+            and defect_source in ("pc_fast_dark_stain", "yolo_onnx_roi")
+            and self.confidence_float(defect) >= 0.88
+        )
+        strong_middle_dark_stain = (
+            defect_type == "stain"
+            and defect_source == "pc_fast_dark_stain"
+            and self.confidence_float(defect) >= 0.90
+            and float(defect.get("local_dark_delta", 0) or 0) >= 12.0
+            and float(defect.get("brightness_signed_delta", 0) or 0) <= -12.0
+        )
+        safe_middle_dark_stain = (
+            defect_type == "stain"
+            and self.dark_stain_candidate_is_safe_middle_defect(defect, roi, source_w, source_h)
         )
         if self.defect_looks_like_side_glare_line(
             defect,
@@ -2317,7 +2455,7 @@ class LensDefectHostApp:
             scaled_box=(x, y, w, h),
         ):
             return False
-        if not high_confidence_yolo_roi and self.defect_looks_like_internal_reflection(
+        if not high_confidence_yolo_roi_scratch and self.defect_looks_like_internal_reflection(
             defect,
             display_gray=display_gray,
             image_w=image_w,
@@ -2325,17 +2463,21 @@ class LensDefectHostApp:
             scaled_box=(x, y, w, h),
         ):
             return False
-        if not high_confidence_yolo_roi and self.defect_looks_like_reflection_shadow(
+        if (
+            not high_confidence_yolo_roi_scratch
+            and not safe_middle_dark_stain
+            and self.defect_looks_like_reflection_shadow(
             defect,
             display_gray=display_gray,
             image_w=image_w,
             image_h=image_h,
             scaled_box=(x, y, w, h),
+            )
         ):
             return False
-        if not self.defect_center_is_inside_inner_roi(defect, roi, source_w, source_h):
+        if not safe_middle_dark_stain and not self.defect_center_is_inside_inner_roi(defect, roi, source_w, source_h):
             return False
-        if self.defect_box_near_roi_edge(defect, roi, source_w, source_h):
+        if not safe_middle_dark_stain and self.defect_box_near_roi_edge(defect, roi, source_w, source_h):
             return False
 
         roi_mask = mask[y:y + h, x:x + w]
@@ -2373,6 +2515,10 @@ class LensDefectHostApp:
             min_overlap = FAST_REVIEW_EDGE_FILTER_SCRATCH_MIN_OVERLAP
         else:
             min_overlap = FAST_REVIEW_EDGE_FILTER_STAIN_MIN_OVERLAP
+            if safe_middle_dark_stain:
+                min_overlap = FAST_REVIEW_DARK_STAIN_SAFE_MIN_MASK_OVERLAP
+            elif strong_middle_dark_stain and not touches_roi_edge:
+                min_overlap = FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_MIN_OVERLAP
         if overlap < min_overlap and not high_confidence_yolo_roi:
             return False
 
@@ -2388,23 +2534,35 @@ class LensDefectHostApp:
 
         min_center_distance = max(6, int(min(image_w, image_h) * 0.018))
         if defect_type == "stain":
-            min_center_distance = max(
-                min_center_distance,
-                int(min(image_w, image_h) * FAST_REVIEW_EDGE_FILTER_STAIN_CENTER_DISTANCE_RATIO),
+            stain_distance_ratio = (
+                FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_CENTER_DISTANCE_RATIO
+                if strong_middle_stain
+                else FAST_REVIEW_EDGE_FILTER_STAIN_CENTER_DISTANCE_RATIO
             )
+            min_center_distance = max(min_center_distance, int(min(image_w, image_h) * stain_distance_ratio))
         elif defect_type == "scratch":
             min_center_distance = max(
                 min_center_distance,
                 int(min(image_w, image_h) * FAST_REVIEW_EDGE_FILTER_SCRATCH_CENTER_DISTANCE_RATIO),
             )
         if distance[center_y, center_x] < min_center_distance and not high_confidence_yolo_roi:
-            return False
+            if not safe_middle_dark_stain:
+                return False
 
         if defect_type == "stain":
             inner = distance[y:y + h, x:x + w]
             if inner.size <= 0:
                 return False
-            min_box_distance = max(4, int(min(image_w, image_h) * FAST_REVIEW_EDGE_FILTER_STAIN_BOX_DISTANCE_RATIO))
+            stain_box_distance_ratio = (
+                FAST_REVIEW_DARK_STAIN_SAFE_BOX_DISTANCE_RATIO
+                if safe_middle_dark_stain
+                else (
+                    FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_BOX_DISTANCE_RATIO
+                    if strong_middle_dark_stain and not touches_roi_edge
+                    else FAST_REVIEW_EDGE_FILTER_STAIN_BOX_DISTANCE_RATIO
+                )
+            )
+            min_box_distance = max(4, int(min(image_w, image_h) * stain_box_distance_ratio))
             if float(np.percentile(inner, 60)) < min_box_distance:
                 return False
         elif defect_type == "scratch":
@@ -2412,6 +2570,8 @@ class LensDefectHostApp:
             if inner.size <= 0:
                 return False
             min_box_distance = max(5, int(min(image_w, image_h) * FAST_REVIEW_EDGE_FILTER_SCRATCH_BOX_DISTANCE_RATIO))
+            if safe_middle_dark_scratch:
+                min_box_distance = max(4, int(min(image_w, image_h) * 0.025))
             source = str(defect.get("source", ""))
             is_line_source = source in (
                 "pc_fast_review_line",
@@ -2429,6 +2589,192 @@ class LensDefectHostApp:
                 return False
 
         return True
+
+    def dark_stain_candidate_is_safe_middle_defect(self, defect, roi, source_w, source_h):
+        if not isinstance(defect, dict):
+            return False
+        if defect.get("type") != "stain" or str(defect.get("source", "")) != "pc_fast_dark_stain":
+            return False
+        if self.confidence_float(defect) < FAST_REVIEW_DARK_STAIN_SAFE_MIN_CONFIDENCE:
+            return False
+        if not self.defect_center_is_inside_middle_zone(defect, roi, source_w, source_h):
+            return False
+
+        area = float(defect.get("area", 0) or 0)
+        length = float(defect.get("length", 0) or 0)
+        density = float(defect.get("density", 0) or 0)
+        if area < FAST_REVIEW_DARK_STAIN_SAFE_MIN_AREA or length < FAST_REVIEW_DARK_STAIN_SAFE_MIN_LENGTH:
+            return False
+        if density < FAST_REVIEW_DARK_STAIN_SAFE_MIN_DENSITY or density > FAST_REVIEW_DARK_STAIN_SAFE_MAX_DENSITY:
+            return False
+
+        signed_delta = float(defect.get("brightness_signed_delta", 0) or 0)
+        local_dark = float(defect.get("local_dark_delta", 0) or 0)
+        angle_groups = int(defect.get("angle_groups", 0) or 0)
+        aspect_ratio = float(defect.get("aspect_ratio", 0) or 0)
+        compact_dark_stain = (
+            signed_delta <= FAST_REVIEW_DARK_STAIN_SAFE_STRONG_SIGNED_DELTA
+            and local_dark >= FAST_REVIEW_DARK_STAIN_SAFE_STRONG_LOCAL_DELTA
+            and angle_groups >= 1
+        )
+        star_shadow_stain = (
+            signed_delta <= FAST_REVIEW_DARK_STAIN_SAFE_STAR_SIGNED_DELTA
+            and area >= FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_AREA
+            and length >= FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_LENGTH
+            and aspect_ratio >= FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_ASPECT
+            and density >= FAST_REVIEW_DARK_STAIN_SAFE_STAR_MIN_DENSITY
+        )
+        return compact_dark_stain or star_shadow_stain
+
+    def defect_is_safe_dark_star_line_stain(self, defect, source_w, source_h):
+        if defect.get("type") != "stain":
+            return False
+        if str(defect.get("source", "")) != "pc_fast_dark_star_stain_lines":
+            return False
+        if self.confidence_float(defect) < 0.90:
+            return False
+        if source_w <= 0 or source_h <= 0:
+            return False
+
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+        center_x = (x + w / 2.0) / float(source_w)
+        center_y = (y + h / 2.0) / float(source_h)
+        if center_x < 0.04 or center_x > FAST_REVIEW_DARK_STAR_LINE_MAX_X_RATIO:
+            return False
+        if center_y < 0.03 or center_y > FAST_REVIEW_DARK_STAR_LINE_MAX_Y_RATIO:
+            return False
+        if x <= source_w * 0.01 or y <= source_h * 0.01:
+            return False
+        if x + w >= source_w * 0.90 or y + h >= source_h * 0.90:
+            return False
+
+        line_count = int(defect.get("line_count", 0) or 0)
+        angle_groups = int(defect.get("angle_groups", 0) or 0)
+        total_length = float(defect.get("total_line_length", 0) or 0)
+        if line_count < FAST_REVIEW_DARK_STAR_LINE_MIN_LINES:
+            return False
+        if angle_groups < FAST_REVIEW_DARK_STAR_LINE_MIN_ANGLE_GROUPS:
+            return False
+        if total_length < FAST_REVIEW_DARK_STAR_LINE_MIN_TOTAL_LENGTH:
+            return False
+
+        box_ratio = float(w * h) / float(max(1, source_w * source_h))
+        if box_ratio < FAST_REVIEW_DARK_STAR_LINE_MIN_BOX_AREA_RATIO or box_ratio > FAST_REVIEW_DARK_STAR_LINE_MAX_BOX_AREA_RATIO:
+            return False
+        aspect_ratio = float(defect.get("aspect_ratio", 0) or 0)
+        if aspect_ratio < FAST_REVIEW_DARK_STAR_LINE_MIN_ASPECT or aspect_ratio > FAST_REVIEW_DARK_STAR_LINE_MAX_ASPECT:
+            return False
+        dark_fraction = float(defect.get("density", 0) or 0)
+        signed_delta = float(defect.get("brightness_signed_delta", 0) or 0)
+        if (
+            signed_delta > FAST_REVIEW_DARK_STAR_LINE_MIN_SIGNED_DELTA
+            and dark_fraction < FAST_REVIEW_DARK_STAR_LINE_MIN_DARK_FRACTION
+        ):
+            return False
+        return True
+
+    def defect_is_safe_center_radial_stain(self, defect, source_w, source_h):
+        if defect.get("type") != "stain":
+            return False
+        if str(defect.get("source", "")) != "pc_fast_center_radial_stain":
+            return False
+        if self.confidence_float(defect) < 0.90:
+            return False
+        if source_w <= 0 or source_h <= 0:
+            return False
+
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+
+        center_x = (x + w / 2.0) / float(source_w)
+        center_y = (y + h / 2.0) / float(source_h)
+        if center_x < 0.07 or center_x > 0.76:
+            return False
+        if center_y < 0.08 or center_y > 0.82:
+            return False
+        if x <= source_w * 0.015 or y <= source_h * 0.015:
+            return False
+        if x + w >= source_w * 0.90 or y + h >= source_h * 0.90:
+            return False
+
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if aspect_ratio > 3.2:
+            return False
+        box_ratio = float(w * h) / float(max(1, source_w * source_h))
+        if box_ratio < 0.0012 or box_ratio > FAST_REVIEW_CENTER_RADIAL_STAIN_MAX_BOX_RATIO:
+            return False
+
+        density = float(defect.get("density", 0) or 0)
+        if density < 0.06 or density > 0.76:
+            return False
+        angle_groups = int(defect.get("angle_groups", 0) or 0)
+        if angle_groups < FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_ANGLE_GROUPS:
+            return False
+        local_dark = float(defect.get("local_dark_delta", 0) or 0)
+        signed_delta = float(defect.get("brightness_signed_delta", 0) or 0)
+        if signed_delta > FAST_REVIEW_CENTER_RADIAL_STAIN_MAX_SIGNED_DELTA:
+            return False
+        if (
+            local_dark < FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_LOCAL_DELTA
+            and signed_delta > -FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_SIGNED_DELTA
+        ):
+            return False
+        if local_dark < 12.0 and signed_delta > -18.0:
+            return False
+        return True
+
+    def defect_is_safe_dark_x_stain(self, defect, source_w, source_h):
+        if defect.get("type") != "stain":
+            return False
+        if str(defect.get("source", "")) != "pc_fast_dark_x_stain":
+            return False
+        if self.confidence_float(defect) < 0.88:
+            return False
+        if source_w <= 0 or source_h <= 0:
+            return False
+
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+
+        center_x = (x + w / 2.0) / float(source_w)
+        center_y = (y + h / 2.0) / float(source_h)
+        if center_x < 0.22 or center_x > 0.76:
+            return False
+        if center_y < 0.24 or center_y > 0.82:
+            return False
+        if x <= source_w * 0.025 or y <= source_h * 0.025:
+            return False
+        if x + w >= source_w * 0.92 or y + h >= source_h * 0.92:
+            return False
+
+        angle_groups = int(defect.get("angle_groups", 0) or 0)
+        line_count = int(defect.get("line_count", 0) or 0)
+        total_length = float(defect.get("total_line_length", 0) or 0)
+        density = float(defect.get("density", 0) or 0)
+        signed_delta = float(defect.get("brightness_signed_delta", 0) or 0)
+        local_dark = float(defect.get("local_dark_delta", 0) or 0)
+        return (
+            line_count >= FAST_REVIEW_DARK_X_STAIN_MIN_LINES
+            and angle_groups >= FAST_REVIEW_DARK_X_STAIN_MIN_ANGLE_GROUPS
+            and total_length >= FAST_REVIEW_DARK_X_STAIN_MIN_TOTAL_LENGTH
+            and density >= FAST_REVIEW_DARK_X_STAIN_MIN_DARK_FRACTION
+            and signed_delta <= FAST_REVIEW_DARK_X_STAIN_MAX_SIGNED_DELTA
+            and local_dark >= 4.0
+            and float(defect.get("aspect_ratio", 99) or 99) <= FAST_REVIEW_DARK_X_STAIN_MAX_ASPECT
+        )
 
     def defect_center_is_inside_middle_zone(self, defect, roi, source_w, source_h):
         if not isinstance(roi, dict):
@@ -2661,11 +3007,22 @@ class LensDefectHostApp:
             local_dark = float(defect.get("local_dark_delta", 0) or 0)
             density = float(defect.get("density", 0) or 0)
             angle_groups = int(defect.get("angle_groups", 0) or 0)
+            box_area = float(max(1, w * h))
+            weak_small_dark_patch = (
+                box_area <= float(image_w * image_h) * 0.025
+                and abs(signed_delta) <= 1.8
+                and local_dark <= 10.5
+                and box_p98 >= 96.0
+                and angle_groups <= 4
+            )
+            if weak_small_dark_patch:
+                return True
             if (
                 glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 1.30
                 and signed_delta >= -7.0
                 and local_dark <= 9.5
                 and density <= 0.62
+                and (angle_groups <= 1 or local_dark <= 6.0)
             ):
                 return True
             if (
@@ -2822,11 +3179,24 @@ class LensDefectHostApp:
         return "normal", "正常镜片", None
 
     def stabilize_detection_result(self, result):
+        if isinstance(result, dict) and result.get("has_defect"):
+            locked_defects = []
+            changed_by_black_lock = False
+            for defect in result.get("defects") or []:
+                locked = self.apply_black_stain_class_lock(defect)
+                locked_defects.append(locked)
+                changed_by_black_lock = changed_by_black_lock or locked is not defect
+            if changed_by_black_lock:
+                result = dict(result)
+                result["defects"] = locked_defects
+                result = self.normalize_detection_result(result)
+
         class_key, _class_text, _confidence = self.display_class_result(result)
         if self.stable_detection_result is None:
             self.stable_detection_result = result
             self.pending_detection_class = None
             self.pending_detection_count = 0
+            self.remember_black_stain_detection(result)
             return result
 
         stable_key, _stable_text, _stable_confidence = self.display_class_result(self.stable_detection_result)
@@ -2834,6 +3204,7 @@ class LensDefectHostApp:
             self.stable_detection_result = result
             self.pending_detection_class = None
             self.pending_detection_count = 0
+            self.remember_black_stain_detection(result)
             return result
 
         if class_key != self.pending_detection_class:
@@ -2842,11 +3213,19 @@ class LensDefectHostApp:
         else:
             self.pending_detection_count += 1
 
-        required_count = HOST_NORMAL_CONFIRM_UPDATES if class_key == "normal" else HOST_DEFECT_CONFIRM_UPDATES
+        if class_key == "normal":
+            required_count = HOST_NORMAL_CONFIRM_UPDATES
+        elif stable_key in SUPPORTED_DEFECT_TYPES and class_key in SUPPORTED_DEFECT_TYPES:
+            required_count = HOST_DEFECT_CLASS_CONFIRM_UPDATES
+            if stable_key == "stain" and class_key == "scratch":
+                required_count = HOST_BLACK_STAIN_TO_SCRATCH_CONFIRM_UPDATES
+        else:
+            required_count = HOST_DEFECT_CONFIRM_UPDATES
         if self.pending_detection_count >= required_count:
             self.stable_detection_result = result
             self.pending_detection_class = None
             self.pending_detection_count = 0
+            self.remember_black_stain_detection(result)
             return result
 
         held = dict(self.stable_detection_result)
@@ -3064,9 +3443,24 @@ class LensDefectHostApp:
         review_type = review_detection.get("type")
         yolo_confidence = self.confidence_float(yolo_detection)
         review_confidence = self.confidence_float(review_detection)
+        review_source = str(review_detection.get("source", ""))
+        if (
+            yolo_type == "scratch"
+            and review_type == "stain"
+            and review_source in (
+                "pc_fast_dark_star_stain",
+                "pc_fast_dark_star_stain_lines",
+                "pc_fast_center_radial_stain",
+                "pc_fast_dark_stain",
+                "pc_fast_dark_x_stain",
+            )
+            and review_confidence >= 0.84
+        ):
+            merged["type"] = "stain"
         if (
             review_type in SUPPORTED_DEFECT_TYPES
             and review_type != yolo_type
+            and merged.get("type") == yolo_type
             and review_confidence >= yolo_confidence + FAST_REVIEW_YOLO_BOX_LOCK_CLASS_MARGIN
         ):
             merged["type"] = review_type
@@ -3076,7 +3470,67 @@ class LensDefectHostApp:
         merged["review_source"] = review_detection.get("source", "")
         merged["review_iou"] = round(iou, 3)
         merged["review_center_distance"] = round(center_distance, 3)
+        merged = self.apply_black_stain_class_lock(merged)
         return merged
+
+    def detection_looks_like_locked_black_stain(self, detection):
+        if not isinstance(detection, dict):
+            return False
+        if detection.get("type") != "stain":
+            return False
+        source = str(detection.get("source", ""))
+        review_source = str(detection.get("review_source", ""))
+        if detection.get("black_stain_guard") or detection.get("black_radial_stain"):
+            return True
+        return source in (
+            "pc_fast_dark_star_stain",
+            "pc_fast_dark_star_stain_lines",
+            "pc_fast_center_radial_stain",
+            "pc_fast_dark_x_stain",
+        ) or review_source in (
+            "pc_fast_dark_star_stain",
+            "pc_fast_dark_star_stain_lines",
+            "pc_fast_center_radial_stain",
+            "pc_yolo_black_stain_guard",
+            "pc_fast_dark_x_stain",
+        )
+
+    def remember_black_stain_detection(self, result):
+        if not isinstance(result, dict) or not result.get("has_defect"):
+            return
+        for defect in result.get("defects") or []:
+            if self.detection_looks_like_locked_black_stain(defect):
+                self.last_black_stain_result = dict(defect)
+                self.last_black_stain_time = time.monotonic()
+                return
+
+    def apply_black_stain_class_lock(self, detection):
+        if not isinstance(detection, dict) or detection.get("type") != "scratch":
+            return detection
+        recent = self.last_black_stain_result
+        if not isinstance(recent, dict):
+            return detection
+        if time.monotonic() - float(self.last_black_stain_time or 0.0) > FAST_REVIEW_BLACK_STAIN_LOCK_SECONDS:
+            return detection
+        iou = self.fast_review_iou(recent, detection)
+        center_distance = self.detection_center_distance_ratio(recent, detection)
+        if (
+            iou < FAST_REVIEW_BLACK_STAIN_LOCK_MIN_IOU
+            and center_distance > FAST_REVIEW_BLACK_STAIN_LOCK_MAX_CENTER_DISTANCE_RATIO
+        ):
+            return detection
+        locked = dict(detection)
+        locked["type"] = "stain"
+        locked["class_locked_from"] = "scratch"
+        locked["review_source"] = "pc_black_stain_temporal_lock"
+        locked["black_stain_lock"] = True
+        locked["confidence"] = max(self.confidence_float(detection), min(0.96, self.confidence_float(recent, 0.90)))
+        locked["level"] = recent.get("level", detection.get("level", "medium"))
+        if "density" in recent:
+            locked["density"] = recent.get("density")
+        if "local_dark_delta" in recent:
+            locked["local_dark_delta"] = recent.get("local_dark_delta")
+        return locked
 
     def confirm_fast_review_detection(self, detection):
         if detection is None:
@@ -3262,10 +3716,11 @@ class LensDefectHostApp:
             self.yolo_roi_miss_count = 0
         if not detections:
             return
+        detections = self.correct_yolo_black_stain_classes(image, detections)
 
         refined = dict(base)
         refined["frame"] = {"w": image.width, "h": image.height}
-        refined["roi"] = self.best_live_detection_roi(base, image.width, image.height)
+        refined["roi"] = self.yolo_filter_roi_for_image(image, payload, base, inference_roi)
         refined["defects"] = detections
         refined["model"] = "yolo_onnx"
         refined["yolo"] = {
@@ -3314,6 +3769,195 @@ class LensDefectHostApp:
         refined = self.stabilize_detection_result(refined)
         self.update_result_ui(refined, render_live_image=False)
 
+    def correct_yolo_black_stain_classes(self, image, detections):
+        if cv2 is None or np is None or not detections:
+            return detections
+        gray = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
+        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=13, sigmaY=13)
+        dark_response = np.maximum(background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+        bright_response = np.maximum(gray.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+        corrected = []
+        for detection in detections:
+            corrected.append(self.correct_single_yolo_black_stain(gray, dark_response, bright_response, detection))
+        return corrected
+
+    def correct_single_yolo_black_stain(self, gray, dark_response, bright_response, detection):
+        if not isinstance(detection, dict) or detection.get("type") != "scratch":
+            return detection
+        source = str(detection.get("source", ""))
+        if source not in ("yolo_onnx", "yolo_onnx_roi"):
+            return detection
+        image_h, image_w = gray.shape[:2]
+        x = self._positive_int(detection.get("x"))
+        y = self._positive_int(detection.get("y"))
+        w = self._positive_int(detection.get("w"))
+        h = self._positive_int(detection.get("h"))
+        if w <= 0 or h <= 0 or image_w <= 0 or image_h <= 0:
+            return detection
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        center_x = (x + w / 2.0) / float(image_w)
+        center_y = (y + h / 2.0) / float(image_h)
+        if center_x < 0.18 or center_x > 0.78 or center_y < 0.22 or center_y > 0.84:
+            return detection
+
+        box = gray[y:y + h, x:x + w]
+        if box.size <= 0:
+            return detection
+        pad = max(10, int(min(image_w, image_h) * 0.035))
+        lx1 = max(0, x - pad)
+        ly1 = max(0, y - pad)
+        lx2 = min(image_w, x + w + pad)
+        ly2 = min(image_h, y + h + pad)
+        local = gray[ly1:ly2, lx1:lx2]
+        if local.size <= 0:
+            return detection
+        box_dark_response = dark_response[y:y + h, x:x + w]
+        box_bright_response = bright_response[y:y + h, x:x + w]
+        local_dark_response = dark_response[ly1:ly2, lx1:lx2]
+        local_bright_response = bright_response[ly1:ly2, lx1:lx2]
+        if (
+            box_dark_response.size <= 0
+            or box_bright_response.size <= 0
+            or local_dark_response.size <= 0
+            or local_bright_response.size <= 0
+        ):
+            return detection
+        box_mean = float(np.mean(box))
+        local_mean = float(np.mean(local))
+        signed_delta = box_mean - local_mean
+        dark_limit = min(
+            float(np.percentile(local, 42.0)),
+            local_mean - max(4.0, float(np.std(local)) * 0.18),
+        )
+        dark_fraction = float(np.mean(box <= dark_limit))
+        dark_response_limit = max(4.0, float(np.percentile(local_dark_response, 76.0)))
+        bright_response_limit = max(8.0, float(np.percentile(local_bright_response, 84.0)))
+        dark_response_fraction = float(np.mean(box_dark_response >= dark_response_limit))
+        bright_response_fraction = float(np.mean(box_bright_response >= bright_response_limit))
+        dark_response_p85 = float(np.percentile(box_dark_response, 85.0))
+        bright_response_p85 = float(np.percentile(box_bright_response, 85.0))
+        combined_dark_fraction = max(dark_fraction, dark_response_fraction)
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        radial_metrics = self.yolo_black_radial_stain_metrics(
+            box,
+            box_dark_response,
+            box_bright_response,
+            dark_response_limit,
+            bright_response_limit,
+        )
+        dark_is_dominant = (
+            bright_response_fraction <= 0.16
+            and dark_response_p85 >= bright_response_p85 * 0.75
+            and signed_delta <= 1.5
+        ) or (
+            bright_response_fraction <= 0.20
+            and dark_response_p85 >= bright_response_p85 * 1.10
+            and signed_delta <= 3.0
+        )
+        radial_black_stain = (
+            radial_metrics["line_count"] >= FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_LINES
+            and radial_metrics["angle_groups"] >= FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_ANGLE_GROUPS
+            and radial_metrics["total_length"] >= FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_TOTAL_LENGTH
+            and radial_metrics["dark_fraction"] >= FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_DARK_FRACTION
+            and radial_metrics["bright_fraction"] <= FAST_REVIEW_BLACK_STAIN_RADIAL_MAX_BRIGHT_FRACTION
+            and signed_delta <= FAST_REVIEW_BLACK_STAIN_RADIAL_MAX_SIGNED_DELTA
+            and (
+                dark_response_p85 >= max(3.5, bright_response_p85 * 0.55)
+                or radial_metrics["dark_fraction"] >= radial_metrics["bright_fraction"] * 0.42
+            )
+            and aspect_ratio <= 4.8
+        )
+        if (
+            (
+                combined_dark_fraction >= 0.16
+                and dark_response_p85 >= 4.5
+                and dark_is_dominant
+                and aspect_ratio <= 4.2
+            )
+            or radial_black_stain
+        ) and w * h >= max(450, int(image_w * image_h * 0.006)):
+            corrected = dict(detection)
+            corrected["type"] = "stain"
+            corrected["source"] = source
+            corrected["review_source"] = "pc_yolo_black_stain_guard"
+            corrected["class_corrected_from"] = "scratch"
+            corrected["black_stain_guard"] = True
+            corrected["density"] = round(combined_dark_fraction, 2)
+            corrected["brightness_signed_delta"] = round(signed_delta, 1)
+            corrected["local_dark_delta"] = round(dark_response_p85, 1)
+            corrected["black_radial_stain"] = bool(radial_black_stain)
+            if radial_black_stain:
+                corrected["line_count"] = int(radial_metrics["line_count"])
+                corrected["angle_groups"] = int(radial_metrics["angle_groups"])
+                corrected["total_line_length"] = round(float(radial_metrics["total_length"]), 1)
+            corrected["level"] = "medium"
+            return corrected
+        return detection
+
+    def yolo_black_radial_stain_metrics(
+        self,
+        box_gray,
+        box_dark_response,
+        box_bright_response,
+        dark_response_limit,
+        bright_response_limit,
+    ):
+        metrics = {
+            "line_count": 0,
+            "angle_groups": 0,
+            "total_length": 0.0,
+            "dark_fraction": 0.0,
+            "bright_fraction": 1.0,
+        }
+        if cv2 is None or np is None:
+            return metrics
+        if box_gray is None or box_dark_response is None or box_bright_response is None:
+            return metrics
+        if box_gray.size <= 0 or box_dark_response.size <= 0 or box_bright_response.size <= 0:
+            return metrics
+
+        dark_mask = np.where(box_dark_response >= dark_response_limit, 255, 0).astype(np.uint8)
+        bright_mask = np.where(box_bright_response >= bright_response_limit, 255, 0).astype(np.uint8)
+        metrics["dark_fraction"] = float(cv2.countNonZero(dark_mask)) / float(max(1, dark_mask.size))
+        metrics["bright_fraction"] = float(cv2.countNonZero(bright_mask)) / float(max(1, bright_mask.size))
+
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        edges = cv2.Canny(box_gray, 25, 70)
+        edges = cv2.bitwise_and(edges, dark_mask)
+        min_side = min(box_gray.shape[:2])
+        min_line_length = max(10, int(min_side * 0.16))
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=8,
+            minLineLength=min_line_length,
+            maxLineGap=8,
+        )
+        if lines is None:
+            return metrics
+
+        angle_groups = set()
+        total_length = 0.0
+        line_count = 0
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_groups.add(int(angle // 30.0))
+            total_length += length
+            line_count += 1
+
+        metrics["line_count"] = int(line_count)
+        metrics["angle_groups"] = int(len(angle_groups))
+        metrics["total_length"] = float(total_length)
+        return metrics
+
     def best_live_detection_roi(self, result, image_w, image_h):
         if isinstance(result, dict):
             lens = result.get("lens")
@@ -3326,12 +3970,68 @@ class LensDefectHostApp:
                 return roi
         return self.center_fallback_roi(image_w, image_h)
 
+    def yolo_center_guard_roi(self, image_w, image_h):
+        roi = self.center_fallback_roi(image_w, image_h)
+        roi["source"] = "pc_yolo_center_guard"
+        return roi
+
+    def yolo_filter_roi_for_image(self, image, payload, result, inference_roi=None):
+        roi = self.scaled_effective_detection_roi_for_image(image, payload, result)
+        if roi is not None and not self.yolo_roi_is_edge_biased(roi, image.width, image.height):
+            return roi
+        if isinstance(inference_roi, dict):
+            roi = self.valid_roi_or_none(inference_roi, image.width, image.height)
+            if roi is not None and not self.yolo_roi_is_edge_biased(roi, image.width, image.height):
+                roi["source"] = "pc_yolo_filter_roi"
+                return roi
+        fallback = self.best_live_detection_roi(result, image.width, image.height)
+        fallback_source = str(fallback.get("source", "")).lower() if isinstance(fallback, dict) else ""
+        if fallback_source == "pc_center_fallback" or self.yolo_roi_is_edge_biased(fallback, image.width, image.height):
+            return self.yolo_center_guard_roi(image.width, image.height)
+        return fallback
+
+    def yolo_roi_is_edge_biased(self, roi, image_w, image_h):
+        if not isinstance(roi, dict):
+            return False
+        source = str(roi.get("source", "")).lower()
+        if source not in ("pc_auto_roi", "pc_yolo_roi", "pc_yolo_filter_roi"):
+            return False
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        if w <= 0 or h <= 0 or image_w <= 0 or image_h <= 0:
+            return True
+        side_margin = max(2, int(image_w * YOLO_AUTO_ROI_SIDE_CLIP_MARGIN_RATIO))
+        touches_side = x <= side_margin or x + w >= image_w - side_margin
+        partial_width = w < int(image_w * YOLO_AUTO_ROI_EDGE_PARTIAL_SIZE_RATIO)
+        center_x = (x + w / 2.0) / float(image_w)
+        if touches_side and partial_width:
+            return True
+        return abs(center_x - 0.50) > YOLO_AUTO_ROI_MAX_CENTER_X_DRIFT_RATIO
+
+    def scaled_effective_detection_roi_for_image(self, image, payload, result):
+        roi, source_w, source_h = self.resolve_detection_roi_for_image(image, payload, result)
+        if not isinstance(roi, dict):
+            return None
+        image_w, image_h = image.size
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        scaled = {
+            "x": int(self._positive_int(roi.get("x")) * x_scale),
+            "y": int(self._positive_int(roi.get("y")) * y_scale),
+            "w": int(self._positive_int(roi.get("w")) * x_scale),
+            "h": int(self._positive_int(roi.get("h")) * y_scale),
+            "source": str(roi.get("source", "pc_effective_roi") or "pc_effective_roi"),
+        }
+        return self.valid_roi_or_none(scaled, image_w, image_h)
+
     def yolo_inference_roi_for_image(self, image, payload, result):
         if not YOLO_ROI_INFERENCE_ENABLED:
             return None
         roi, source_w, source_h = self.resolve_detection_roi_for_image(image, payload, result)
         if not isinstance(roi, dict):
-            return None
+            return self.yolo_center_guard_roi(image.width, image.height)
         image_w, image_h = image.size
         x_scale = float(image_w) / float(max(1, source_w))
         y_scale = float(image_h) / float(max(1, source_h))
@@ -3345,6 +4045,11 @@ class LensDefectHostApp:
         y = max(0, min(y, image_h - 1))
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
+        source = str(roi.get("source", "")).lower()
+        if source == "pc_center_fallback":
+            return self.yolo_center_guard_roi(image_w, image_h)
+        if self.yolo_roi_is_edge_biased({"x": x, "y": y, "w": w, "h": h, "source": source}, image_w, image_h):
+            return self.yolo_center_guard_roi(image_w, image_h)
 
         frame_area = float(max(1, image_w * image_h))
         roi_area_ratio = float(w * h) / frame_area
@@ -3354,7 +4059,7 @@ class LensDefectHostApp:
             or w < int(min_side * YOLO_ROI_MIN_SIZE_RATIO)
             or h < int(min_side * YOLO_ROI_MIN_SIZE_RATIO)
         ):
-            return None
+            return self.yolo_center_guard_roi(image_w, image_h)
 
         pad = max(8, int(min(w, h) * YOLO_ROI_PADDING_RATIO))
         left = max(0, x - pad)
@@ -3469,8 +4174,28 @@ class LensDefectHostApp:
         dark_cluster = self.fast_cv_find_dark_stain_cluster(gray, mask, mean_value, std_value, edge_distance)
         if dark_cluster is not None and (stain is None or dark_cluster.get("area", 0) >= stain.get("area", 0)):
             stain = dark_cluster
+        dark_x_stain = self.fast_cv_find_dark_x_stain(gray, mask, edge_distance)
+        if dark_x_stain is None:
+            center_mask = self.build_center_defect_fallback_mask(width, height)
+            if cv2.countNonZero(center_mask) > 0:
+                center_edge_distance = cv2.distanceTransform(center_mask, cv2.DIST_L2, 3)
+                dark_x_stain = self.fast_cv_find_dark_x_stain(gray, center_mask, center_edge_distance)
+        if dark_x_stain is not None:
+            if stain is None or dark_x_stain.get("total_line_length", 0) >= stain.get("length", 0) * 1.35:
+                stain = dark_x_stain
         scratch = self.fast_cv_find_scratch(gray, mask, edge_distance, None)
-        return self.choose_fast_cv_defect(scratch, stain, mask)
+        detection = self.choose_fast_cv_defect(scratch, stain, mask)
+        if dark_x_stain is not None and (
+            detection is None
+            or detection.get("type") != "stain"
+            or dark_x_stain.get("confidence", 0) >= detection.get("confidence", 0) - 0.04
+        ):
+            detection = dark_x_stain
+        if detection is None:
+            detection = self.fast_cv_find_center_radial_stain(gray)
+        if detection is None:
+            detection = self.fast_cv_find_dark_star_stain_lines(gray)
+        return detection
 
     def choose_fast_cv_defect(self, scratch, stain, mask):
         if scratch is None:
@@ -3478,7 +4203,7 @@ class LensDefectHostApp:
                 return self.promote_stain_candidate_to_scratch(stain)
             return stain
         if stain is None:
-            if self.scratch_candidate_looks_like_dark_stain(scratch):
+            if self.scratch_candidate_looks_like_dark_stain(scratch, mask):
                 return self.promote_scratch_candidate_to_stain(scratch)
             return scratch
 
@@ -3501,6 +4226,8 @@ class LensDefectHostApp:
         scratch_bright_delta = float(scratch.get("local_bright_delta", 0) or 0)
         scratch_dark_delta = float(scratch.get("local_dark_delta", 0) or 0)
         scratch_slender_lines = int(scratch.get("slender_line_count", 0) or 0)
+        if self.scratch_candidate_looks_like_dark_stain(scratch, mask):
+            return self.promote_scratch_candidate_to_stain(scratch)
         scratch_is_long_slender = (
             scratch_aspect >= 3.5
             and scratch_length >= 80
@@ -3583,6 +4310,8 @@ class LensDefectHostApp:
             return False
         if str(stain.get("source", "")) != "pc_fast_dark_stain":
             return False
+        if self.dark_stain_candidate_looks_like_weak_scratch_shadow(stain, mask):
+            return True
         mask_area = max(1, int(cv2.countNonZero(mask))) if mask is not None else 1
         area = float(stain.get("area", 0) or 0)
         density = float(stain.get("density", 0) or 0)
@@ -3602,6 +4331,45 @@ class LensDefectHostApp:
             and local_delta <= 10.0
         )
 
+    def dark_stain_candidate_looks_like_weak_scratch_shadow(self, stain, mask):
+        if not isinstance(stain, dict) or mask is None:
+            return False
+        angle_groups = int(stain.get("angle_groups", 0) or 0)
+        local_delta = float(stain.get("local_dark_delta", 0) or 0)
+        signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+        aspect_ratio = float(stain.get("aspect_ratio", 0) or 0)
+        density = float(stain.get("density", 0) or 0)
+        area = int(stain.get("area", 0) or 0)
+        length = int(stain.get("length", 0) or 0)
+        if angle_groups > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_ANGLE_GROUPS:
+            return False
+        if local_delta > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_LOCAL_DELTA:
+            return False
+        if (
+            signed_delta < FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MIN_SIGNED_DELTA
+            or signed_delta > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_SIGNED_DELTA
+        ):
+            return False
+        if aspect_ratio <= 0 or aspect_ratio > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_ASPECT:
+            return False
+        if density < 0.40 or density > 0.58:
+            return False
+        if area <= 0 or area > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_AREA:
+            return False
+        if length <= 0 or length > FAST_REVIEW_DARK_STAIN_WEAK_SCRATCH_MAX_LENGTH:
+            return False
+
+        image_h, image_w = mask.shape[:2]
+        x = self._positive_int(stain.get("x"))
+        y = self._positive_int(stain.get("y"))
+        w = self._positive_int(stain.get("w"))
+        h = self._positive_int(stain.get("h"))
+        if w <= 0 or h <= 0 or image_w <= 0 or image_h <= 0:
+            return False
+        center_x = (x + w / 2.0) / float(image_w)
+        center_y = (y + h / 2.0) / float(image_h)
+        return 0.25 <= center_x <= 0.68 and 0.28 <= center_y <= 0.72
+
     def promote_stain_candidate_to_scratch(self, stain):
         promoted = dict(stain)
         promoted["type"] = "scratch"
@@ -3611,22 +4379,78 @@ class LensDefectHostApp:
         promoted["level"] = "medium" if self._positive_int(stain.get("length")) >= 65 else "light"
         return promoted
 
-    def scratch_candidate_looks_like_dark_stain(self, scratch):
+    def scratch_candidate_looks_like_dark_stain(self, scratch, mask=None):
         if not isinstance(scratch, dict):
             return False
-        if str(scratch.get("source", "")) != "pc_fast_review_line":
+        source = str(scratch.get("source", ""))
+        if source not in ("pc_fast_review_line", "pc_fast_center_cross_scratch"):
             return False
         signed_delta = float(scratch.get("local_signed_delta", 0) or 0)
         dark_delta = float(scratch.get("local_dark_delta", 0) or 0)
         bright_delta = float(scratch.get("local_bright_delta", 0) or 0)
         line_count = int(scratch.get("line_count", 0) or 0)
+        angle_groups = int(scratch.get("angle_groups", 0) or 0)
         fill_ratio = float(scratch.get("fill_ratio", 0) or 0)
-        return (
+        aspect_ratio = float(scratch.get("aspect_ratio", 0) or 0)
+        dark_fraction = float(scratch.get("dark_fraction", 0) or 0)
+        black_dominant_middle_defect = (
+            line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
+            and angle_groups >= FAST_REVIEW_BLACK_STAIN_MIN_ANGLE_GROUPS
+            and aspect_ratio <= FAST_REVIEW_BLACK_STAIN_MAX_ASPECT
+            and fill_ratio >= FAST_REVIEW_BLACK_STAIN_MIN_FILL_RATIO
+            and dark_fraction >= FAST_REVIEW_BLACK_STAIN_MIN_DARK_FRACTION
+            and bright_delta <= FAST_REVIEW_BLACK_STAIN_MAX_BRIGHT_DELTA
+            and (
+                dark_delta >= max(3.0, bright_delta * 0.75)
+                or signed_delta <= FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA
+            )
+        )
+        if black_dominant_middle_defect:
+            return True
+        if (
             line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
             and signed_delta <= FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA
             and dark_delta > bright_delta * 1.35
             and fill_ratio >= FAST_REVIEW_STAR_SCRATCH_MIN_FILL
+        ):
+            return True
+        if source != "pc_fast_center_cross_scratch" or mask is None:
+            return False
+        x = self._positive_int(scratch.get("x"))
+        y = self._positive_int(scratch.get("y"))
+        w = self._positive_int(scratch.get("w"))
+        h = self._positive_int(scratch.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+        image_h, image_w = mask.shape[:2]
+        compact_dark_star_stain = (
+            dark_fraction >= 0.38
+            and fill_ratio >= 0.36
+            and bright_delta <= 16.0
+            and line_count <= 25
+            and aspect_ratio <= 2.70
+            and angle_groups >= 4
         )
+        if compact_dark_star_stain:
+            return True
+        box_center_x = x + w / 2.0
+        if box_center_x < image_w * 0.56 or w < image_w * 0.18:
+            return False
+        if aspect_ratio > 2.25 or bright_delta > FAST_REVIEW_DARK_STAR_STAIN_MAX_BRIGHT_DELTA:
+            return False
+        if angle_groups < 4 or fill_ratio > 0.32:
+            return False
+        x1 = max(0, min(image_w - 1, int(x)))
+        y1 = max(0, min(image_h - 1, int(y)))
+        x2 = max(x1 + 1, min(image_w, int(x + w)))
+        y2 = max(y1 + 1, min(image_h, int(y + h)))
+        mask_roi = mask[y1:y2, x1:x2]
+        if mask_roi.size <= 0:
+            return False
+        mask_overlap = float(cv2.countNonZero(mask_roi)) / float(max(1, (x2 - x1) * (y2 - y1)))
+        if mask_overlap < 0.72:
+            return False
+        return bool(scratch.get("dark_star_stain_like"))
 
     def promote_scratch_candidate_to_stain(self, scratch):
         promoted = dict(scratch)
@@ -3637,6 +4461,187 @@ class LensDefectHostApp:
         promoted["level"] = "medium" if self._positive_int(scratch.get("length")) >= 55 else "light"
         promoted.pop("strong_internal_scratch", None)
         return promoted
+
+    def fast_cv_find_dark_x_stain(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 120 or height < 90 or mask is None:
+            return None
+
+        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=11, sigmaY=11)
+        dark_response = np.maximum(background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+        bright_response = np.maximum(gray.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+        lens_dark_values = dark_response[mask > 0]
+        lens_gray_values = gray[mask > 0]
+        if lens_dark_values.size <= 0 or lens_gray_values.size <= 0:
+            return None
+
+        dark_threshold = max(5.0, float(np.percentile(lens_dark_values, 82.0)))
+        gray_threshold = min(
+            float(np.percentile(lens_gray_values, 32.0)),
+            float(np.mean(lens_gray_values) - max(5.0, np.std(lens_gray_values) * 0.24)),
+        )
+        dark_mask = np.where(
+            (dark_response >= dark_threshold) | (gray <= gray_threshold),
+            255,
+            0,
+        ).astype(np.uint8)
+        dark_mask = cv2.bitwise_and(dark_mask, mask)
+
+        glare_limit = max(178.0, float(np.percentile(lens_gray_values, 99.2)))
+        glare_mask = np.where(gray >= glare_limit, 255, 0).astype(np.uint8)
+        glare_mask = cv2.dilate(glare_mask, np.ones((9, 9), dtype=np.uint8), iterations=1)
+        dark_mask = cv2.bitwise_and(dark_mask, cv2.bitwise_not(glare_mask))
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+
+        edges = cv2.Canny(gray, 24, 72)
+        edges = cv2.bitwise_and(edges, dark_mask)
+        min_line_length = max(14, int(min(width, height) * 0.045))
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=9,
+            minLineLength=min_line_length,
+            maxLineGap=10,
+        )
+        if lines is None:
+            return None
+
+        min_edge_distance = max(
+            FAST_REVIEW_STAIN_MIN_EDGE_DISTANCE,
+            int(min(width, height) * FAST_REVIEW_STAIN_EDGE_MARGIN_RATIO),
+        )
+        segments = []
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+            center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if center_x < width * 0.18 or center_x > width * 0.82:
+                continue
+            if center_y < height * 0.18 or center_y > height * 0.84:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance * 0.70:
+                continue
+            segments.append((x1, y1, x2, y2, length))
+
+        if len(segments) < FAST_REVIEW_DARK_X_STAIN_MIN_LINES:
+            return None
+
+        best = None
+        best_score = 0.0
+        frame_area = float(max(1, width * height))
+        for cluster in self.cluster_scratch_line_segments(segments):
+            if len(cluster) < FAST_REVIEW_DARK_X_STAIN_MIN_LINES:
+                continue
+            xs = []
+            ys = []
+            angle_groups = set()
+            total_length = 0.0
+            for x1, y1, x2, y2, length in cluster:
+                xs.extend([x1, x2])
+                ys.extend([y1, y2])
+                angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                angle_groups.add(int(angle // 30.0))
+                total_length += length
+            if len(angle_groups) < FAST_REVIEW_DARK_X_STAIN_MIN_ANGLE_GROUPS:
+                continue
+            if total_length < FAST_REVIEW_DARK_X_STAIN_MIN_TOTAL_LENGTH:
+                continue
+
+            left = max(0, min(xs) - 4)
+            top = max(0, min(ys) - 4)
+            right = min(width, max(xs) + 5)
+            bottom = min(height, max(ys) + 5)
+            box_w = max(1, right - left)
+            box_h = max(1, bottom - top)
+            box_ratio = float(box_w * box_h) / frame_area
+            if box_ratio < FAST_REVIEW_DARK_X_STAIN_MIN_BOX_RATIO or box_ratio > FAST_REVIEW_DARK_X_STAIN_MAX_BOX_RATIO:
+                continue
+            aspect_ratio = float(max(box_w, box_h)) / float(max(1, min(box_w, box_h)))
+            if aspect_ratio > FAST_REVIEW_DARK_X_STAIN_MAX_ASPECT:
+                continue
+            center_x = (left + right) / 2.0
+            center_y = (top + bottom) / 2.0
+            if center_x < width * 0.32 or center_x > width * 0.73:
+                continue
+            if center_y < height * 0.28 or center_y > height * 0.80:
+                continue
+
+            roi_mask = mask[top:bottom, left:right]
+            if roi_mask.size <= 0:
+                continue
+            mask_overlap = float(cv2.countNonZero(roi_mask)) / float(max(1, box_w * box_h))
+            if mask_overlap < 0.54:
+                continue
+            dark_roi = dark_response[top:bottom, left:right]
+            bright_roi = bright_response[top:bottom, left:right]
+            gray_roi = gray[top:bottom, left:right]
+            local_pad = max(8, int(min(width, height) * 0.025))
+            local_left = max(0, left - local_pad)
+            local_top = max(0, top - local_pad)
+            local_right = min(width, right + local_pad)
+            local_bottom = min(height, bottom + local_pad)
+            local_gray = gray[local_top:local_bottom, local_left:local_right]
+            if dark_roi.size <= 0 or bright_roi.size <= 0 or gray_roi.size <= 0 or local_gray.size <= 0:
+                continue
+            dark_fraction = float(np.mean(dark_roi >= dark_threshold))
+            bright_threshold = max(8.0, float(np.percentile(bright_response[mask > 0], 86.0)))
+            bright_fraction = float(np.mean(bright_roi >= bright_threshold))
+            signed_delta = float(np.mean(gray_roi)) - float(np.mean(local_gray))
+            dark_p85 = float(np.percentile(dark_roi, 85.0))
+            bright_p85 = float(np.percentile(bright_roi, 85.0))
+            if dark_fraction < FAST_REVIEW_DARK_X_STAIN_MIN_DARK_FRACTION:
+                continue
+            if bright_fraction > FAST_REVIEW_DARK_X_STAIN_MAX_BRIGHT_FRACTION:
+                continue
+            if signed_delta > FAST_REVIEW_DARK_X_STAIN_MAX_SIGNED_DELTA:
+                continue
+            if dark_p85 < max(4.0, bright_p85 * 0.65) and dark_fraction < bright_fraction * 0.55:
+                continue
+
+            score = total_length + len(angle_groups) * 130.0 + dark_fraction * 420.0 + dark_p85 * 24.0
+            if score <= best_score:
+                continue
+            best_score = score
+            confidence = min(0.96, 0.88 + min(0.05, total_length / 1500.0) + min(0.03, dark_fraction * 0.08))
+            best = {
+                "type": "stain",
+                "confidence": round(confidence, 2),
+                "x": int(left),
+                "y": int(top),
+                "w": int(box_w),
+                "h": int(box_h),
+                "area": int(box_w * box_h * dark_fraction),
+                "length": int(max(box_w, box_h)),
+                "aspect_ratio": round(aspect_ratio, 2),
+                "density": round(dark_fraction, 2),
+                "angle_groups": int(len(angle_groups)),
+                "line_count": int(len(cluster)),
+                "total_line_length": round(float(total_length), 1),
+                "brightness_signed_delta": round(signed_delta, 1),
+                "local_dark_delta": round(dark_p85, 1),
+                "level": "medium",
+                "source": "pc_fast_dark_x_stain",
+                "black_radial_stain": True,
+            }
+        return best
+
+    def build_center_defect_fallback_mask(self, width, height):
+        mask = np.zeros((height, width), dtype=np.uint8)
+        if width <= 0 or height <= 0:
+            return mask
+        left = int(width * 0.30)
+        right = int(width * 0.76)
+        top = int(height * 0.24)
+        bottom = int(height * 0.84)
+        if right > left and bottom > top:
+            mask[top:bottom, left:right] = 255
+        return mask
 
     def fast_cv_find_stain(self, gray, mask, mean_value, contrast_delta, edge_distance=None):
         dark_limit = max(0, int(mean_value - contrast_delta))
@@ -3821,6 +4826,322 @@ class LensDefectHostApp:
                 }
 
         return best
+
+    def fast_cv_find_center_radial_stain(self, gray):
+        height, width = gray.shape[:2]
+        if width < 120 or height < 90:
+            return None
+
+        x1 = int(width * 0.04)
+        x2 = int(width * 0.76)
+        y1 = int(height * 0.04)
+        y2 = int(height * 0.82)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=17, sigmaY=17)
+        local_dark = np.maximum(local_background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+        roi_dark = local_dark[y1:y2, x1:x2]
+        roi_gray = gray[y1:y2, x1:x2]
+        if roi_dark.size <= 0 or roi_gray.size <= 0:
+            return None
+
+        dark_threshold = max(7.0, float(np.percentile(roi_dark, 88.0)))
+        absolute_threshold = min(
+            float(np.percentile(roi_gray, 24.0)),
+            float(np.mean(roi_gray) - max(7.0, np.std(roi_gray) * 0.38)),
+        )
+        radial_mask = np.where(
+            (roi_dark >= dark_threshold) | (roi_gray <= absolute_threshold),
+            255,
+            0,
+        ).astype(np.uint8)
+
+        glare_limit = max(176.0, float(np.percentile(gray, 99.2)))
+        glare_mask = np.where(roi_gray >= glare_limit, 255, 0).astype(np.uint8)
+        glare_mask = cv2.dilate(glare_mask, np.ones((11, 11), dtype=np.uint8), iterations=1)
+        radial_mask = cv2.bitwise_and(radial_mask, cv2.bitwise_not(glare_mask))
+        radial_mask = cv2.morphologyEx(radial_mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+        radial_mask = cv2.dilate(radial_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
+
+        contours, _hierarchy = cv2.findContours(radial_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        frame_area = float(max(1, width * height))
+        roi_mean = float(np.mean(roi_gray))
+        best = None
+        best_score = 0.0
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < max(120.0, frame_area * 0.0014) or area > frame_area * 0.075:
+                continue
+            lx, ly, box_w, box_h = cv2.boundingRect(contour)
+            if box_w < 18 or box_h < 18:
+                continue
+
+            x = lx + x1
+            y = ly + y1
+            center_x = x + box_w / 2.0
+            center_y = y + box_h / 2.0
+            if center_x < width * 0.07 or center_x > width * 0.74:
+                continue
+            if center_y < height * 0.08 or center_y > height * 0.78:
+                continue
+            if (
+                x <= width * 0.015
+                or y <= height * 0.015
+                or x + box_w >= width * 0.90
+                or y + box_h >= height * 0.90
+            ):
+                continue
+
+            aspect_ratio = float(max(box_w, box_h)) / float(max(1, min(box_w, box_h)))
+            if aspect_ratio > 3.2:
+                continue
+            component_mask = np.zeros((box_h, box_w), dtype=np.uint8)
+            shifted = contour - np.array([[[lx, ly]]], dtype=contour.dtype)
+            cv2.drawContours(component_mask, [shifted], -1, 255, -1)
+            fill_ratio = area / float(max(1, box_w * box_h))
+            if fill_ratio < 0.06 or fill_ratio > 0.76:
+                continue
+
+            component_dark = local_dark[y:y + box_h, x:x + box_w][component_mask > 0]
+            component_gray = gray[y:y + box_h, x:x + box_w][component_mask > 0]
+            if component_dark.size <= 0 or component_gray.size <= 0:
+                continue
+            local_mean = float(np.mean(component_dark))
+            signed_delta = float(np.mean(component_gray)) - roi_mean
+            if signed_delta > FAST_REVIEW_CENTER_RADIAL_STAIN_MAX_SIGNED_DELTA:
+                continue
+            angle_groups = self.count_dark_cluster_angle_groups(gray, x, y, box_w, box_h, component_mask)
+            if angle_groups < FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_ANGLE_GROUPS:
+                continue
+            if (
+                local_mean < FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_LOCAL_DELTA
+                and signed_delta > -FAST_REVIEW_CENTER_RADIAL_STAIN_MIN_SIGNED_DELTA
+            ):
+                continue
+            if local_mean < 12.0 and signed_delta > -18.0:
+                continue
+
+            pad = max(4, int(min(width, height) * 0.018))
+            left = max(0, x - pad)
+            top = max(0, y - pad)
+            right = min(width, x + box_w + pad)
+            bottom = min(height, y + box_h + pad)
+            score = (
+                area
+                + angle_groups * 120.0
+                + local_mean * 90.0
+                + abs(min(0.0, signed_delta)) * 45.0
+                + fill_ratio * 220.0
+            )
+            if score > best_score:
+                best_score = score
+                out_w = max(1, right - left)
+                out_h = max(1, bottom - top)
+                best = {
+                    "type": "stain",
+                    "confidence": 0.91,
+                    "x": int(left),
+                    "y": int(top),
+                    "w": int(out_w),
+                    "h": int(out_h),
+                    "area": int(area),
+                    "length": int(max(out_w, out_h)),
+                    "aspect_ratio": round(float(max(out_w, out_h)) / float(max(1, min(out_w, out_h))), 2),
+                    "density": round(fill_ratio, 2),
+                    "angle_groups": int(angle_groups),
+                    "brightness_signed_delta": round(signed_delta, 1),
+                    "local_dark_delta": round(local_mean, 1),
+                    "level": "medium",
+                    "source": "pc_fast_center_radial_stain",
+                }
+
+        return best
+
+    def fast_cv_find_dark_star_stain_lines(self, gray):
+        height, width = gray.shape[:2]
+        if width < 120 or height < 90:
+            return None
+
+        x1 = int(width * 0.04)
+        x2 = int(width * FAST_REVIEW_DARK_STAR_LINE_MAX_X_RATIO)
+        y1 = int(height * 0.03)
+        y2 = int(height * FAST_REVIEW_DARK_STAR_LINE_MAX_Y_RATIO)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        roi_gray = gray[y1:y2, x1:x2]
+        if roi_gray.size <= 0:
+            return None
+
+        local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=9, sigmaY=9)
+        local_dark = np.maximum(local_background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+        roi_dark = local_dark[y1:y2, x1:x2]
+        dark_threshold = max(8.0, float(np.percentile(roi_dark, 92.0)))
+        absolute_threshold = float(np.percentile(roi_gray, 18.0))
+        candidate_mask = np.where(
+            (roi_dark >= dark_threshold) | (roi_gray <= absolute_threshold),
+            255,
+            0,
+        ).astype(np.uint8)
+
+        glare_limit = max(176.0, float(np.percentile(gray, 99.2)))
+        glare_mask = np.where(roi_gray >= glare_limit, 255, 0).astype(np.uint8)
+        glare_mask = cv2.dilate(glare_mask, np.ones((7, 7), dtype=np.uint8), iterations=1)
+        candidate_mask = cv2.bitwise_and(candidate_mask, cv2.bitwise_not(glare_mask))
+        candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+
+        edges = cv2.Canny(roi_gray, 25, 75)
+        edges = cv2.bitwise_and(edges, candidate_mask)
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=12,
+            minLineLength=18,
+            maxLineGap=8,
+        )
+        if lines is None:
+            return None
+
+        segments = []
+        angle_groups = set()
+        for line in lines[:, 0, :]:
+            lx1, ly1, lx2, ly2 = [int(value) for value in line]
+            length = float(((lx2 - lx1) ** 2 + (ly2 - ly1) ** 2) ** 0.5)
+            if length < 18.0:
+                continue
+            center_x = (lx1 + lx2) / 2.0 + x1
+            center_y = (ly1 + ly2) / 2.0 + y1
+            if center_x < width * 0.04 or center_x > width * FAST_REVIEW_DARK_STAR_LINE_MAX_X_RATIO:
+                continue
+            if center_y < height * 0.03 or center_y > height * FAST_REVIEW_DARK_STAR_LINE_MAX_Y_RATIO:
+                continue
+            angle = (np.degrees(np.arctan2(ly2 - ly1, lx2 - lx1)) + 180.0) % 180.0
+            angle_groups.add(int(angle // 22.5))
+            segments.append((lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1, length))
+
+        best = None
+        best_score = 0.0
+        for cluster in self.cluster_scratch_line_segments(segments):
+            if len(cluster) < FAST_REVIEW_DARK_STAR_LINE_MIN_LINES:
+                continue
+            xs = []
+            ys = []
+            total_length = 0.0
+            cluster_angle_groups = set()
+            for sx1, sy1, sx2, sy2, line_length in cluster:
+                xs.extend([sx1, sx2])
+                ys.extend([sy1, sy2])
+                total_length += line_length
+                angle = (np.degrees(np.arctan2(sy2 - sy1, sx2 - sx1)) + 180.0) % 180.0
+                cluster_angle_groups.add(int(angle // 22.5))
+            if len(cluster_angle_groups) < FAST_REVIEW_DARK_STAR_LINE_MIN_ANGLE_GROUPS:
+                continue
+            if total_length < FAST_REVIEW_DARK_STAR_LINE_MIN_TOTAL_LENGTH:
+                continue
+
+            left = max(0, min(xs))
+            top = max(0, min(ys))
+            right = min(width, max(xs) + 1)
+            bottom = min(height, max(ys) + 1)
+            box_w = max(1, right - left)
+            box_h = max(1, bottom - top)
+            box_area = float(box_w * box_h)
+            frame_area = float(max(1, width * height))
+            box_area_ratio = box_area / frame_area
+            if (
+                box_area_ratio < FAST_REVIEW_DARK_STAR_LINE_MIN_BOX_AREA_RATIO
+                or box_area_ratio > FAST_REVIEW_DARK_STAR_LINE_MAX_BOX_AREA_RATIO
+            ):
+                continue
+            aspect_ratio = float(max(box_w, box_h)) / float(max(1, min(box_w, box_h)))
+            if (
+                aspect_ratio < FAST_REVIEW_DARK_STAR_LINE_MIN_ASPECT
+                or aspect_ratio > FAST_REVIEW_DARK_STAR_LINE_MAX_ASPECT
+            ):
+                continue
+
+            box_gray = gray[top:bottom, left:right]
+            box_dark = local_dark[top:bottom, left:right]
+            if box_gray.size <= 0 or box_dark.size <= 0:
+                continue
+            local_pad = max(10, int(min(width, height) * 0.035))
+            local_left = max(0, left - local_pad)
+            local_top = max(0, top - local_pad)
+            local_right = min(width, right + local_pad)
+            local_bottom = min(height, bottom + local_pad)
+            local_gray = gray[local_top:local_bottom, local_left:local_right]
+            if local_gray.size <= 0:
+                continue
+
+            signed_delta = float(np.mean(box_gray)) - float(np.mean(local_gray))
+            dark_fraction = float(np.mean(box_dark >= dark_threshold))
+            if (
+                signed_delta > FAST_REVIEW_DARK_STAR_LINE_MIN_SIGNED_DELTA
+                and dark_fraction < FAST_REVIEW_DARK_STAR_LINE_MIN_DARK_FRACTION
+            ):
+                continue
+            bright_p95 = float(np.percentile(box_gray, 95.0))
+            bright_fraction = float(np.mean(box_gray >= float(np.mean(local_gray)) + 20.0))
+            bright_scratch_like = (
+                bright_p95 >= FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_P95
+                and bright_p95 - float(np.mean(local_gray)) >= FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_DELTA
+                and bright_fraction >= FAST_REVIEW_DARK_STAR_LINE_BRIGHT_SCRATCH_MIN_FRACTION
+            )
+            if bright_scratch_like:
+                continue
+            score = total_length + len(cluster_angle_groups) * 90.0 + dark_fraction * 260.0 + abs(min(0.0, signed_delta)) * 28.0
+            if score <= best_score:
+                continue
+            best_score = score
+            best = {
+                "left": int(left),
+                "top": int(top),
+                "right": int(right),
+                "bottom": int(bottom),
+                "box_area": int(box_area),
+                "dark_fraction": dark_fraction,
+                "signed_delta": signed_delta,
+                "local_dark": float(np.mean(box_dark)),
+                "line_count": int(len(cluster)),
+                "angle_groups": int(len(cluster_angle_groups)),
+                "total_length": total_length,
+            }
+
+        if best is None:
+            return None
+
+        pad = max(4, int(min(width, height) * 0.012))
+        left = best["left"]
+        top = best["top"]
+        right = best["right"]
+        bottom = best["bottom"]
+        left = max(0, left - pad)
+        top = max(0, top - pad)
+        right = min(width, right + pad)
+        bottom = min(height, bottom + pad)
+        box_w = max(1, right - left)
+        box_h = max(1, bottom - top)
+        return {
+            "type": "stain",
+            "confidence": 0.91,
+            "x": int(left),
+            "y": int(top),
+            "w": int(box_w),
+            "h": int(box_h),
+            "area": int(best["box_area"]),
+            "length": int(max(box_w, box_h)),
+            "aspect_ratio": round(float(max(box_w, box_h)) / float(max(1, min(box_w, box_h))), 2),
+            "density": round(best["dark_fraction"], 2),
+            "angle_groups": int(best["angle_groups"]),
+            "line_count": int(best["line_count"]),
+            "total_line_length": round(float(best["total_length"]), 1),
+            "brightness_signed_delta": round(float(best["signed_delta"]), 1),
+            "local_dark_delta": round(float(best["local_dark"]), 1),
+            "level": "medium",
+            "source": "pc_fast_dark_star_stain_lines",
+        }
 
     def count_dark_cluster_angle_groups(self, gray, x, y, w, h, component_mask):
         roi = gray[y:y + h, x:x + w]
@@ -4763,6 +6084,16 @@ class LensDefectHostApp:
             local_peak = float(np.percentile(contrast_roi[candidate_roi > 0], 82.0))
             if local_peak < FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA:
                 continue
+            gray_roi = gray[top:bottom, left:right]
+            dark_fraction = 0.0
+            if gray_roi.size > 0:
+                lens_gray_values = gray[mask > 0]
+                dark_limit = min(
+                    float(np.percentile(gray_roi, 35.0)) + 20.0,
+                    float(np.percentile(lens_gray_values, 45.0)) if lens_gray_values.size else 80.0,
+                    80.0,
+                )
+                dark_fraction = float(np.mean(gray_roi <= dark_limit))
             if edge_distance is not None and not self.scratch_box_has_safe_edge_distance(
                 edge_distance,
                 left,
@@ -4794,6 +6125,15 @@ class LensDefectHostApp:
                 and slender_ratio <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_SLENDER_RATIO
             ):
                 continue
+            dark_star_stain_like = (
+                center_x >= width * 0.56
+                and box_w >= width * 0.18
+                and aspect_ratio <= 2.25
+                and local_peak <= FAST_REVIEW_DARK_STAR_STAIN_MAX_BRIGHT_DELTA
+                and fill_ratio <= 0.32
+                and len(angle_groups) >= 4
+                and dark_fraction >= FAST_REVIEW_DARK_STAR_STAIN_MIN_DARK_FRACTION
+            )
             score = total_line_length + len(angle_groups) * 45.0 + slender_count * 18.0 + local_peak * 5.0
             if score > best_score:
                 best_score = score
@@ -4821,6 +6161,8 @@ class LensDefectHostApp:
                     "fill_ratio": round(fill_ratio, 2),
                     "crosshatch_scratch": True,
                     "strong_internal_scratch": True,
+                    "dark_fraction": round(dark_fraction, 2),
+                    "dark_star_stain_like": bool(dark_star_stain_like),
                     "candidates": [
                         {
                             "x": int(min(x1, x2)),
@@ -5059,6 +6401,72 @@ class LensDefectHostApp:
                 best_cluster.append(segment)
         return clusters
 
+    def stage2_defect_matches_locked_black_stain(self, black_stain, candidate):
+        if not isinstance(black_stain, dict) or not isinstance(candidate, dict):
+            return False
+        if candidate.get("type") != "stain":
+            return False
+        if self.fast_review_iou(black_stain, candidate) >= 0.16:
+            return True
+        return self.detection_center_distance_ratio(black_stain, candidate) <= 0.34
+
+    def stage2_score_peak_for_defect(self, score_map, defect):
+        if score_map is None or not hasattr(score_map, "shape") or not isinstance(defect, dict):
+            return 0.0
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        if w <= 0 or h <= 0:
+            return 0.0
+        height, width = score_map.shape[:2]
+        left = max(0, min(int(x), int(width)))
+        top = max(0, min(int(y), int(height)))
+        right = max(left, min(int(x + w), int(width)))
+        bottom = max(top, min(int(y + h), int(height)))
+        score_roi = score_map[top:bottom, left:right]
+        if score_roi.size <= 0:
+            return 0.0
+        return float(np.max(score_roi))
+
+    def preserve_locked_black_stains_after_stage2(self, rule_defects, merged_defects, stage2_result):
+        kept = [dict(defect) for defect in (merged_defects or []) if isinstance(defect, dict)]
+        protected = [
+            defect for defect in (rule_defects or [])
+            if self.detection_looks_like_locked_black_stain(defect)
+        ]
+        preserved_count = 0
+        if not protected:
+            if isinstance(stage2_result, dict):
+                stage2_result["preserved_black_stain_count"] = 0
+            return kept, stage2_result
+
+        score_map = stage2_result.get("score_map") if isinstance(stage2_result, dict) else None
+        for defect in protected:
+            if any(self.stage2_defect_matches_locked_black_stain(defect, old) for old in kept):
+                continue
+            preserved = dict(defect)
+            preserved["stage2_confirmed"] = False
+            preserved["stage2_preserved_black_stain"] = True
+            preserved["stage2_reason"] = "center_black_stain_guard"
+            preserved["stage2_score"] = round(self.stage2_score_peak_for_defect(score_map, defect), 4)
+            preserved["confidence"] = round(max(self.confidence_float(defect), 0.90), 2)
+            kept.append(preserved)
+            preserved_count += 1
+
+        if preserved_count:
+            kept.sort(
+                key=lambda item: (
+                    1 if item.get("stage2_preserved_black_stain") else 0,
+                    self.confidence_float(item),
+                    self._positive_int(item.get("area")),
+                ),
+                reverse=True,
+            )
+        if isinstance(stage2_result, dict):
+            stage2_result["preserved_black_stain_count"] = preserved_count
+        return kept, stage2_result
+
     def apply_stage2_to_live_image(self, image, payload):
         if not isinstance(self.latest_detection_result, dict):
             return
@@ -5084,8 +6492,14 @@ class LensDefectHostApp:
         rgb = np.array(image)
         frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         stage2_result = model.infer(frame, analysis_mask)
+        rule_defects = self.latest_detection_result.get("defects") or []
         merged_defects, stage2_result = merge_with_rule_defects(
-            self.latest_detection_result.get("defects") or [],
+            rule_defects,
+            stage2_result,
+        )
+        merged_defects, stage2_result = self.preserve_locked_black_stains_after_stage2(
+            rule_defects,
+            merged_defects,
             stage2_result,
         )
 
@@ -5102,7 +6516,9 @@ class LensDefectHostApp:
             "score_mean": float(stage2_result.get("score_mean", 0.0)),
             "candidate_count": int(stage2_result.get("candidate_count", 0)),
             "confirmed_rule_count": int(stage2_result.get("confirmed_rule_count", 0)),
+            "unconfirmed_rule_count": int(stage2_result.get("unconfirmed_rule_count", 0)),
             "added_stage2_count": int(stage2_result.get("added_stage2_count", 0)),
+            "preserved_black_stain_count": int(stage2_result.get("preserved_black_stain_count", 0)),
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
@@ -5181,6 +6597,8 @@ class LensDefectHostApp:
 
     def roi_should_prefer_auto(self, roi, auto_roi, source_w, source_h):
         if not isinstance(roi, dict) or not isinstance(auto_roi, dict):
+            return False
+        if str(roi.get("source", "")).lower() == "pc_yolo_center_guard":
             return False
         if self.roi_is_full_frame(roi, source_w, source_h):
             return True

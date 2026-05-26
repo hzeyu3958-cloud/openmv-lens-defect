@@ -28,6 +28,7 @@ models/**
 
 # Local training datasets and dependency caches.
 dataset_yolo_seed/
+dataset_yolo_seed_refined/
 downloads/
 
 # Keep packaged demo artifacts here.
