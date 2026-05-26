@@ -10,6 +10,7 @@ def parse_args():
     parser.add_argument("--data", default="dataset_yolo_seed/data.yaml")
     parser.add_argument("--output", default="models/lens_yolo.onnx")
     parser.add_argument("--base-model", default="yolov8n.pt")
+    parser.add_argument("--task", choices=("detect", "segment"), default="detect")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--image-size", type=int, default=640)
     parser.add_argument("--batch", type=int, default=16)
@@ -47,6 +48,7 @@ def main():
         imgsz=int(args.image_size),
         batch=int(args.batch),
         device="cpu",
+        task=args.task,
         project=str((project_root / "outputs" / "yolo_training").resolve()),
         name=args.name,
         exist_ok=True,
@@ -57,7 +59,7 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(exported, output)
     labels = output.with_name(output.stem + "_labels.txt")
-    if output.name == "lens_yolo.onnx":
+    if output.name in ("lens_yolo.onnx", "lens_yolo_seg.onnx"):
         labels = output.with_name("lens_yolo_labels.txt")
     labels.write_text("scratch\nstain\n", encoding="utf-8")
     metadata = {
@@ -66,6 +68,8 @@ def main():
         "epochs": int(args.epochs),
         "batch": int(args.batch),
         "data": str(data_yaml),
+        "task": args.task,
+        "recommended_runtime": "detect uses boxes; segment exports YOLO-seg masks when polygon labels are available.",
     }
     meta = output.with_name(output.stem + "_meta.json")
     if output.name == "lens_yolo.onnx":

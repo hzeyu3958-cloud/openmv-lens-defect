@@ -74,8 +74,10 @@ DEFAULT_DATASET_DIR = PROJECT_ROOT / "dataset"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
 DEFAULT_STAGE2_MODEL = DEFAULT_MODELS_DIR / "lens_stage2_anomaly.npz"
 DEFAULT_YOLO_MODEL = DEFAULT_MODELS_DIR / "lens_yolo.onnx"
+DEFAULT_YOLO_SEG_MODEL = DEFAULT_MODELS_DIR / "lens_yolo_seg.onnx"
 DEFAULT_YOLO_LABELS = DEFAULT_MODELS_DIR / "lens_yolo_labels.txt"
 DEFAULT_YOLO_META = DEFAULT_MODELS_DIR / "lens_yolo_meta.json"
+CORRECTION_METADATA_FILENAME = "corrections.csv"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 METADATA_FILENAME = "metadata.csv"
 SPLIT_TARGET_RATIOS = {"train": 0.7, "val": 0.2, "test": 0.1}
@@ -309,6 +311,14 @@ YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES = 8
 YOLO_AUTO_ROI_SIDE_CLIP_MARGIN_RATIO = 0.025
 YOLO_AUTO_ROI_EDGE_PARTIAL_SIZE_RATIO = 0.92
 YOLO_AUTO_ROI_MAX_CENTER_X_DRIFT_RATIO = 0.27
+YOLO_ROI_HIGH_RES_INPUT_SIZE = 640
+YOLO_LOW_CONFIDENCE_TILE_THRESHOLD = 0.34
+YOLO_TILE_OVERLAP_RATIO = 0.22
+YOLO_TILE_MIN_ROI_SIZE = 180
+YOLO_TILE_MAX_TILES = 4
+YOLO_TILE_MERGE_IOU_THRESHOLD = 0.18
+YOLO_TILE_MERGE_CENTER_DISTANCE_RATIO = 0.32
+YOLO_TILE_MERGE_CONTAINMENT_THRESHOLD = 0.58
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
@@ -405,6 +415,10 @@ def count_image_files(folder):
 
 def metadata_path(dataset_dir):
     return dataset_dir / METADATA_FILENAME
+
+
+def correction_metadata_path(dataset_dir):
+    return dataset_dir / CORRECTION_METADATA_FILENAME
 
 
 def acquire_single_instance_lock():
@@ -574,6 +588,7 @@ class YoloOnnxDetector:
             raise FileNotFoundError(str(self.model_path))
         self.labels = self._load_labels(labels_path)
         self.input_size = self._resolve_input_size(input_size)
+        self.task = "segment" if "seg" in self.model_path.stem.lower() else "detect"
         self._working_input_size = None
         self.net = self._read_onnx_model(self.model_path)
         try:
@@ -630,17 +645,17 @@ class YoloOnnxDetector:
                     return value
         return int(input_size)
 
-    def detect(self, image):
+    def detect(self, image, input_size=None):
         rgb = np.array(image.convert("RGB"))
         frame_h, frame_w = rgb.shape[:2]
         if frame_w <= 0 or frame_h <= 0:
             return []
-        output_size, outputs = self._forward_with_compatible_size(rgb)
+        output_size, outputs = self._forward_with_compatible_size(rgb, input_size=input_size)
         return self._parse_outputs(outputs, frame_w, frame_h, output_size)
 
-    def detect_roi(self, image, roi):
+    def detect_roi(self, image, roi, input_size=None, source="yolo_onnx_roi"):
         if not isinstance(roi, dict):
-            return self.detect(image)
+            return self.detect(image, input_size=input_size)
         image_w, image_h = image.size
         x = max(0, int(roi.get("x", 0) or 0))
         y = max(0, int(roi.get("y", 0) or 0))
@@ -653,16 +668,81 @@ class YoloOnnxDetector:
         if w <= 4 or h <= 4:
             return []
         crop = image.crop((x, y, x + w, y + h))
-        detections = self.detect(crop)
+        detections = self.detect(crop, input_size=input_size)
         for detection in detections:
             detection["x"] = int(detection.get("x", 0) or 0) + x
             detection["y"] = int(detection.get("y", 0) or 0) + y
-            detection["source"] = "yolo_onnx_roi"
+            if isinstance(detection.get("mask_polygon"), list):
+                detection["mask_polygon"] = [
+                    (int(point[0]) + x, int(point[1]) + y)
+                    for point in detection["mask_polygon"]
+                    if isinstance(point, (list, tuple)) and len(point) >= 2
+                ]
+            detection["source"] = source
             detection["roi_inference"] = True
         return detections
 
-    def _forward_with_compatible_size(self, rgb):
+    def detect_roi_tiled(self, image, roi, input_size=None):
+        if not isinstance(roi, dict):
+            return []
+        image_w, image_h = image.size
+        x = max(0, int(roi.get("x", 0) or 0))
+        y = max(0, int(roi.get("y", 0) or 0))
+        w = max(1, int(roi.get("w", 0) or 0))
+        h = max(1, int(roi.get("h", 0) or 0))
+        x = min(x, max(0, image_w - 1))
+        y = min(y, max(0, image_h - 1))
+        w = min(w, image_w - x)
+        h = min(h, image_h - y)
+        if w < YOLO_TILE_MIN_ROI_SIZE or h < YOLO_TILE_MIN_ROI_SIZE:
+            return []
+
+        tile_w = max(YOLO_TILE_MIN_ROI_SIZE, int(w * 0.62))
+        tile_h = max(YOLO_TILE_MIN_ROI_SIZE, int(h * 0.62))
+        step_x = max(1, int(tile_w * (1.0 - YOLO_TILE_OVERLAP_RATIO)))
+        step_y = max(1, int(tile_h * (1.0 - YOLO_TILE_OVERLAP_RATIO)))
+        xs = [x]
+        ys = [y]
+        if x + tile_w < x + w:
+            xs.append(max(x, x + w - tile_w))
+        if y + tile_h < y + h:
+            ys.append(max(y, y + h - tile_h))
+        if w > tile_w * 1.55:
+            xs.insert(1, min(x + step_x, max(x, x + w - tile_w)))
+        if h > tile_h * 1.55:
+            ys.insert(1, min(y + step_y, max(y, y + h - tile_h)))
+
+        detections = []
+        tile_count = 0
+        for top in dict.fromkeys(ys):
+            for left in dict.fromkeys(xs):
+                if tile_count >= YOLO_TILE_MAX_TILES:
+                    break
+                tile_roi = {
+                    "x": int(left),
+                    "y": int(top),
+                    "w": int(min(tile_w, image_w - left)),
+                    "h": int(min(tile_h, image_h - top)),
+                }
+                tile_detections = self.detect_roi(
+                    image,
+                    tile_roi,
+                    input_size=input_size,
+                    source="yolo_onnx_roi_tile",
+                )
+                for detection in tile_detections:
+                    detection["tile_inference"] = True
+                    detection["tile_roi"] = dict(tile_roi)
+                detections.extend(tile_detections)
+                tile_count += 1
+            if tile_count >= YOLO_TILE_MAX_TILES:
+                break
+        return self._merge_tile_detections(detections)
+
+    def _forward_with_compatible_size(self, rgb, input_size=None):
         sizes = []
+        if input_size:
+            sizes.append(int(input_size))
         if self._working_input_size:
             sizes.append(int(self._working_input_size))
         sizes.append(int(self.input_size))
@@ -681,6 +761,148 @@ class YoloOnnxDetector:
             raise last_error
         return int(self.input_size), self._forward_at_size(rgb, int(self.input_size))
 
+    def _nms_detections(self, detections):
+        if not detections:
+            return []
+        boxes = []
+        scores = []
+        for detection in detections:
+            boxes.append([
+                int(detection.get("x", 0) or 0),
+                int(detection.get("y", 0) or 0),
+                int(detection.get("w", 0) or 0),
+                int(detection.get("h", 0) or 0),
+            ])
+            scores.append(float(detection.get("confidence", 0) or 0))
+        keep = cv2.dnn.NMSBoxes(boxes, scores, YOLO_CONFIDENCE_THRESHOLD, YOLO_NMS_THRESHOLD)
+        if len(keep) == 0:
+            return []
+        return [detections[int(index)] for index in np.array(keep).reshape(-1)]
+
+    def _merge_tile_detections(self, detections):
+        if not detections:
+            return []
+        ordered = sorted(
+            [dict(detection) for detection in detections if isinstance(detection, dict)],
+            key=lambda detection: float(detection.get("confidence", 0) or 0),
+            reverse=True,
+        )
+        groups = []
+        for detection in ordered:
+            target = None
+            for group in groups:
+                if self._tile_detections_should_merge(group[0], detection):
+                    target = group
+                    break
+            if target is None:
+                groups.append([detection])
+            else:
+                target.append(detection)
+
+        merged = []
+        for group in groups:
+            if len(group) == 1:
+                merged.append(group[0])
+            else:
+                merged.append(self._merge_detection_group(group))
+        return self._nms_detections(merged)
+
+    def _tile_detections_should_merge(self, first, second):
+        if first.get("type") != second.get("type"):
+            return False
+        if self._box_iou(first, second) >= YOLO_TILE_MERGE_IOU_THRESHOLD:
+            return True
+        if self._box_containment(first, second) >= YOLO_TILE_MERGE_CONTAINMENT_THRESHOLD:
+            return True
+        return self._box_center_distance_ratio(first, second) <= YOLO_TILE_MERGE_CENTER_DISTANCE_RATIO
+
+    def _merge_detection_group(self, group):
+        weights = [max(0.01, float(detection.get("confidence", 0) or 0)) for detection in group]
+        total_weight = sum(weights) or float(len(group))
+        left = sum(float(detection.get("x", 0) or 0) * weight for detection, weight in zip(group, weights)) / total_weight
+        top = sum(float(detection.get("y", 0) or 0) * weight for detection, weight in zip(group, weights)) / total_weight
+        right = sum((float(detection.get("x", 0) or 0) + float(detection.get("w", 0) or 0)) * weight for detection, weight in zip(group, weights)) / total_weight
+        bottom = sum((float(detection.get("y", 0) or 0) + float(detection.get("h", 0) or 0)) * weight for detection, weight in zip(group, weights)) / total_weight
+        best = max(group, key=lambda detection: float(detection.get("confidence", 0) or 0))
+        merged = dict(best)
+        x = int(round(left))
+        y = int(round(top))
+        w = max(1, int(round(right - left)))
+        h = max(1, int(round(bottom - top)))
+        confidence = max(float(detection.get("confidence", 0) or 0) for detection in group)
+        confidence = min(0.99, confidence + min(0.04, 0.01 * (len(group) - 1)))
+        merged.update({
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
+            "area": int(w * h),
+            "length": int(max(w, h)),
+            "aspect_ratio": round(float(max(w, h)) / float(max(1, min(w, h))), 2),
+            "confidence": round(confidence, 2),
+            "source": "yolo_onnx_roi_tile_merged",
+            "tile_inference": True,
+            "tile_merged": True,
+            "tile_merge_count": len(group),
+        })
+        tile_rois = [detection.get("tile_roi") for detection in group if isinstance(detection.get("tile_roi"), dict)]
+        if tile_rois:
+            merged["tile_rois"] = [dict(tile_roi) for tile_roi in tile_rois]
+        return merged
+
+    def _box_iou(self, first, second):
+        ax, ay, aw, ah = self._box_values(first)
+        bx, by, bw, bh = self._box_values(second)
+        if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+            return 0.0
+        left = max(ax, bx)
+        top = max(ay, by)
+        right = min(ax + aw, bx + bw)
+        bottom = min(ay + ah, by + bh)
+        intersection = max(0.0, right - left) * max(0.0, bottom - top)
+        union = aw * ah + bw * bh - intersection
+        if union <= 0:
+            return 0.0
+        return float(intersection) / float(union)
+
+    def _box_containment(self, first, second):
+        ax, ay, aw, ah = self._box_values(first)
+        bx, by, bw, bh = self._box_values(second)
+        if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+            return 0.0
+        left = max(ax, bx)
+        top = max(ay, by)
+        right = min(ax + aw, bx + bw)
+        bottom = min(ay + ah, by + bh)
+        intersection = max(0.0, right - left) * max(0.0, bottom - top)
+        smaller = min(aw * ah, bw * bh)
+        if smaller <= 0:
+            return 0.0
+        return float(intersection) / float(smaller)
+
+    def _box_center_distance_ratio(self, first, second):
+        ax, ay, aw, ah = self._box_values(first)
+        bx, by, bw, bh = self._box_values(second)
+        if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+            return 1.0
+        acx = ax + aw / 2.0
+        acy = ay + ah / 2.0
+        bcx = bx + bw / 2.0
+        bcy = by + bh / 2.0
+        scale = max(aw, ah, bw, bh, 1.0)
+        return max(abs(acx - bcx), abs(acy - bcy)) / scale
+
+    def _box_values(self, detection):
+        try:
+            return (
+                float(detection.get("x", 0) or 0),
+                float(detection.get("y", 0) or 0),
+                float(detection.get("w", 0) or 0),
+                float(detection.get("h", 0) or 0),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return 0.0, 0.0, 0.0, 0.0
+
     def _forward_at_size(self, rgb, input_size):
         blob = cv2.dnn.blobFromImage(
             rgb,
@@ -690,10 +912,21 @@ class YoloOnnxDetector:
             crop=False,
         )
         self.net.setInput(blob)
+        if self.task == "segment":
+            try:
+                names = self.net.getUnconnectedOutLayersNames()
+                if names:
+                    return self.net.forward(names)
+            except Exception:
+                pass
         return self.net.forward()
 
     def _parse_outputs(self, outputs, frame_w, frame_h, input_size=None):
         input_size = int(input_size or self.input_size)
+        if isinstance(outputs, (list, tuple)) and len(outputs) >= 2:
+            return self._parse_segmentation_outputs(outputs, frame_w, frame_h, input_size)
+        if isinstance(outputs, (list, tuple)):
+            outputs = outputs[0]
         data = np.asarray(outputs)
         data = np.squeeze(data)
         if data.ndim == 1:
@@ -787,6 +1020,180 @@ class YoloOnnxDetector:
                 "source": "yolo_onnx",
             })
         return detections
+
+    def _parse_segmentation_outputs(self, outputs, frame_w, frame_h, input_size):
+        prediction, proto = self._split_segmentation_outputs(outputs)
+        if prediction is None or proto is None:
+            return self._parse_outputs(outputs[0], frame_w, frame_h, input_size)
+        data = np.asarray(prediction)
+        data = np.squeeze(data)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        if data.ndim != 2:
+            data = data.reshape(-1, data.shape[-1])
+        label_count = len(self.labels)
+        if data.shape[0] < data.shape[1] and data.shape[0] >= 4 + label_count:
+            data = data.T
+
+        mask_count = self._seg_proto_channels(proto)
+        if mask_count <= 0:
+            return self._parse_outputs(prediction, frame_w, frame_h, input_size)
+        class_start = 4
+        class_end = data.shape[1] - mask_count
+        if class_end <= class_start:
+            return self._parse_outputs(prediction, frame_w, frame_h, input_size)
+
+        boxes = []
+        scores = []
+        class_ids = []
+        mask_coeffs = []
+        for row in data:
+            if row.size < class_end + mask_count:
+                continue
+            values = row.astype(float)
+            class_scores = values[class_start:class_end]
+            if class_scores.size <= 0:
+                continue
+            class_index = int(np.argmax(class_scores))
+            confidence = float(class_scores[class_index])
+            if confidence < YOLO_CONFIDENCE_THRESHOLD:
+                continue
+            label_text = self.labels[class_index] if class_index < len(self.labels) else str(class_index)
+            defect_type = normalize_model_class_name(label_text, class_index)
+            if defect_type not in SUPPORTED_DEFECT_TYPES:
+                continue
+
+            cx, cy, bw, bh = values[:4]
+            if max(cx, cy, bw, bh) <= 2.0:
+                cx *= frame_w
+                bw *= frame_w
+                cy *= frame_h
+                bh *= frame_h
+            else:
+                scale_x = float(frame_w) / float(input_size)
+                scale_y = float(frame_h) / float(input_size)
+                cx *= scale_x
+                bw *= scale_x
+                cy *= scale_y
+                bh *= scale_y
+
+            left = max(0, int(cx - bw / 2.0))
+            top = max(0, int(cy - bh / 2.0))
+            width = min(frame_w - left, max(1, int(bw)))
+            height = min(frame_h - top, max(1, int(bh)))
+            boxes.append([left, top, width, height])
+            scores.append(confidence)
+            class_ids.append((class_index, defect_type))
+            mask_coeffs.append(values[class_end:class_end + mask_count])
+
+        if not boxes:
+            return []
+        keep = cv2.dnn.NMSBoxes(boxes, scores, YOLO_CONFIDENCE_THRESHOLD, YOLO_NMS_THRESHOLD)
+        if len(keep) == 0:
+            return []
+
+        detections = []
+        for index in np.array(keep).reshape(-1):
+            idx = int(index)
+            left, top, width, height = boxes[idx]
+            _class_index, defect_type = class_ids[idx]
+            mask_info = self._segmentation_mask_info(proto, mask_coeffs[idx], boxes[idx], frame_w, frame_h)
+            if mask_info:
+                mx, my, mw, mh = mask_info["box"]
+                left, top, width, height = mx, my, mw, mh
+            area = int(width * height)
+            length = int(max(width, height))
+            detection = {
+                "type": defect_type,
+                "confidence": round(float(scores[idx]), 2),
+                "x": int(left),
+                "y": int(top),
+                "w": int(width),
+                "h": int(height),
+                "area": area,
+                "length": length,
+                "aspect_ratio": round(float(length) / float(max(1, min(width, height))), 2),
+                "level": "medium" if area >= 500 or length >= 70 else "light",
+                "source": "yolo_onnx",
+                "model_task": "segment",
+                "mask_area": int(mask_info.get("area", 0)) if mask_info else 0,
+            }
+            if mask_info and mask_info.get("polygon"):
+                detection["mask_polygon"] = mask_info["polygon"]
+            detections.append(detection)
+        return detections
+
+    def _split_segmentation_outputs(self, outputs):
+        arrays = [np.asarray(output) for output in outputs]
+        prediction = None
+        proto = None
+        for array in arrays:
+            squeezed = np.squeeze(array)
+            if squeezed.ndim == 3:
+                proto = squeezed
+            elif squeezed.ndim in (2, 3):
+                prediction = array if prediction is None else prediction
+        if prediction is None and arrays:
+            prediction = arrays[0]
+        return prediction, proto
+
+    def _seg_proto_channels(self, proto):
+        shape = np.asarray(proto).shape
+        if len(shape) != 3:
+            return 0
+        return int(shape[0] if shape[0] <= shape[-1] else shape[-1])
+
+    def _normalize_proto(self, proto):
+        proto = np.asarray(proto, dtype=np.float32)
+        if proto.ndim != 3:
+            return None
+        if proto.shape[0] <= proto.shape[-1]:
+            return proto
+        return np.transpose(proto, (2, 0, 1))
+
+    def _segmentation_mask_info(self, proto, coeffs, box, frame_w, frame_h):
+        proto = self._normalize_proto(proto)
+        if proto is None:
+            return None
+        coeffs = np.asarray(coeffs, dtype=np.float32).reshape(-1)
+        if proto.shape[0] != coeffs.shape[0]:
+            return None
+        mask = np.tensordot(coeffs, proto, axes=(0, 0))
+        mask = 1.0 / (1.0 + np.exp(-np.clip(mask, -40.0, 40.0)))
+        mask = cv2.resize(mask, (int(frame_w), int(frame_h)), interpolation=cv2.INTER_LINEAR)
+        binary = np.where(mask >= 0.50, 255, 0).astype(np.uint8)
+        x, y, w, h = [int(value) for value in box]
+        clipped = np.zeros_like(binary)
+        clipped[y:y + h, x:x + w] = binary[y:y + h, x:x + w]
+        if cv2.countNonZero(clipped) <= 0:
+            return None
+        clipped = cv2.morphologyEx(clipped, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
+        clipped = cv2.morphologyEx(clipped, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        contours, _hierarchy = cv2.findContours(clipped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [contour for contour in contours if cv2.contourArea(contour) >= 3.0]
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea)
+        mx, my, mw, mh = cv2.boundingRect(contour)
+        if mw <= 0 or mh <= 0:
+            return None
+        polygon = self._contour_polygon(contour)
+        return {
+            "box": (int(mx), int(my), int(mw), int(mh)),
+            "area": int(cv2.contourArea(contour)),
+            "polygon": polygon,
+        }
+
+    def _contour_polygon(self, contour):
+        perimeter = cv2.arcLength(contour, True)
+        epsilon = max(1.0, perimeter * 0.012)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        while len(approx) > 28:
+            epsilon *= 1.35
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+        if len(approx) < 3:
+            return []
+        return [(int(point[0][0]), int(point[0][1])) for point in approx]
 
 
 class SerialLineReader:
@@ -995,8 +1402,10 @@ class LensDefectHostApp:
         self.stage2_model_var = tk.StringVar(value=str(DEFAULT_STAGE2_MODEL))
         self.stage2_status_var = tk.StringVar(value="高速复核：已启用；二级模型未勾选")
         self.yolo_enabled_var = tk.BooleanVar(value=True)
-        self.yolo_model_var = tk.StringVar(value=str(DEFAULT_YOLO_MODEL))
+        self.yolo_model_var = tk.StringVar(value=str(DEFAULT_YOLO_SEG_MODEL if DEFAULT_YOLO_SEG_MODEL.exists() else DEFAULT_YOLO_MODEL))
         self.yolo_status_var = tk.StringVar(value="YOLO：未加载；无模型时用电脑快速复核兜底")
+        self.yolo_high_res_roi_var = tk.BooleanVar(value=True)
+        self.yolo_low_conf_tile_var = tk.BooleanVar(value=True)
         self._last_effective_roi = None
 
         self.has_defect_var = tk.StringVar(value="是否检测到缺陷：暂无数据")
@@ -1135,6 +1544,34 @@ class LensDefectHostApp:
         ttk.Button(yolo_frame, text="选择 YOLO", command=self.choose_yolo_model).pack(side=tk.LEFT, padx=4)
         ttk.Button(yolo_frame, text="加载 YOLO", command=self.load_yolo_model_from_ui).pack(side=tk.LEFT, padx=4)
         ttk.Label(yolo_frame, textvariable=self.yolo_status_var).pack(side=tk.LEFT, padx=8)
+
+        yolo_opt_frame = ttk.Frame(self.detect_tab)
+        yolo_opt_frame.pack(fill=tk.X, pady=(4, 0))
+        ttk.Checkbutton(
+            yolo_opt_frame,
+            text="中间 ROI 高分辨率推理",
+            variable=self.yolo_high_res_roi_var,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(
+            yolo_opt_frame,
+            text="低置信度时 ROI 切片复核",
+            variable=self.yolo_low_conf_tile_var,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            yolo_opt_frame,
+            text="这是污渍",
+            command=lambda: self.save_live_correction("stain"),
+        ).pack(side=tk.LEFT, padx=(18, 4))
+        ttk.Button(
+            yolo_opt_frame,
+            text="这是划痕",
+            command=lambda: self.save_live_correction("scratch"),
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Button(
+            yolo_opt_frame,
+            text="这是正常",
+            command=lambda: self.save_live_correction("normal"),
+        ).pack(side=tk.LEFT, padx=4)
 
         live_frame = ttk.LabelFrame(self.detect_tab, text="OpenMV 实时画面", padding=6)
         live_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -1376,8 +1813,10 @@ class LensDefectHostApp:
         ttk.Button(train_frame, text="打开模型输出目录", command=self.open_models_dir).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="启动本地训练脚本", command=self.run_training_script).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="生成 YOLO 初始标注", command=self.run_yolo_seed_export_script).pack(side=tk.LEFT, padx=4)
+        ttk.Button(train_frame, text="生成 YOLO-seg 标注", command=self.run_yolo_seg_seed_export_script).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="预览 YOLO 标注", command=self.run_yolo_preview_script).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="训练 YOLO ONNX", command=self.run_yolo_training_script).pack(side=tk.LEFT, padx=4)
+        ttk.Button(train_frame, text="训练 YOLO-seg ONNX", command=self.run_yolo_seg_training_script).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="打开训练脚本位置", command=self.open_training_script_folder).pack(side=tk.LEFT, padx=4)
         ttk.Button(train_frame, text="刷新训练结果", command=self.load_training_summary).pack(side=tk.LEFT, padx=4)
 
@@ -1705,6 +2144,140 @@ class LensDefectHostApp:
                 "OpenMV N6 USB",
             ])
 
+    def save_live_correction(self, corrected_class):
+        corrected_class = defect_type_key(corrected_class)
+        if self.latest_live_image_payload is None or "image_bytes" not in self.latest_live_image_payload:
+            messagebox.showwarning("暂无画面", "还没有收到当前画面，先开始接收 OpenMV 画面。")
+            return
+
+        dataset_dir = Path(self.dataset_dir_var.get())
+        split = self.choose_balanced_split(dataset_dir, corrected_class) if self.auto_split_var.get() else self.dataset_split_var.get()
+        save_dir = dataset_dir / split / corrected_class
+        save_dir.mkdir(parents=True, exist_ok=True)
+        filename = "correction_%s_%s_%s.jpg" % (corrected_class, split, safe_filename_time())
+        save_path = save_dir / filename
+        image_bytes = self.latest_live_image_payload["image_bytes"]
+        with open(save_path, "wb") as file:
+            file.write(image_bytes)
+
+        width = self._positive_int(self.latest_live_image_payload.get("width"))
+        height = self._positive_int(self.latest_live_image_payload.get("height"))
+        quality = self.inspect_capture_image(image_bytes, width, height)
+        self.append_capture_metadata(
+            dataset_dir=dataset_dir,
+            save_path=save_path,
+            split=split,
+            class_name=corrected_class,
+            port=self.selected_port() if self.port_var.get().strip() else "",
+            baudrate=self.baud_var.get().strip(),
+            width=quality["width"],
+            height=quality["height"],
+            byte_count=len(image_bytes),
+            quality=quality,
+        )
+        self.append_correction_metadata(dataset_dir, save_path, split, corrected_class, quality)
+        self.refresh_dataset_counts()
+        self.log_capture(
+            "纠错样本已保存：%s，正确类别=%s，已加入下一次训练。"
+            % (save_path, defect_type_name(corrected_class))
+        )
+        self.status_var.set("状态：已保存纠错样本 %s" % defect_type_name(corrected_class))
+
+    def append_correction_metadata(self, dataset_dir, save_path, split, corrected_class, quality):
+        path = correction_metadata_path(dataset_dir)
+        is_new_file = not path.exists()
+        result = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
+        defects = result.get("defects") or []
+        primary = max(defects, key=lambda item: self.confidence_float(item), default={})
+        predicted_class, _class_text, predicted_confidence = self.display_class_result(result)
+        try:
+            relative_path = str(save_path.relative_to(dataset_dir))
+        except ValueError:
+            relative_path = str(save_path)
+        sidecar = {
+            "correction_time": now_text(),
+            "relative_path": relative_path,
+            "split": split,
+            "corrected_label": corrected_class,
+            "predicted_label": predicted_class,
+            "predicted_confidence": predicted_confidence,
+            "primary_box": {
+                "x": primary.get("x"),
+                "y": primary.get("y"),
+                "w": primary.get("w"),
+                "h": primary.get("h"),
+                "source": primary.get("source"),
+                "review_source": primary.get("review_source"),
+            },
+            "defects": defects,
+            "roi": result.get("roi") if isinstance(result.get("roi"), dict) else {},
+            "lens": result.get("lens") if isinstance(result.get("lens"), dict) else {},
+            "hard_negative_tags": self.correction_tags(corrected_class, predicted_class, primary),
+            "quality": quality,
+        }
+        json_path = save_path.with_suffix(".correction.json")
+        json_path.write_text(json.dumps(sidecar, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        with open(path, "a", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            if is_new_file:
+                writer.writerow([
+                    "correction_time",
+                    "relative_path",
+                    "split",
+                    "corrected_label",
+                    "predicted_label",
+                    "predicted_confidence",
+                    "box_x",
+                    "box_y",
+                    "box_w",
+                    "box_h",
+                    "source",
+                    "tags",
+                    "sidecar_json",
+                ])
+            writer.writerow([
+                sidecar["correction_time"],
+                relative_path,
+                split,
+                corrected_class,
+                predicted_class,
+                "" if predicted_confidence is None else predicted_confidence,
+                primary.get("x", ""),
+                primary.get("y", ""),
+                primary.get("w", ""),
+                primary.get("h", ""),
+                primary.get("source", primary.get("review_source", "")),
+                "|".join(sidecar["hard_negative_tags"]),
+                str(json_path),
+            ])
+
+    def correction_tags(self, corrected_class, predicted_class, primary):
+        tags = []
+        if corrected_class == "normal":
+            tags.append("normal_reflection_negative")
+            if predicted_class in SUPPORTED_DEFECT_TYPES:
+                tags.append("false_positive_%s" % predicted_class)
+            if self.defect_source_looks_edge_related(primary):
+                tags.append("frame_or_lens_edge_negative")
+            else:
+                tags.append("center_white_reflection_negative")
+        elif corrected_class == "stain":
+            tags.append("center_black_stain_positive")
+            if predicted_class == "scratch":
+                tags.append("scratch_to_stain_correction")
+        elif corrected_class == "scratch":
+            tags.append("center_thin_white_scratch_positive")
+            if predicted_class == "stain":
+                tags.append("stain_to_scratch_correction")
+        return tags
+
+    def defect_source_looks_edge_related(self, defect):
+        if not isinstance(defect, dict):
+            return False
+        source = "%s %s" % (defect.get("source", ""), defect.get("review_source", ""))
+        return "edge" in source or "frame" in source or "roi" in source
+
     def apply_capture_result(self, payload):
         quality = payload["quality"]
         quality_text = self.format_quality_text(quality)
@@ -1925,6 +2498,22 @@ class LensDefectHostApp:
         subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))
         self.status_var.set("状态：已打开 YOLO ONNX 训练窗口")
 
+    def run_yolo_seg_training_script(self):
+        script = find_yolo_training_script()
+        if script is None:
+            messagebox.showerror("找不到脚本", "未找到 training/train_yolo_from_seed.py")
+            return
+
+        python_exe = find_training_python()
+        data_yaml = PROJECT_ROOT / "dataset_yolo_seed_refined" / "data.yaml"
+        output_model = DEFAULT_YOLO_SEG_MODEL
+        command = (
+            '"%s" "%s" --data "%s" --output "%s" --base-model yolov8n-seg.pt --task segment --epochs 80 --image-size 640 --batch 4 --name lens_yolo_seg'
+            % (python_exe, script, data_yaml, output_model)
+        )
+        subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))
+        self.status_var.set("状态：已打开 YOLO-seg ONNX 训练窗口")
+
     def run_yolo_preview_script(self):
         script = find_yolo_preview_script()
         if script is None:
@@ -1941,6 +2530,22 @@ class LensDefectHostApp:
         subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))
         self.open_path(output_dir)
         self.status_var.set("状态：已打开 YOLO 标注预览生成窗口")
+
+    def run_yolo_seg_seed_export_script(self):
+        script = find_yolo_seed_export_script()
+        if script is None:
+            messagebox.showerror("找不到脚本", "未找到 training/export_yolo_seed_labels.py")
+            return
+
+        dataset_dir = Path(self.dataset_dir_var.get())
+        output_dir = PROJECT_ROOT / "dataset_yolo_seed_refined"
+        python_exe = find_training_python()
+        command = (
+            '"%s" "%s" --dataset "%s" --output "%s" --copy-images --min-confidence 0.70 --label-format segment --clean-output'
+            % (python_exe, script, dataset_dir, output_dir)
+        )
+        subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))
+        self.status_var.set("状态：已打开 YOLO-seg 分割标注生成窗口")
 
     def open_training_script_folder(self):
         script = find_training_script()
@@ -2043,7 +2648,7 @@ class LensDefectHostApp:
             self.yolo_status_var.set("YOLO：已关闭")
             return None
         raw_text = self.yolo_model_var.get().strip()
-        signature = raw_text or str(DEFAULT_YOLO_MODEL)
+        signature = raw_text or str(DEFAULT_YOLO_SEG_MODEL if DEFAULT_YOLO_SEG_MODEL.exists() else DEFAULT_YOLO_MODEL)
         now = time.monotonic()
         if (
             not force_reload
@@ -2055,6 +2660,7 @@ class LensDefectHostApp:
         candidates = []
         if raw_text:
             candidates.append(Path(raw_text))
+        candidates.append(DEFAULT_YOLO_SEG_MODEL)
         candidates.append(DEFAULT_YOLO_MODEL)
         path = None
         for candidate in candidates:
@@ -2075,7 +2681,7 @@ class LensDefectHostApp:
             self.yolo_model_path = path
             self.yolo_missing_signature = None
             self.yolo_missing_checked_at = 0.0
-        self.yolo_status_var.set("YOLO：已加载 %s" % path.name)
+        self.yolo_status_var.set("YOLO：已加载 %s（%s）" % (path.name, self.yolo_detector.task))
         return self.yolo_detector
 
     def load_stage2_model_from_ui(self):
@@ -3698,8 +4304,14 @@ class LensDefectHostApp:
         base = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
         inference_roi = self.yolo_inference_roi_for_image(image, payload, base)
         if inference_roi is not None:
-            detections = detector.detect_roi(image, inference_roi)
+            input_size = YOLO_ROI_HIGH_RES_INPUT_SIZE if self.yolo_high_res_roi_var.get() else None
+            detections = detector.detect_roi(image, inference_roi, input_size=input_size)
             yolo_mode = "roi"
+            if self.should_run_yolo_tile_review(detections):
+                tile_detections = detector.detect_roi_tiled(image, inference_roi, input_size=input_size)
+                if tile_detections:
+                    detections = self.merge_yolo_detections(detections, tile_detections)
+                    yolo_mode = "roi_tile_review"
             if detections:
                 self.yolo_roi_miss_count = 0
             else:
@@ -3728,6 +4340,8 @@ class LensDefectHostApp:
             "model_path": str(detector.model_path),
             "mode": yolo_mode,
             "inference_roi": inference_roi or {},
+            "high_res_roi": bool(inference_roi is not None and self.yolo_high_res_roi_var.get()),
+            "tile_review": yolo_mode == "roi_tile_review",
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
@@ -3768,6 +4382,31 @@ class LensDefectHostApp:
             self.last_pc_defect_time = time.monotonic()
         refined = self.stabilize_detection_result(refined)
         self.update_result_ui(refined, render_live_image=False)
+
+    def should_run_yolo_tile_review(self, detections):
+        if not self.yolo_low_conf_tile_var.get():
+            return False
+        if not detections:
+            return True
+        best = max(detections, key=lambda item: self.confidence_float(item))
+        return self.confidence_float(best) < YOLO_LOW_CONFIDENCE_TILE_THRESHOLD
+
+    def merge_yolo_detections(self, base_detections, extra_detections):
+        merged = [dict(defect) for defect in (base_detections or []) if isinstance(defect, dict)]
+        for detection in extra_detections or []:
+            if not isinstance(detection, dict):
+                continue
+            duplicate = False
+            for old in merged:
+                if old.get("type") == detection.get("type") and self.fast_review_iou(old, detection) >= 0.32:
+                    duplicate = True
+                    if self.confidence_float(detection) > self.confidence_float(old):
+                        old.update(detection)
+                    break
+            if not duplicate:
+                merged.append(dict(detection))
+        merged.sort(key=lambda item: self.confidence_float(item), reverse=True)
+        return merged[:12]
 
     def correct_yolo_black_stain_classes(self, image, detections):
         if cv2 is None or np is None or not detections:
@@ -6848,6 +7487,9 @@ class LensDefectHostApp:
                 min(image.height - 1, bottom + padding),
             )
             color = (255, 64, 64) if defect.get("type") == "scratch" else (255, 176, 0)
+            polygon = self.scaled_mask_polygon(defect, x_scale, y_scale, image.width, image.height)
+            if polygon and len(polygon) >= 3:
+                draw.line(polygon + [polygon[0]], fill=color, width=outline_width)
             draw.rectangle(box, outline=color, width=outline_width)
             try:
                 confidence = float(defect.get("confidence", 0) or 0)
@@ -6859,6 +7501,22 @@ class LensDefectHostApp:
             text_box = (text_x, text_y, text_x + max(58, len(label) * 12), text_y + 17)
             draw.rectangle(text_box, fill=color)
             draw.text((text_x + 3, text_y + 1), label, fill=(255, 255, 255))
+
+    def scaled_mask_polygon(self, defect, x_scale, y_scale, image_w, image_h):
+        polygon = defect.get("mask_polygon")
+        if not isinstance(polygon, list):
+            return []
+        scaled = []
+        for point in polygon:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            try:
+                x = max(0, min(image_w - 1, int(float(point[0]) * x_scale)))
+                y = max(0, min(image_h - 1, int(float(point[1]) * y_scale)))
+            except (TypeError, ValueError):
+                continue
+            scaled.append((x, y))
+        return scaled
 
     def _positive_int(self, value):
         try:
@@ -7090,6 +7748,7 @@ def runtime_self_test():
         "numpy": None,
         "stage2": None,
         "yolo": None,
+        "yolo_seg": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -7112,6 +7771,21 @@ def runtime_self_test():
         }
     except Exception as exc:
         checks["yolo"] = {"ok": False, "error": str(exc), "model": str(DEFAULT_YOLO_MODEL)}
+
+    if DEFAULT_YOLO_SEG_MODEL.exists():
+        try:
+            detector = YoloOnnxDetector(DEFAULT_YOLO_SEG_MODEL, DEFAULT_YOLO_LABELS)
+            checks["yolo_seg"] = {
+                "ok": True,
+                "model": str(detector.model_path),
+                "task": detector.task,
+                "labels": detector.labels,
+                "input_size": detector.input_size,
+            }
+        except Exception as exc:
+            checks["yolo_seg"] = {"ok": False, "error": str(exc), "model": str(DEFAULT_YOLO_SEG_MODEL)}
+    else:
+        checks["yolo_seg"] = {"ok": True, "available": False, "model": str(DEFAULT_YOLO_SEG_MODEL)}
 
     ok = bool(checks["cv2"]["ok"] and checks["numpy"]["ok"] and checks["stage2"]["ok"] and checks["yolo"]["ok"])
     text = json.dumps(checks, ensure_ascii=False, indent=2)

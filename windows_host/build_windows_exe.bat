@@ -17,7 +17,7 @@ if not exist ".venv_windows_host\Scripts\python.exe" (
 ".venv_windows_host\Scripts\pyinstaller.exe" ^
   --noconfirm ^
   --clean ^
-  --onedir ^
+  --onefile ^
   --windowed ^
   --paths "windows_host" ^
   --add-data "windows_host\stage2_anomaly.py;." ^
@@ -31,12 +31,25 @@ if not exist "release" (
     mkdir "release"
 )
 
-if exist "dist\LensDefectHost\LensDefectHost.exe" (
-    xcopy /E /I /Y "dist\LensDefectHost\*" "release\" >nul
-) else (
-    copy /Y "dist\LensDefectHost.exe" "release\LensDefectHost.exe" >nul
+for /f "delims=" %%I in ('dir /b "release" 2^>nul') do (
+    if /I not "%%I"=="LensDefectHost.exe" (
+        if exist "release\%%I\*" (
+            rmdir /S /Q "release\%%I"
+        ) else (
+            del /F /Q "release\%%I" >nul 2>nul
+        )
+    )
 )
-del /F /Q "dist\LensDefectHost.exe" >nul 2>nul
+
+for /L %%R in (1,1,8) do (
+    del /F /Q "release\LensDefectHost.exe" >nul 2>nul
+    copy /Y "dist\LensDefectHost.exe" "release\LensDefectHost.exe" >nul 2>nul
+    if exist "release\LensDefectHost.exe" goto copied_release_exe
+    timeout /T 2 /NOBREAK >nul
+)
+echo Failed to overwrite release\LensDefectHost.exe
+exit /b 1
+:copied_release_exe
 rmdir /S /Q "dist" >nul 2>nul
 rmdir /S /Q "build" >nul 2>nul
 del /F /Q "LensDefectHost.exe" >nul 2>nul

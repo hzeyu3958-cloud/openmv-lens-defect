@@ -1,4 +1,6 @@
 import argparse
+import json
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -23,6 +25,9 @@ def parse_args():
     parser.add_argument("--copy-images", action="store_true", help="Copy images instead of writing labels only.")
     parser.add_argument("--max-per-class", type=int, default=0, help="Optional limit per split/class, 0 means all.")
     parser.add_argument("--min-confidence", type=float, default=0.70)
+    parser.add_argument("--include-corrections", action="store_true", default=True)
+    parser.add_argument("--label-format", choices=("detect", "segment"), default="detect")
+    parser.add_argument("--clean-output", action="store_true", help="Remove an existing YOLO output folder before exporting.")
     return parser.parse_args()
 
 
@@ -30,6 +35,15 @@ def image_files(folder):
     if not folder.exists():
         return []
     return sorted(path for path in folder.iterdir() if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+
+
+def unique_label_path(label_out, stem):
+    path = label_out / (stem + ".txt")
+    index = 2
+    while path.exists():
+        path = label_out / ("%s_%03d.txt" % (stem, index))
+        index += 1
+    return path
 
 
 def yolo_line(defect, image_w, image_h):
@@ -53,6 +67,272 @@ def yolo_line(defect, image_w, image_h):
     nw = w / float(max(1, image_w))
     nh = h / float(max(1, image_h))
     return "%d %.6f %.6f %.6f %.6f" % (CLASS_TO_ID[defect_type], cx, cy, nw, nh)
+
+
+def yolo_seg_box_polygon_line(defect, image_w, image_h):
+    box_line = yolo_line(defect, image_w, image_h)
+    if box_line is None:
+        return None
+    parts = box_line.split()
+    class_id = parts[0]
+    cx = float(parts[1])
+    cy = float(parts[2])
+    nw = float(parts[3])
+    nh = float(parts[4])
+    left = max(0.0, cx - nw / 2.0)
+    right = min(1.0, cx + nw / 2.0)
+    top = max(0.0, cy - nh / 2.0)
+    bottom = min(1.0, cy + nh / 2.0)
+    return "%s %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f" % (
+        class_id,
+        left, top,
+        right, top,
+        right, bottom,
+        left, bottom,
+    )
+
+
+def yolo_seg_polygon_line(defect, image, host=None):
+    defect_type = defect.get("type")
+    if defect_type not in CLASS_TO_ID:
+        return None
+    polygon = refined_defect_polygon(defect, image, host)
+    if polygon is None:
+        return yolo_seg_box_polygon_line(defect, image.width, image.height)
+    values = []
+    for x, y in polygon:
+        values.append("%.6f" % clamp(float(x) / float(max(1, image.width)), 0.0, 1.0))
+        values.append("%.6f" % clamp(float(y) / float(max(1, image.height)), 0.0, 1.0))
+    if len(values) < 6:
+        return yolo_seg_box_polygon_line(defect, image.width, image.height)
+    return "%d %s" % (CLASS_TO_ID[defect_type], " ".join(values))
+
+
+def refined_defect_polygon(defect, image, host=None):
+    cv2 = getattr(host, "cv2", None)
+    np = getattr(host, "np", None)
+    if cv2 is None or np is None:
+        return None
+    defect_type = defect.get("type")
+    box = clamp_defect_box(defect, image.width, image.height)
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    box_w = x2 - x1
+    box_h = y2 - y1
+    if box_w <= 2 or box_h <= 2:
+        return None
+
+    pad_ratio = 0.18 if defect_type == "stain" else 0.12
+    pad = max(3, int(max(box_w, box_h) * pad_ratio))
+    rx1 = max(0, x1 - pad)
+    ry1 = max(0, y1 - pad)
+    rx2 = min(image.width, x2 + pad)
+    ry2 = min(image.height, y2 + pad)
+    if rx2 <= rx1 or ry2 <= ry1:
+        return None
+
+    rgb = np.array(image.convert("RGB"))
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    crop = gray[ry1:ry2, rx1:rx2]
+    if crop.size <= 0:
+        return None
+
+    allowed = np.zeros(crop.shape[:2], dtype=np.uint8)
+    bx1 = max(0, x1 - rx1 - 2)
+    by1 = max(0, y1 - ry1 - 2)
+    bx2 = min(crop.shape[1], x2 - rx1 + 2)
+    by2 = min(crop.shape[0], y2 - ry1 + 2)
+    if bx2 <= bx1 or by2 <= by1:
+        return None
+    allowed[by1:by2, bx1:bx2] = 255
+
+    if defect_type == "stain":
+        mask = refined_stain_mask(cv2, np, crop, allowed)
+        polygon = polygon_from_stain_mask(cv2, np, mask, rx1, ry1)
+    else:
+        mask = refined_scratch_mask(cv2, np, crop, allowed)
+        polygon = polygon_from_scratch_mask(cv2, np, mask, rx1, ry1)
+    if polygon is None or len(polygon) < 3:
+        return None
+    if polygon_area(polygon) < max(3.0, float(box_w * box_h) * 0.003):
+        return None
+    return polygon
+
+
+def clamp(value, low, high):
+    return max(low, min(high, value))
+
+
+def clamp_defect_box(defect, image_w, image_h):
+    try:
+        x = float(defect.get("x", 0) or 0)
+        y = float(defect.get("y", 0) or 0)
+        w = float(defect.get("w", 0) or 0)
+        h = float(defect.get("h", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or h <= 0:
+        return None
+    x1 = int(clamp(x, 0.0, max(0.0, float(image_w - 1))))
+    y1 = int(clamp(y, 0.0, max(0.0, float(image_h - 1))))
+    x2 = int(clamp(x + w, float(x1 + 1), float(image_w)))
+    y2 = int(clamp(y + h, float(y1 + 1), float(image_h)))
+    return x1, y1, x2, y2
+
+
+def refined_stain_mask(cv2, np, crop, allowed):
+    allowed_values = crop[allowed > 0]
+    if allowed_values.size <= 0:
+        return None
+    background = cv2.GaussianBlur(crop, (0, 0), sigmaX=13, sigmaY=13)
+    dark_delta = np.maximum(background.astype(np.int16) - crop.astype(np.int16), 0).astype(np.uint8)
+    local_dark = dark_delta[allowed > 0]
+    dark_threshold = max(5.0, float(np.percentile(local_dark, 76.0)))
+    absolute_threshold = min(
+        float(np.percentile(allowed_values, 42.0)),
+        float(np.mean(allowed_values) - max(4.0, np.std(allowed_values) * 0.25)),
+    )
+    mask = np.where((dark_delta >= dark_threshold) | (crop <= absolute_threshold), 255, 0).astype(np.uint8)
+    glare_limit = max(176.0, float(np.percentile(crop, 98.8)))
+    glare = np.where(crop >= glare_limit, 255, 0).astype(np.uint8)
+    glare = cv2.dilate(glare, np.ones((5, 5), dtype=np.uint8), iterations=1)
+    mask = cv2.bitwise_and(mask, allowed)
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(glare))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
+    return keep_mask_components(cv2, np, mask, allowed, "stain")
+
+
+def refined_scratch_mask(cv2, np, crop, allowed):
+    allowed_values = crop[allowed > 0]
+    if allowed_values.size <= 0:
+        return None
+    background = cv2.GaussianBlur(crop, (0, 0), sigmaX=7, sigmaY=7)
+    signed = crop.astype(np.int16) - background.astype(np.int16)
+    contrast = np.maximum(np.maximum(signed, 0), np.maximum(-signed, 0)).astype(np.uint8)
+    local_contrast = contrast[allowed > 0]
+    threshold = max(5.0, float(np.percentile(local_contrast, 83.0)))
+    edges = cv2.Canny(cv2.GaussianBlur(crop, (3, 3), 0), 18, 58)
+    mask = np.where((contrast >= threshold) | (edges > 0), 255, 0).astype(np.uint8)
+    glare_limit = max(178.0, float(np.percentile(crop, 99.2)))
+    glare = np.where(crop >= glare_limit, 255, 0).astype(np.uint8)
+    glare = cv2.dilate(glare, np.ones((7, 7), dtype=np.uint8), iterations=1)
+    mask = cv2.bitwise_and(mask, allowed)
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(glare))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+    mask = cv2.dilate(mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return keep_mask_components(cv2, np, mask, allowed, "scratch")
+
+
+def keep_mask_components(cv2, np, mask, allowed, defect_type):
+    if mask is None or cv2.countNonZero(mask) <= 0:
+        return None
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, 8)
+    if count <= 1:
+        return None
+    allowed_area = max(1, int(cv2.countNonZero(allowed)))
+    min_area = max(4, int(allowed_area * (0.0025 if defect_type == "stain" else 0.0010)))
+    candidates = []
+    for index in range(1, count):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        if area < min_area:
+            continue
+        x = int(stats[index, cv2.CC_STAT_LEFT])
+        y = int(stats[index, cv2.CC_STAT_TOP])
+        w = int(stats[index, cv2.CC_STAT_WIDTH])
+        h = int(stats[index, cv2.CC_STAT_HEIGHT])
+        if w <= 0 or h <= 0:
+            continue
+        if defect_type == "scratch":
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            if length < 7 and area < min_area * 2:
+                continue
+            if float(length) / float(short_side) < 1.25 and area < min_area * 4:
+                continue
+        candidates.append((area, index))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    keep = np.zeros(mask.shape[:2], dtype=np.uint8)
+    max_components = 8 if defect_type == "scratch" else 4
+    for _area, index in candidates[:max_components]:
+        keep[labels == index] = 255
+    return keep if cv2.countNonZero(keep) > 0 else None
+
+
+def polygon_from_stain_mask(cv2, np, mask, offset_x, offset_y):
+    if mask is None or cv2.countNonZero(mask) <= 0:
+        return None
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contours = [contour for contour in contours if cv2.contourArea(contour) >= 3.0]
+    if not contours:
+        return None
+    total_area = sum(float(cv2.contourArea(contour)) for contour in contours)
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) >= total_area * 0.62:
+        contour = largest
+    else:
+        points = np.vstack(contours).reshape(-1, 2)
+        contour = cv2.convexHull(points.reshape(-1, 1, 2))
+    approx = approximate_contour(cv2, contour, max_points=24)
+    return offset_polygon(approx, offset_x, offset_y)
+
+
+def polygon_from_scratch_mask(cv2, np, mask, offset_x, offset_y):
+    if mask is None or cv2.countNonZero(mask) <= 0:
+        return None
+    ys, xs = np.where(mask > 0)
+    if len(xs) < 6:
+        return None
+    points = np.column_stack((xs, ys)).astype(np.float32)
+    rect = cv2.minAreaRect(points)
+    width, height = rect[1]
+    if width > 1 and height > 1 and max(width, height) / max(1.0, min(width, height)) >= 1.25:
+        box = cv2.boxPoints(rect)
+        polygon = [(float(x + offset_x), float(y + offset_y)) for x, y in box]
+        return order_polygon_points(polygon)
+    contour = cv2.convexHull(points.astype(np.int32).reshape(-1, 1, 2))
+    approx = approximate_contour(cv2, contour, max_points=14)
+    return offset_polygon(approx, offset_x, offset_y)
+
+
+def approximate_contour(cv2, contour, max_points=24):
+    perimeter = cv2.arcLength(contour, True)
+    epsilon = max(1.0, perimeter * 0.012)
+    approx = cv2.approxPolyDP(contour, epsilon, True)
+    while len(approx) > max_points:
+        epsilon *= 1.35
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+    if len(approx) < 3:
+        approx = cv2.convexHull(contour)
+    return approx.reshape(-1, 2)
+
+
+def offset_polygon(points, offset_x, offset_y):
+    polygon = [(float(x + offset_x), float(y + offset_y)) for x, y in points]
+    return order_polygon_points(polygon)
+
+
+def order_polygon_points(points):
+    if len(points) <= 3:
+        return points
+    center_x = sum(point[0] for point in points) / float(len(points))
+    center_y = sum(point[1] for point in points) / float(len(points))
+    return sorted(points, key=lambda point: math.atan2(point[1] - center_y, point[0] - center_x))
+
+
+def polygon_area(points):
+    if len(points) < 3:
+        return 0.0
+    area = 0.0
+    for index, (x1, y1) in enumerate(points):
+        x2, y2 = points[(index + 1) % len(points)]
+        area += x1 * y2 - x2 * y1
+    return abs(area) / 2.0
 
 
 def detect_seed_label(app, host, image, class_name, min_confidence):
@@ -528,6 +808,61 @@ def center_scratch_fallback_label(host, image):
     }
 
 
+def export_one_image(path, image, defects, class_name, split, output_dir, copy_images, label_format="detect", host=None):
+    image_out = output_dir / "images" / split
+    label_out = output_dir / "labels" / split
+    image_out.mkdir(parents=True, exist_ok=True)
+    label_out.mkdir(parents=True, exist_ok=True)
+
+    lines = []
+    for defect in defects:
+        if label_format == "segment":
+            line = yolo_seg_polygon_line(defect, image, host)
+        else:
+            line = yolo_line(defect, image.width, image.height)
+        if line is not None:
+            lines.append(line)
+    stem = "%s_%s_%s" % (split, class_name, path.stem)
+    label_path = unique_label_path(label_out, stem)
+    target_stem = label_path.stem
+    if copy_images:
+        target_image = image_out / (target_stem + path.suffix.lower())
+        shutil.copy2(path, target_image)
+    label_path.write_text("\n".join(lines), encoding="utf-8")
+    return len(lines)
+
+
+def load_correction_sidecar(path):
+    sidecar = path.with_suffix(".correction.json")
+    if not sidecar.exists():
+        return {}
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def correction_defects_from_sidecar(sidecar, class_name, image):
+    if class_name == "normal":
+        return []
+    primary = sidecar.get("primary_box") if isinstance(sidecar.get("primary_box"), dict) else {}
+    x = primary.get("x")
+    y = primary.get("y")
+    w = primary.get("w")
+    h = primary.get("h")
+    if x is None or y is None or w is None or h is None:
+        return []
+    return [{
+        "type": class_name,
+        "confidence": 0.96,
+        "x": int(max(0, min(float(x), image.width - 1))),
+        "y": int(max(0, min(float(y), image.height - 1))),
+        "w": int(max(1, min(float(w), image.width))),
+        "h": int(max(1, min(float(h), image.height))),
+        "source": "manual_correction",
+    }]
+
+
 def main():
     args = parse_args()
     project_root = Path(__file__).resolve().parents[1]
@@ -536,6 +871,8 @@ def main():
 
     dataset_dir = Path(args.dataset)
     output_dir = Path(args.output)
+    if args.clean_output and output_dir.exists():
+        shutil.rmtree(output_dir)
     app = host.LensDefectHostApp.__new__(host.LensDefectHostApp)
     app.latest_detection_result = None
 
@@ -555,19 +892,25 @@ def main():
                 with Image.open(path) as raw_image:
                     image = raw_image.convert("RGB")
                 defects = detect_seed_label(app, host, image, class_name, args.min_confidence)
-                lines = [
-                    line
-                    for line in (yolo_line(defect, image.width, image.height) for defect in defects)
-                    if line is not None
-                ]
-                stem = "%s_%s_%s" % (split, class_name, path.stem)
-                if args.copy_images:
-                    target_image = image_out / (stem + path.suffix.lower())
-                    shutil.copy2(path, target_image)
-                (label_out / (stem + ".txt")).write_text("\n".join(lines), encoding="utf-8")
+                if args.include_corrections and path.stem.startswith("correction_"):
+                    sidecar = load_correction_sidecar(path)
+                    correction_defects = correction_defects_from_sidecar(sidecar, class_name, image)
+                    if correction_defects or class_name == "normal":
+                        defects = correction_defects
+                label_count = export_one_image(
+                    path,
+                    image,
+                    defects,
+                    class_name,
+                    split,
+                    output_dir,
+                    args.copy_images,
+                    label_format=args.label_format,
+                    host=host,
+                )
                 summary["images"] += 1
-                if lines:
-                    summary["labels"] += len(lines)
+                if label_count:
+                    summary["labels"] += label_count
                 else:
                     summary["empty_labels"] += 1
 
@@ -583,6 +926,7 @@ def main():
         "",
     ])
     (output_dir / "data.yaml").write_text(data_yaml, encoding="utf-8")
+    (output_dir / "label_format.txt").write_text(args.label_format + "\n", encoding="utf-8")
     print("YOLO seed export complete: %(images)d images, %(labels)d labels, %(empty_labels)d empty label files" % summary)
     print("Output:", output_dir.resolve())
 
