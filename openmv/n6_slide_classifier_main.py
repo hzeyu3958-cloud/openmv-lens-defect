@@ -1,12 +1,12 @@
-# OpenMV N6 lens defect classifier.
+# OpenMV N6 slide defect classifier.
 #
 # Workflow:
-# 1. Capture images with n6_usb_image_capture.py.
-# 2. Train on the PC with training/train_lens_classifier.py.
-# 3. Copy lens_defect_classifier_int8.tflite and lens_defect_labels.txt to
-#    the N6 USB drive.
+# 1. Capture slide images with n6_usb_slide_capture.py.
+# 2. Train on the PC with training/train_lens_classifier.py or train_slide_classifier.bat.
+# 3. Copy slide_defect_classifier_int8.tflite and slide_defect_labels.txt to the
+#    N6 USB drive.
 # 4. Run this script on the N6. It emits one JSON line per result over USB VCP
-#    and, optionally, UART3 for a Bluetooth serial module.
+#    and, optionally, UART3 for a Bluetooth serial module or MCU.
 
 import csi
 import image
@@ -27,30 +27,30 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 MODEL_CANDIDATES = (
-    "/rom/lens_defect_classifier_int8.tflite",
-    "/lens_defect_classifier_int8.tflite",
-    "/flash/lens_defect_classifier_int8.tflite",
-    "/sdcard/lens_defect_classifier_int8.tflite",
+    "/rom/slide_defect_classifier_int8.tflite",
+    "/slide_defect_classifier_int8.tflite",
+    "/flash/slide_defect_classifier_int8.tflite",
+    "/sdcard/slide_defect_classifier_int8.tflite",
 )
 
 LABEL_CANDIDATES = (
-    "/rom/lens_defect_labels.txt",
-    "/lens_defect_labels.txt",
-    "/flash/lens_defect_labels.txt",
-    "/sdcard/lens_defect_labels.txt",
-    "/rom/lens_defect_classifier_int8.txt",
-    "/lens_defect_classifier_int8.txt",
-    "/flash/lens_defect_classifier_int8.txt",
-    "/sdcard/lens_defect_classifier_int8.txt",
+    "/rom/slide_defect_labels.txt",
+    "/slide_defect_labels.txt",
+    "/flash/slide_defect_labels.txt",
+    "/sdcard/slide_defect_labels.txt",
+    "/rom/slide_defect_classifier_int8.txt",
+    "/slide_defect_classifier_int8.txt",
+    "/flash/slide_defect_classifier_int8.txt",
+    "/sdcard/slide_defect_classifier_int8.txt",
 )
 
 PIXFORMAT = csi.RGB565
 FRAMESIZE = csi.XGA
 STARTUP_STABLE_MS = 2000
 
-# Match the data-collection crop in n6_usb_image_capture.py.
-# Ratios map to roughly (160, 60, 460, 300) on a 640 x 400 frame.
-INFERENCE_ROI_RATIO = (0.25, 0.15, 0.72, 0.75)
+# Match n6_usb_slide_capture.py. On a 640 x 400 preview this is roughly
+# (89, 96, 460, 160), which is better suited to a rectangular microscope slide.
+INFERENCE_ROI_RATIO = (0.14, 0.24, 0.72, 0.40)
 MODEL_INPUT_SIZE_FALLBACK = 128
 
 CONFIDENCE_THRESHOLD = 0.45
@@ -58,7 +58,6 @@ SEND_INTERVAL_MS = 160
 DRAW_DEBUG = False
 PRINT_JSON_TO_IDE = False
 
-# Temporal stability: require repeated agreement before changing the result.
 STABLE_DEFECT_CONFIRM_FRAMES = 3
 STABLE_DEFECT_SWITCH_FRAMES = 4
 STABLE_NORMAL_CONFIRM_FRAMES = 5
@@ -75,8 +74,6 @@ SEND_PREVIEW_ROI_ONLY = True
 DISABLE_AUTO_GAIN_AFTER_START = True
 DISABLE_AUTO_WHITEBAL_AFTER_START = True
 
-# 预留给单片机的口：开启后会把同一条检测 JSON 从 UART 发出。
-# 接线示例：OpenMV TX -> 单片机 RX，OpenMV GND -> 单片机 GND。
 ENABLE_UART_OUTPUT = False
 UART_ID = 3
 UART_BAUDRATE = 115200
@@ -281,8 +278,9 @@ def build_result(label, score, roi, frame_w, frame_h):
         "overall_level": level,
         "defects": defects,
         "timestamp": time.ticks_ms(),
-        "model": "lens_defect_classifier_int8",
+        "model": "slide_defect_classifier_int8",
         "frame": {"w": frame_w, "h": frame_h},
+        "target": "slide",
     }
 
 
@@ -343,7 +341,7 @@ def send_usb_image(img, roi=None):
 
 
 def fatal_error_loop(message):
-    print("N6 classifier error:", message)
+    print("N6 slide classifier error:", message)
     result = {
         "has_defect": False,
         "defect_count": 0,
@@ -352,6 +350,7 @@ def fatal_error_loop(message):
         "defects": [],
         "timestamp": time.ticks_ms(),
         "error": message,
+        "target": "slide",
     }
     while True:
         result["timestamp"] = time.ticks_ms()
@@ -438,7 +437,7 @@ if ENABLE_UART_OUTPUT and UART is not None:
 
 model_path = first_existing_path(MODEL_CANDIDATES)
 if model_path is None:
-    fatal_error_loop("model file not found; copy lens_defect_classifier_int8.tflite to the N6 drive")
+    fatal_error_loop("model file not found; copy slide_defect_classifier_int8.tflite to the N6 drive")
 
 try:
     model = ml.Model(model_path)

@@ -54,7 +54,7 @@ SINGLE_INSTANCE_MUTEX_NAME = "Local\\LensDefectHostOpenMVN6"
 SINGLE_INSTANCE_LOCK_FILE_HANDLE = None
 
 
-APP_TITLE = "OpenMV N6 眼镜片缺陷识别上位机"
+APP_TITLE = "OpenMV N6 缺陷识别上位机"
 DEFAULT_BAUDRATE = "115200"
 READ_TIMEOUT_SECONDS = 0.02
 CAPTURE_TIMEOUT_SECONDS = 12
@@ -63,7 +63,41 @@ SERIAL_READ_CHUNK_SIZE = 16384
 SERIAL_IMAGE_BYTES_PER_SECOND = 60000
 SERIAL_NO_DATA_WARNING_SECONDS = 5.0
 SERIAL_NO_DATA_REPEAT_SECONDS = 5.0
+SERIAL_MAX_IMAGE_BYTES = 2_000_000
+SERIAL_MAX_TEXT_LINE_BYTES = 8192
+SERIAL_SYNC_KEEP_BYTES = 32
+SERIAL_SYNC_STATUS_SECONDS = 2.0
 AUTO_START_RECEIVE = False
+MCU_SEND_MIN_INTERVAL_SECONDS = 1.0
+LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.12
+CONVEYOR_CENTER_STABLE_FRAMES = 2
+CONVEYOR_GATE_X_MIN = 0.20
+CONVEYOR_GATE_X_MAX = 0.80
+CONVEYOR_GATE_Y_MIN = 0.16
+CONVEYOR_GATE_Y_MAX = 0.90
+CONVEYOR_ROI_CENTER_X_MIN = 0.28
+CONVEYOR_ROI_CENTER_X_MAX = 0.74
+CONVEYOR_ROI_CENTER_Y_MIN = 0.24
+CONVEYOR_ROI_CENTER_Y_MAX = 0.84
+CONVEYOR_ROI_EDGE_MARGIN_RATIO = 0.035
+CONVEYOR_FUSION_MIN_FRAMES = 3
+CONVEYOR_FUSION_MAX_FRAMES = 5
+CONVEYOR_FUSION_DEFECT_MIN_VOTES = 2
+CONVEYOR_FUSION_NORMAL_MIN_VOTES = 3
+CONVEYOR_FUSION_STRONG_CONFIDENCE = 0.92
+CONVEYOR_MIN_WORKPIECE_CONFIDENCE = 0.20
+CONVEYOR_FALLBACK_ROI_SOURCES = {
+    "",
+    "fallback",
+    "fixed",
+    "hold",
+    "pc_center_fallback",
+    "pc_yolo_center_guard",
+}
+INSPECTION_CLAHE_CLIP_LIMIT = 2.0
+INSPECTION_CLAHE_TILE_GRID = (8, 8)
+MORPH_STAIN_MIN_RESPONSE = 10.0
+MORPH_SCRATCH_MIN_RESPONSE = 9.0
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent if APP_DIR.name in ("windows_host", "dist", "release") else APP_DIR
@@ -72,11 +106,17 @@ HISTORY_DIR = APP_DIR / "history"
 HISTORY_JSONL = HISTORY_DIR / "detection_history.jsonl"
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "dataset"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
+DEFAULT_SLIDE_DATASET_DIR = PROJECT_ROOT / "dataset_slide"
 DEFAULT_STAGE2_MODEL = DEFAULT_MODELS_DIR / "lens_stage2_anomaly.npz"
 DEFAULT_YOLO_MODEL = DEFAULT_MODELS_DIR / "lens_yolo.onnx"
 DEFAULT_YOLO_SEG_MODEL = DEFAULT_MODELS_DIR / "lens_yolo_seg.onnx"
 DEFAULT_YOLO_LABELS = DEFAULT_MODELS_DIR / "lens_yolo_labels.txt"
 DEFAULT_YOLO_META = DEFAULT_MODELS_DIR / "lens_yolo_meta.json"
+DEFAULT_SLIDE_MODEL = DEFAULT_MODELS_DIR / "slide_defect_classifier_int8.tflite"
+DEFAULT_SLIDE_LABELS = DEFAULT_MODELS_DIR / "slide_defect_labels.txt"
+DEFAULT_SLIDE_SUMMARY = DEFAULT_MODELS_DIR / "slide_training_summary.json"
+DEFAULT_SLIDE_YOLO_MODEL = DEFAULT_MODELS_DIR / "slide_yolo.onnx"
+DEFAULT_SLIDE_YOLO_LABELS = DEFAULT_MODELS_DIR / "slide_yolo_labels.txt"
 CORRECTION_METADATA_FILENAME = "corrections.csv"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 METADATA_FILENAME = "metadata.csv"
@@ -89,7 +129,7 @@ HOST_BLACK_STAIN_TO_SCRATCH_CONFIRM_UPDATES = 3
 STAGE2_MIN_INTERVAL_SECONDS = 1.2
 FAST_REVIEW_ENABLED = True
 FAST_REVIEW_PROMOTE_NORMAL = True
-FAST_REVIEW_MIN_INTERVAL_SECONDS = 0.12
+FAST_REVIEW_MIN_INTERVAL_SECONDS = 0.10
 FAST_REVIEW_DEFECT_CONFIRM_FRAMES = 1
 FAST_REVIEW_IOU_THRESHOLD = 0.12
 FAST_REVIEW_CLASSIFIER_AREA_RATIO = 0.18
@@ -245,6 +285,10 @@ FAST_REVIEW_BLACK_STAIN_MIN_FILL_RATIO = 0.12
 FAST_REVIEW_BLACK_STAIN_MAX_BRIGHT_DELTA = 20.0
 FAST_REVIEW_BLACK_STAIN_MAX_ASPECT = 3.00
 FAST_REVIEW_BLACK_STAIN_MIN_ANGLE_GROUPS = 3
+FAST_REVIEW_BLACK_CLUSTER_MIN_COMPONENTS = 2
+FAST_REVIEW_BLACK_CLUSTER_MIN_FILL_RATIO = 0.12
+FAST_REVIEW_BLACK_CLUSTER_MAX_MERGED_ASPECT = 4.40
+FAST_REVIEW_BLACK_CLUSTER_MAX_COMPONENT_ASPECT = 6.20
 FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_DARK_FRACTION = 0.08
 FAST_REVIEW_BLACK_STAIN_RADIAL_MAX_BRIGHT_FRACTION = 0.46
 FAST_REVIEW_BLACK_STAIN_RADIAL_MIN_LINES = 3
@@ -300,7 +344,7 @@ FAST_REVIEW_KEEP_PC_RESULT_SECONDS = 2.20
 YOLO_INPUT_SIZE = 640
 YOLO_CONFIDENCE_THRESHOLD = 0.08
 YOLO_NMS_THRESHOLD = 0.45
-YOLO_MIN_INTERVAL_SECONDS = 0.10
+YOLO_MIN_INTERVAL_SECONDS = 0.08
 YOLO_MISSING_MODEL_RECHECK_SECONDS = 2.0
 YOLO_FALLBACK_INPUT_SIZES = (416, 512, 320, 640)
 YOLO_ROI_INFERENCE_ENABLED = True
@@ -372,6 +416,70 @@ LEVEL_SCORE = {
 }
 
 
+@dataclass(frozen=True)
+class DetectionModeConfig:
+    key: str
+    display_name: str
+    dataset_dir: Path
+    model_file: Path
+    labels_file: Path
+    training_summary: Path
+    deploy_model_name: str
+    deploy_labels_name: str
+    capture_script: str
+    classifier_script: str
+    normal_result_text: str
+    track_status_name: str
+    stage2_model: Path
+    yolo_model: Path
+    yolo_enabled_default: bool
+
+
+DETECTION_MODE_CONFIGS = {
+    "lens": DetectionModeConfig(
+        key="lens",
+        display_name="眼镜片检测",
+        dataset_dir=DEFAULT_DATASET_DIR,
+        model_file=DEFAULT_MODELS_DIR / "lens_defect_classifier_int8.tflite",
+        labels_file=DEFAULT_MODELS_DIR / "lens_defect_labels.txt",
+        training_summary=DEFAULT_MODELS_DIR / "training_summary.json",
+        deploy_model_name="lens_defect_classifier_int8.tflite",
+        deploy_labels_name="lens_defect_labels.txt",
+        capture_script="openmv/n6_usb_image_capture.py",
+        classifier_script="openmv/n6_classifier_main.py",
+        normal_result_text="正常镜片",
+        track_status_name="镜片跟踪",
+        stage2_model=DEFAULT_STAGE2_MODEL,
+        yolo_model=DEFAULT_YOLO_SEG_MODEL if DEFAULT_YOLO_SEG_MODEL.exists() else DEFAULT_YOLO_MODEL,
+        yolo_enabled_default=True,
+    ),
+    "slide": DetectionModeConfig(
+        key="slide",
+        display_name="载玻片检测",
+        dataset_dir=DEFAULT_SLIDE_DATASET_DIR,
+        model_file=DEFAULT_SLIDE_MODEL,
+        labels_file=DEFAULT_SLIDE_LABELS,
+        training_summary=DEFAULT_SLIDE_SUMMARY,
+        deploy_model_name="slide_defect_classifier_int8.tflite",
+        deploy_labels_name="slide_defect_labels.txt",
+        capture_script="openmv/n6_usb_slide_capture.py",
+        classifier_script="openmv/n6_slide_classifier_main.py",
+        normal_result_text="合格",
+        track_status_name="载玻片定位",
+        stage2_model=DEFAULT_MODELS_DIR / "slide_stage2_anomaly.npz",
+        yolo_model=DEFAULT_SLIDE_YOLO_MODEL,
+        yolo_enabled_default=False,
+    ),
+}
+
+DETECTION_MODE_ORDER = ["lens", "slide"]
+DETECTION_MODE_DISPLAY_ORDER = [DETECTION_MODE_CONFIGS[key].display_name for key in DETECTION_MODE_ORDER]
+DETECTION_MODE_BY_LABEL = {
+    DETECTION_MODE_CONFIGS[key].display_name: key
+    for key in DETECTION_MODE_ORDER
+}
+
+
 @dataclass
 class UiMessage:
     kind: str
@@ -393,6 +501,20 @@ def defect_type_key(value):
 
 def level_name(value):
     return LEVEL_NAME.get(value, value)
+
+
+def detection_mode_key(value):
+    if value in DETECTION_MODE_CONFIGS:
+        return value
+    return DETECTION_MODE_BY_LABEL.get(value, "lens")
+
+
+def detection_mode_label(value):
+    return DETECTION_MODE_CONFIGS[detection_mode_key(value)].display_name
+
+
+def detection_mode_config(value):
+    return DETECTION_MODE_CONFIGS[detection_mode_key(value)]
 
 
 def now_text():
@@ -1235,13 +1357,16 @@ class SerialLineReader:
         self.ui_queue.put(UiMessage("status", "串口已打开，正在接收检测 JSON 和 OpenMV 画面"))
         last_data_time = time.time()
         last_no_data_warning_time = 0.0
+        last_sync_status_time = 0.0
+        buffer = bytearray()
 
         while self.running:
             try:
                 if self.serial_port is None:
                     break
-                raw = self.serial_port.readline()
-                if not raw:
+
+                chunk = self.serial_port.read(SERIAL_READ_CHUNK_SIZE)
+                if not chunk:
                     now = time.time()
                     if (
                         now - last_data_time >= SERIAL_NO_DATA_WARNING_SECONDS
@@ -1254,15 +1379,19 @@ class SerialLineReader:
                         last_no_data_warning_time = now
                     continue
                 last_data_time = time.time()
-                line = raw.decode("utf-8", errors="ignore").strip()
-                if not line:
-                    continue
-                if line.startswith("IMG_BEGIN "):
-                    self._read_image_frame(line)
-                elif line.startswith("{"):
-                    self.ui_queue.put(UiMessage("line", line))
-                elif line.startswith("ERR ") or line.startswith("BOOT "):
-                    self.ui_queue.put(UiMessage("status", line))
+                buffer.extend(chunk)
+                self._process_buffer(buffer)
+                if len(buffer) > SERIAL_MAX_IMAGE_BYTES:
+                    marker_index = buffer.rfind(b"IMG_BEGIN ")
+                    if marker_index >= 0:
+                        del buffer[:marker_index]
+                    else:
+                        keep = min(len(buffer), SERIAL_SYNC_KEEP_BYTES)
+                        del buffer[:-keep]
+                        now = time.time()
+                        if now - last_sync_status_time >= SERIAL_SYNC_STATUS_SECONDS:
+                            self.ui_queue.put(UiMessage("status", "正在同步 OpenMV 数据流，请稍等下一帧"))
+                            last_sync_status_time = now
             except Exception as exc:
                 self.ui_queue.put(UiMessage("error", "串口读取失败：%s" % exc))
                 break
@@ -1270,40 +1399,130 @@ class SerialLineReader:
         self.running = False
         self.ui_queue.put(UiMessage("status", "检测接收已停止"))
 
-    def _read_image_frame(self, header_line):
+    def _process_buffer(self, buffer):
+        while self.running and buffer:
+            img_index = buffer.find(b"IMG_BEGIN ")
+            line_index = buffer.find(b"\n")
+
+            if img_index >= 0 and (line_index < 0 or img_index <= line_index):
+                if img_index > 0:
+                    del buffer[:img_index]
+                if not self._read_image_frame_from_buffer(buffer):
+                    return
+                continue
+
+            if line_index >= 0:
+                raw_line = bytes(buffer[:line_index])
+                del buffer[:line_index + 1]
+                self._handle_text_line(raw_line)
+                continue
+
+            if len(buffer) > SERIAL_MAX_TEXT_LINE_BYTES:
+                marker_index = buffer.rfind(b"IMG_BEGIN ")
+                if marker_index >= 0:
+                    del buffer[:marker_index]
+                else:
+                    keep = min(len(buffer), SERIAL_SYNC_KEEP_BYTES)
+                    del buffer[:-keep]
+            return
+
+    def _read_image_frame_from_buffer(self, buffer):
+        header_end = buffer.find(b"\n")
+        if header_end < 0:
+            return False
+
+        header_line = buffer[:header_end].decode("utf-8", errors="ignore").strip()
         parts = header_line.split()
         if len(parts) < 2:
-            return
+            del buffer[:header_end + 1]
+            return True
+        try:
+            size = int(parts[1])
+            width = int(parts[2]) if len(parts) >= 4 else 0
+            height = int(parts[3]) if len(parts) >= 4 else 0
+        except ValueError:
+            del buffer[:header_end + 1]
+            self.ui_queue.put(UiMessage("status", "OpenMV 画面头格式错误：%s" % header_line))
+            return True
+        if size <= 0 or size > SERIAL_MAX_IMAGE_BYTES:
+            del buffer[:header_end + 1]
+            self.ui_queue.put(UiMessage("status", "OpenMV 画面大小异常：%d 字节" % size))
+            return True
 
-        size = int(parts[1])
-        width = int(parts[2]) if len(parts) >= 4 else 0
-        height = int(parts[3]) if len(parts) >= 4 else 0
-        transfer_timeout = max(FRAME_TIMEOUT_SECONDS, float(size) / float(SERIAL_IMAGE_BYTES_PER_SECOND) + 1.0)
-        deadline = time.time() + transfer_timeout
-        data = bytearray()
+        payload_start = header_end + 1
+        payload_end = payload_start + size
+        end_marker = b"IMG_END\n"
+        frame_end = payload_end + len(end_marker)
+        if len(buffer) < frame_end:
+            return False
+        if bytes(buffer[payload_end:frame_end]) != end_marker:
+            next_marker = buffer.find(b"IMG_BEGIN ", 1)
+            if next_marker >= 0:
+                del buffer[:next_marker]
+            else:
+                keep = min(len(buffer), SERIAL_SYNC_KEEP_BYTES)
+                del buffer[:-keep]
+            self.ui_queue.put(UiMessage("status", "OpenMV 画面帧尾丢失，正在重新同步"))
+            return True
 
-        while self.running and len(data) < size and time.time() < deadline:
-            if self.serial_port is None:
-                break
-            remaining = size - len(data)
-            chunk = self.serial_port.read(min(SERIAL_READ_CHUNK_SIZE, remaining))
-            if chunk:
-                data.extend(chunk)
-
-        if len(data) != size:
-            self.ui_queue.put(UiMessage("status", "OpenMV 画面数据不完整：%d / %d 字节" % (len(data), size)))
-            return
-
-        if self.serial_port is not None:
-            self.serial_port.readline()
-
+        data = bytes(buffer[payload_start:payload_end])
+        del buffer[:frame_end]
         self.ui_queue.put(UiMessage("live_image", {
-            "image_bytes": bytes(data),
+            "image_bytes": data,
             "width": width,
             "height": height,
             "byte_count": len(data),
             "receive_time": now_text(),
         }))
+        return True
+
+    def _handle_text_line(self, raw_line):
+        line = raw_line.decode("utf-8", errors="ignore").strip()
+        if not line:
+            return
+        if line.startswith("{"):
+            self.ui_queue.put(UiMessage("line", line))
+        elif line.startswith("ERR ") or line.startswith("BOOT "):
+            self.ui_queue.put(UiMessage("status", line))
+
+
+class MicrocontrollerSerialClient:
+    def __init__(self):
+        self.serial_port = None
+        self.port_name = ""
+
+    @property
+    def connected(self):
+        return self.serial_port is not None and self.serial_port.is_open
+
+    def connect(self, port, baudrate):
+        if serial is None:
+            raise RuntimeError("缺少 pyserial，请先运行 run_windows_host.bat 安装依赖。")
+        self.disconnect()
+        self.serial_port = serial.Serial(
+            port=port,
+            baudrate=int(baudrate),
+            timeout=0,
+            write_timeout=0.5,
+        )
+        self.port_name = port
+        time.sleep(0.2)
+
+    def disconnect(self):
+        if self.serial_port is not None:
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+        self.serial_port = None
+        self.port_name = ""
+
+    def send_line(self, line):
+        if not self.connected:
+            raise RuntimeError("单片机串口未连接。")
+        payload = (line.strip() + "\n").encode("utf-8")
+        self.serial_port.write(payload)
+        self.serial_port.flush()
 
 
 class UsbImageCaptureClient:
@@ -1340,7 +1559,7 @@ class UsbImageCaptureClient:
                     break
 
             if size is None:
-                raise TimeoutError("等待 OpenMV 图片数据超时，请确认 N6 正在运行 n6_usb_image_capture.py")
+                raise TimeoutError("等待 OpenMV 图片数据超时，请确认 N6 正在运行对应的 USB 采集脚本")
 
             data = bytearray()
             while len(data) < size and time.time() < deadline:
@@ -1368,6 +1587,7 @@ class LensDefectHostApp:
 
         self.ui_queue = queue.Queue()
         self.reader = SerialLineReader(self.ui_queue)
+        self.mcu_client = MicrocontrollerSerialClient()
         self.history_records = []
         self.auto_capture_running = False
         self.latest_detection_result = None
@@ -1394,18 +1614,45 @@ class LensDefectHostApp:
         self.stable_detection_result = None
         self.pending_detection_class = None
         self.pending_detection_count = 0
+        self.active_mode_key = "lens"
+        self.mode_state = {}
+        for mode_key in DETECTION_MODE_ORDER:
+            config = detection_mode_config(mode_key)
+            self.mode_state[mode_key] = {
+                "dataset_dir": str(config.dataset_dir),
+                "stage2_model": str(config.stage2_model),
+                "stage2_enabled": False,
+                "yolo_model": str(config.yolo_model),
+                "yolo_enabled": config.yolo_enabled_default,
+                "model_file": str(config.model_file),
+                "labels_file": str(config.labels_file),
+            }
+        active_mode = detection_mode_config(self.active_mode_key)
 
         self.port_var = tk.StringVar()
+        self.object_mode_var = tk.StringVar(value=active_mode.display_name)
         self.baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
+        self.mcu_port_var = tk.StringVar()
+        self.mcu_baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
+        self.mcu_auto_send_var = tk.BooleanVar(value=True)
+        self.mcu_status_var = tk.StringVar(value="单片机：未连接")
+        self.last_mcu_send_key = None
+        self.last_mcu_send_time = 0.0
         self.status_var = tk.StringVar(value="状态：未连接")
         self.stage2_enabled_var = tk.BooleanVar(value=False)
-        self.stage2_model_var = tk.StringVar(value=str(DEFAULT_STAGE2_MODEL))
+        self.stage2_model_var = tk.StringVar(value=str(active_mode.stage2_model))
         self.stage2_status_var = tk.StringVar(value="高速复核：已启用；二级模型未勾选")
-        self.yolo_enabled_var = tk.BooleanVar(value=True)
-        self.yolo_model_var = tk.StringVar(value=str(DEFAULT_YOLO_SEG_MODEL if DEFAULT_YOLO_SEG_MODEL.exists() else DEFAULT_YOLO_MODEL))
+        self.yolo_enabled_var = tk.BooleanVar(value=active_mode.yolo_enabled_default)
+        self.yolo_model_var = tk.StringVar(value=str(active_mode.yolo_model))
         self.yolo_status_var = tk.StringVar(value="YOLO：未加载；无模型时用电脑快速复核兜底")
         self.yolo_high_res_roi_var = tk.BooleanVar(value=True)
         self.yolo_low_conf_tile_var = tk.BooleanVar(value=True)
+        self.conveyor_center_gate_var = tk.BooleanVar(value=True)
+        self.low_latency_mode_var = tk.BooleanVar(value=True)
+        self.conveyor_centered_count = 0
+        self.conveyor_fusion_results = []
+        self.conveyor_workpiece_payload_key = None
+        self.conveyor_workpiece_roi = None
         self._last_effective_roi = None
 
         self.has_defect_var = tk.StringVar(value="是否检测到缺陷：暂无数据")
@@ -1416,7 +1663,7 @@ class LensDefectHostApp:
         self.lens_track_var = tk.StringVar(value="镜片跟踪：暂无数据")
         self.live_image_var = tk.StringVar(value="OpenMV 画面：请选择 OpenMV 的 COM 口，点击“开始接收识别结果和画面”")
 
-        self.dataset_dir_var = tk.StringVar(value=str(DEFAULT_DATASET_DIR))
+        self.dataset_dir_var = tk.StringVar(value=str(active_mode.dataset_dir))
         self.dataset_class_var = tk.StringVar(value=defect_type_name("normal"))
         self.dataset_split_var = tk.StringVar(value="train")
         self.auto_split_var = tk.BooleanVar(value=True)
@@ -1426,8 +1673,8 @@ class LensDefectHostApp:
         self.capture_preview_var = tk.StringVar(value="采集预览：暂无图片")
         self.capture_quality_var = tk.StringVar(value="质量提示：暂无图片")
 
-        self.model_file_var = tk.StringVar(value=str(DEFAULT_MODELS_DIR / "lens_defect_classifier_int8.tflite"))
-        self.labels_file_var = tk.StringVar(value=str(DEFAULT_MODELS_DIR / "lens_defect_labels.txt"))
+        self.model_file_var = tk.StringVar(value=str(active_mode.model_file))
+        self.labels_file_var = tk.StringVar(value=str(active_mode.labels_file))
         self.openmv_folder_var = tk.StringVar(value="")
         self.live_image_photo = None
         self.capture_preview_photo = None
@@ -1437,15 +1684,103 @@ class LensDefectHostApp:
         self.history_tree = None
 
         self._create_widgets()
+        self.apply_mode_state(self.active_mode_key, reset_runtime=True)
         self.refresh_ports()
         self.load_history()
-        self.refresh_dataset_counts()
         self.root.after(80, self._poll_ui_queue)
         self.root.after(350, self.preload_yolo_model)
         self.root.after(700, self.preload_stage2_model)
         if AUTO_START_RECEIVE:
             self.root.after(500, self.start_receive)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def current_mode_config(self):
+        return detection_mode_config(self.active_mode_key)
+
+    def mode_uses_lens_postprocess(self):
+        return self.active_mode_key == "lens"
+
+    def save_mode_state(self, mode_key=None):
+        if mode_key is None:
+            mode_key = self.active_mode_key
+        if mode_key not in self.mode_state:
+            return
+        self.mode_state[mode_key].update({
+            "dataset_dir": self.dataset_dir_var.get().strip(),
+            "stage2_model": self.stage2_model_var.get().strip(),
+            "stage2_enabled": bool(self.stage2_enabled_var.get()),
+            "yolo_model": self.yolo_model_var.get().strip(),
+            "yolo_enabled": bool(self.yolo_enabled_var.get()),
+            "model_file": self.model_file_var.get().strip(),
+            "labels_file": self.labels_file_var.get().strip(),
+        })
+
+    def apply_mode_state(self, mode_key, reset_runtime=False):
+        config = detection_mode_config(mode_key)
+        state = self.mode_state[mode_key]
+        self.object_mode_var.set(config.display_name)
+        self.dataset_dir_var.set(state["dataset_dir"] or str(config.dataset_dir))
+        self.stage2_model_var.set(state["stage2_model"] or str(config.stage2_model))
+        self.stage2_enabled_var.set(bool(state["stage2_enabled"]))
+        self.yolo_model_var.set(state["yolo_model"] or str(config.yolo_model))
+        self.yolo_enabled_var.set(bool(state["yolo_enabled"]))
+        self.model_file_var.set(state["model_file"] or str(config.model_file))
+        self.labels_file_var.set(state["labels_file"] or str(config.labels_file))
+
+        if self.mode_uses_lens_postprocess():
+            self.stage2_status_var.set("高速复核：镜片模式可用，按需加载二级模型")
+            self.yolo_status_var.set("YOLO：镜片模式可用，按需加载 ONNX 或使用快速复核")
+            self.root.after(80, self.preload_yolo_model)
+            self.root.after(160, self.preload_stage2_model)
+        else:
+            self.stage2_status_var.set("载玻片模式：保留 OpenMV 原始 JSON 显示，不启用镜片二级复核")
+            self.yolo_status_var.set("载玻片模式：保留 OpenMV 原始 JSON 显示，不启用镜片 YOLO 复核")
+
+        if reset_runtime:
+            self.reset_mode_runtime_state()
+        self.refresh_dataset_counts()
+        self.load_training_summary()
+
+    def reset_mode_runtime_state(self):
+        self.latest_detection_result = None
+        self.last_fast_review_time = 0.0
+        self.last_fast_review_key = None
+        self.fast_review_candidate = None
+        self.fast_review_candidate_count = 0
+        self.last_pc_defect_result = None
+        self.last_pc_defect_time = 0.0
+        self.last_black_stain_result = None
+        self.last_black_stain_time = 0.0
+        self.stable_detection_result = None
+        self.pending_detection_class = None
+        self.pending_detection_count = 0
+        self.conveyor_centered_count = 0
+        self.conveyor_fusion_results = []
+        self.conveyor_workpiece_payload_key = None
+        self.conveyor_workpiece_roi = None
+        self._last_effective_roi = None
+        self.has_defect_var.set("是否检测到缺陷：暂无数据")
+        self.class_result_var.set("识别结果：暂无数据")
+        self.confidence_result_var.set("置信度：--")
+        self.count_var.set("缺陷总数：0")
+        self.level_var.set("整体严重程度：暂无数据")
+        self.lens_track_var.set("%s：暂无数据" % self.current_mode_config().track_status_name)
+        if self.defect_tree is not None:
+            self.defect_tree.delete(*self.defect_tree.get_children())
+        self._reset_summary()
+        if self.raw_text is not None:
+            self._set_raw_text("暂无数据")
+        if self.latest_live_image_payload is not None:
+            self.render_live_image(self.latest_live_image_payload)
+
+    def on_mode_changed(self, _event=None):
+        new_mode_key = detection_mode_key(self.object_mode_var.get())
+        if new_mode_key == self.active_mode_key:
+            return
+        self.save_mode_state(self.active_mode_key)
+        self.active_mode_key = new_mode_key
+        self.apply_mode_state(new_mode_key, reset_runtime=True)
+        self.status_var.set("状态：已切换到%s" % self.current_mode_config().display_name)
 
     def _create_widgets(self):
         self._configure_style()
@@ -1471,6 +1806,17 @@ class LensDefectHostApp:
             values=("9600", "19200", "38400", "57600", "115200", "921600"),
         )
         self.baud_combo.pack(side=tk.LEFT, padx=(8, 12))
+
+        ttk.Label(serial_frame, text="检测对象").pack(side=tk.LEFT)
+        self.object_mode_combo = ttk.Combobox(
+            serial_frame,
+            textvariable=self.object_mode_var,
+            width=14,
+            values=DETECTION_MODE_DISPLAY_ORDER,
+            state="readonly",
+        )
+        self.object_mode_combo.pack(side=tk.LEFT, padx=(8, 12))
+        self.object_mode_combo.bind("<<ComboboxSelected>>", self.on_mode_changed)
 
         ttk.Button(serial_frame, text="刷新串口", command=self.refresh_ports).pack(side=tk.LEFT, padx=4)
         ttk.Label(serial_frame, text="提示：OpenMV N6 USB 连接电脑后会出现一个 COM 口").pack(side=tk.LEFT, padx=12)
@@ -1557,6 +1903,16 @@ class LensDefectHostApp:
             text="低置信度时 ROI 切片复核",
             variable=self.yolo_low_conf_tile_var,
         ).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(
+            yolo_opt_frame,
+            text="传送带中心触发",
+            variable=self.conveyor_center_gate_var,
+        ).pack(side=tk.LEFT, padx=(18, 4))
+        ttk.Checkbutton(
+            yolo_opt_frame,
+            text="生产低延迟",
+            variable=self.low_latency_mode_var,
+        ).pack(side=tk.LEFT, padx=4)
         ttk.Button(
             yolo_opt_frame,
             text="这是污渍",
@@ -1572,6 +1928,32 @@ class LensDefectHostApp:
             text="这是正常",
             command=lambda: self.save_live_correction("normal"),
         ).pack(side=tk.LEFT, padx=4)
+
+        mcu_frame = ttk.LabelFrame(self.detect_tab, text="单片机输出", padding=6)
+        mcu_frame.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(mcu_frame, text="COM 口").pack(side=tk.LEFT)
+        self.mcu_port_combo = ttk.Combobox(
+            mcu_frame,
+            textvariable=self.mcu_port_var,
+            width=28,
+            state="readonly",
+        )
+        self.mcu_port_combo.pack(side=tk.LEFT, padx=(8, 10))
+        ttk.Label(mcu_frame, text="波特率").pack(side=tk.LEFT)
+        ttk.Combobox(
+            mcu_frame,
+            textvariable=self.mcu_baud_var,
+            width=10,
+            values=("9600", "19200", "38400", "57600", "115200", "921600"),
+        ).pack(side=tk.LEFT, padx=(8, 10))
+        ttk.Button(mcu_frame, text="连接单片机", command=self.connect_mcu).pack(side=tk.LEFT, padx=4)
+        ttk.Button(mcu_frame, text="断开", command=self.disconnect_mcu).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(
+            mcu_frame,
+            text="自动发送结果",
+            variable=self.mcu_auto_send_var,
+        ).pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Label(mcu_frame, textvariable=self.mcu_status_var, style="Status.TLabel").pack(side=tk.LEFT, padx=8)
 
         live_frame = ttk.LabelFrame(self.detect_tab, text="OpenMV 实时画面", padding=6)
         live_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -1798,7 +2180,13 @@ class LensDefectHostApp:
         log_frame = ttk.LabelFrame(right_panel, text="采集日志", padding=8)
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self.capture_log_text = self._create_text(log_frame, height=14)
-        self._set_text(self.capture_log_text, "操作步骤：\n1. 把 openmv/n6_usb_image_capture.py 保存到 OpenMV N6 并运行。\n2. 关闭 OpenMV IDE 串口占用，或确保上位机能打开 N6 的 COM 口。\n3. 选择类别，建议保持“自动分配集合”开启后开始采集。")
+        self._set_text(
+            self.capture_log_text,
+            "操作步骤：\n"
+            "1. 眼镜片采集运行 openmv/n6_usb_image_capture.py；载玻片采集运行 openmv/n6_usb_slide_capture.py。\n"
+            "2. 关闭 OpenMV IDE 串口占用，或确保上位机能打开 N6 的 COM 口。\n"
+            "3. 在上方切换检测对象后，再开始采集并保存到对应数据集目录。",
+        )
 
     def _create_train_tab(self):
         workflow = (
@@ -1845,8 +2233,9 @@ class LensDefectHostApp:
         script_frame = ttk.LabelFrame(self.train_tab, text="N6 端脚本提示", padding=10)
         script_frame.pack(fill=tk.X)
         text = (
-            "采集数据时：运行 openmv/n6_usb_image_capture.py。\n"
-            "部署模型后：运行 openmv/n6_classifier_main.py，它会加载 /lens_defect_classifier_int8.tflite 和 /lens_defect_labels.txt。\n"
+            "眼镜片采集：openmv/n6_usb_image_capture.py；载玻片采集：openmv/n6_usb_slide_capture.py。\n"
+            "眼镜片模型检测：openmv/n6_classifier_main.py，会加载 /lens_defect_classifier_int8.tflite 和 /lens_defect_labels.txt。\n"
+            "载玻片模型检测：openmv/n6_slide_classifier_main.py，会加载 /slide_defect_classifier_int8.tflite 和 /slide_defect_labels.txt。\n"
             "如果模型较大，建议之后加一张 32GB microSD，把模型放 /sd/ 目录。"
         )
         ttk.Label(script_frame, text=text, wraplength=1000).pack(anchor="w")
@@ -1874,6 +2263,8 @@ class LensDefectHostApp:
             ports.append("%s - %s" % (port.device, port.description))
 
         self.port_combo["values"] = ports
+        if hasattr(self, "mcu_port_combo"):
+            self.mcu_port_combo["values"] = ports
         if ports and not self.port_var.get():
             preferred = [
                 item for item in ports
@@ -1883,8 +2274,18 @@ class LensDefectHostApp:
             self.status_var.set("状态：找到 %d 个串口，请选择 OpenMV N6 对应 COM 口" % len(ports))
         elif not ports:
             self.port_var.set("")
+            if hasattr(self, "mcu_port_var"):
+                self.mcu_port_var.set("")
             self.status_var.set("状态：未找到串口。请用 USB 连接 OpenMV N6")
             self.live_image_var.set("OpenMV 画面：未找到串口，请连接 N6 后点击“刷新串口”")
+        if ports and hasattr(self, "mcu_port_var") and not self.mcu_port_var.get():
+            openmv_port = self.port_var.get().split(" - ", 1)[0].strip()
+            mcu_candidates = [
+                item for item in ports
+                if item.split(" - ", 1)[0].strip() != openmv_port
+            ]
+            if len(mcu_candidates) == 1:
+                self.mcu_port_var.set(mcu_candidates[0])
 
     def selected_port(self):
         selected = self.port_var.get().strip()
@@ -1896,6 +2297,83 @@ class LensDefectHostApp:
         baudrate = self.baud_var.get().strip()
         int(baudrate)
         return baudrate
+
+    def selected_mcu_port(self):
+        selected = self.mcu_port_var.get().strip()
+        if not selected:
+            raise RuntimeError("请先选择单片机 COM 口。")
+        port = selected.split(" - ", 1)[0].strip()
+        openmv_port = self.port_var.get().split(" - ", 1)[0].strip()
+        if openmv_port and port == openmv_port:
+            raise RuntimeError("单片机 COM 口不能和 OpenMV 接收口相同，请选择另一个串口。")
+        return port
+
+    def selected_mcu_baudrate(self):
+        baudrate = self.mcu_baud_var.get().strip()
+        int(baudrate)
+        return baudrate
+
+    def connect_mcu(self):
+        try:
+            port = self.selected_mcu_port()
+            baudrate = self.selected_mcu_baudrate()
+            self.mcu_client.connect(port, baudrate)
+        except Exception as exc:
+            messagebox.showerror("单片机连接失败", str(exc))
+            self.mcu_status_var.set("单片机：连接失败")
+            return
+        self.last_mcu_send_key = None
+        self.last_mcu_send_time = 0.0
+        self.mcu_status_var.set("单片机：已连接 %s，等待识别结果" % port)
+
+    def disconnect_mcu(self):
+        self.mcu_client.disconnect()
+        self.last_mcu_send_key = None
+        self.last_mcu_send_time = 0.0
+        self.mcu_status_var.set("单片机：已断开")
+
+    def format_mcu_result_line(self, class_key, confidence):
+        code = {
+            "normal": "NORMAL",
+            "scratch": "SCRATCH",
+            "stain": "STAIN",
+            "error": "ERROR",
+        }.get(class_key, "UNKNOWN")
+        ok_flag = 1 if class_key == "normal" else 0
+        confidence_percent = 0
+        if confidence is not None:
+            try:
+                confidence_value = float(confidence)
+                if confidence_value <= 1.0:
+                    confidence_value *= 100.0
+                confidence_percent = max(0, min(100, int(round(confidence_value))))
+            except (TypeError, ValueError):
+                confidence_percent = 0
+        return "RESULT,%s,%d,%d" % (code, ok_flag, confidence_percent)
+
+    def maybe_send_mcu_result(self, result):
+        if not self.mcu_auto_send_var.get() or not self.mcu_client.connected:
+            return
+        if isinstance(result, dict) and result.get("conveyor_waiting"):
+            return
+        class_key, _class_text, confidence = self.display_class_result(result)
+        line = self.format_mcu_result_line(class_key, confidence)
+        now = time.monotonic()
+        send_key = line
+        if (
+            send_key == self.last_mcu_send_key
+            and now - self.last_mcu_send_time < MCU_SEND_MIN_INTERVAL_SECONDS
+        ):
+            return
+        try:
+            self.mcu_client.send_line(line)
+        except Exception as exc:
+            self.mcu_client.disconnect()
+            self.mcu_status_var.set("单片机：发送失败，已断开：%s" % exc)
+            return
+        self.last_mcu_send_key = send_key
+        self.last_mcu_send_time = now
+        self.mcu_status_var.set("单片机：已发送 %s" % line)
 
     def start_receive(self):
         if self.reader.running:
@@ -2090,7 +2568,7 @@ class LensDefectHostApp:
                 elif brightness > 220:
                     quality["warnings"].append("图片偏亮，缺陷细节可能被过曝淹没")
                 if contrast < 12:
-                    quality["warnings"].append("对比度偏低，透明镜片缺陷可能不明显")
+                    quality["warnings"].append("对比度偏低，透明玻璃表面缺陷可能不明显")
                 if min(image.size) < 96:
                     quality["warnings"].append("图片尺寸偏小，建议保持至少 128x128 以上")
         except Exception as exc:
@@ -2407,11 +2885,13 @@ class LensDefectHostApp:
         if not hasattr(self, "training_result_text"):
             return
 
-        summary_path = DEFAULT_MODELS_DIR / "training_summary.json"
+        mode_config = self.current_mode_config()
+        summary_path = mode_config.training_summary
         if not summary_path.exists():
             self._set_text(
                 self.training_result_text,
-                "暂无训练结果。训练结束后这里会读取 models/training_summary.json、training_history.csv 和混淆矩阵文件。",
+                "暂无训练结果。训练结束后这里会读取 %s、training_history.csv 和混淆矩阵文件。"
+                % summary_path.name,
             )
             return
 
@@ -2456,17 +2936,28 @@ class LensDefectHostApp:
             messagebox.showerror("找不到训练脚本", "未找到 training/train_lens_classifier.py")
             return
 
+        mode_config = self.current_mode_config()
         dataset_dir = Path(self.dataset_dir_var.get())
         DEFAULT_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         python_exe = find_training_python()
         command = (
-            '"%s" "%s" --dataset "%s" --output "%s" --epochs 20 --image-size 128'
-            % (python_exe, script, dataset_dir, DEFAULT_MODELS_DIR)
+            '"%s" "%s" --dataset "%s" --output "%s" --artifact-prefix "%s" --summary-name "%s" --epochs 20 --image-size 128'
+            % (
+                python_exe,
+                script,
+                dataset_dir,
+                DEFAULT_MODELS_DIR,
+                "lens_defect" if mode_config.key == "lens" else "slide_defect",
+                mode_config.training_summary.name,
+            )
         )
         subprocess.Popen(["cmd", "/k", command], cwd=str(PROJECT_ROOT))
-        self.status_var.set("状态：已打开训练命令窗口")
+        self.status_var.set("状态：已打开%s训练命令窗口" % mode_config.display_name)
 
     def run_yolo_seed_export_script(self):
+        if not self.mode_uses_lens_postprocess():
+            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 种子导出。")
+            return
         script = find_yolo_seed_export_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/export_yolo_seed_labels.py")
@@ -2483,6 +2974,9 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO 初始标注生成窗口")
 
     def run_yolo_training_script(self):
+        if not self.mode_uses_lens_postprocess():
+            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 训练。")
+            return
         script = find_yolo_training_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/train_yolo_from_seed.py")
@@ -2499,6 +2993,9 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO ONNX 训练窗口")
 
     def run_yolo_seg_training_script(self):
+        if not self.mode_uses_lens_postprocess():
+            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO-seg 训练。")
+            return
         script = find_yolo_training_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/train_yolo_from_seed.py")
@@ -2515,6 +3012,9 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO-seg ONNX 训练窗口")
 
     def run_yolo_preview_script(self):
+        if not self.mode_uses_lens_postprocess():
+            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 标注预览。")
+            return
         script = find_yolo_preview_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/preview_yolo_seed_labels.py")
@@ -2532,6 +3032,9 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO 标注预览生成窗口")
 
     def run_yolo_seg_seed_export_script(self):
+        if not self.mode_uses_lens_postprocess():
+            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO-seg 标注导出。")
+            return
         script = find_yolo_seed_export_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/export_yolo_seed_labels.py")
@@ -2576,6 +3079,7 @@ class LensDefectHostApp:
             self.openmv_folder_var.set(path)
 
     def copy_model_to_openmv(self):
+        mode_config = self.current_mode_config()
         model_path = Path(self.model_file_var.get())
         labels_path = Path(self.labels_file_var.get())
         target_dir = Path(self.openmv_folder_var.get())
@@ -2590,12 +3094,12 @@ class LensDefectHostApp:
             messagebox.showerror("错误", "OpenMV 目标目录不存在：%s" % target_dir)
             return
 
-        target_model = target_dir / "lens_defect_classifier_int8.tflite"
-        target_labels = target_dir / "lens_defect_labels.txt"
+        target_model = target_dir / mode_config.deploy_model_name
+        target_labels = target_dir / mode_config.deploy_labels_name
         shutil.copy2(model_path, target_model)
         shutil.copy2(labels_path, target_labels)
         messagebox.showinfo("完成", "已复制：\n%s\n%s" % (target_model, target_labels))
-        self.status_var.set("状态：模型文件已复制到 OpenMV N6")
+        self.status_var.set("状态：%s模型已复制到 OpenMV N6" % mode_config.display_name)
 
     def open_path(self, path):
         try:
@@ -2812,19 +3316,24 @@ class LensDefectHostApp:
             return
 
         result = self.normalize_detection_result(result)
-        result = self.final_filter_result_for_current_image(
-            result,
-            self.latest_live_image_payload,
-            clear_recent=False,
-        )
-        result = self.merge_recent_pc_defect_result(result)
-        result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
+        if self.mode_uses_lens_postprocess():
+            result = self.final_filter_result_for_current_image(
+                result,
+                self.latest_live_image_payload,
+                clear_recent=False,
+            )
+            result = self.merge_recent_pc_defect_result(result)
+            result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
         result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
-        self.add_history(result, raw_line)
-        if result.get("error"):
-            self.status_var.set("状态：OpenMV 错误：%s" % result.get("error"))
+        final_result = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else result
+        if final_result.get("conveyor_waiting"):
+            self.status_var.set("状态：等待工件进入中心检测区")
+        elif final_result.get("error"):
+            self.add_history(final_result, raw_line)
+            self.status_var.set("状态：OpenMV 错误：%s" % final_result.get("error"))
         else:
+            self.add_history(final_result, raw_line)
             self.status_var.set("状态：%s 收到一条有效 JSON" % now_text())
 
         if self.latest_live_image_payload is not None:
@@ -3024,7 +3533,7 @@ class LensDefectHostApp:
         h = max(1, min(h, image_h - y))
         defect_source = str(defect.get("source", ""))
         high_confidence_yolo_roi = (
-            defect_source == "yolo_onnx_roi"
+            self.is_yolo_roi_source(defect_source)
             and self.confidence_float(defect) >= FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE
         )
         high_confidence_yolo_roi_scratch = high_confidence_yolo_roi and defect_type == "scratch"
@@ -3036,7 +3545,7 @@ class LensDefectHostApp:
         )
         strong_middle_stain = (
             defect_type == "stain"
-            and defect_source in ("pc_fast_dark_stain", "yolo_onnx_roi")
+            and (defect_source == "pc_fast_dark_stain" or self.is_yolo_roi_source(defect_source))
             and self.confidence_float(defect) >= 0.88
         )
         strong_middle_dark_stain = (
@@ -3179,14 +3688,12 @@ class LensDefectHostApp:
             if safe_middle_dark_scratch:
                 min_box_distance = max(4, int(min(image_w, image_h) * 0.025))
             source = str(defect.get("source", ""))
-            is_line_source = source in (
+            is_line_source = self.is_yolo_source(source) or source in (
                 "pc_fast_review_line",
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
-                "yolo_onnx",
-                "yolo_onnx_roi",
             )
             percentile = 58 if is_line_source else 50
             if float(np.percentile(inner, percentile)) < min_box_distance and not high_confidence_yolo_roi:
@@ -3421,14 +3928,15 @@ class LensDefectHostApp:
         if defect.get("type") != "scratch":
             return False
         source = str(defect.get("source", ""))
-        if source not in (
-            "yolo_onnx",
-            "yolo_onnx_roi",
-            "pc_fast_review_line",
-            "pc_fast_bright_scratch",
-            "pc_fast_bright_crosshatch",
-            "pc_fast_center_cross_scratch",
-            "pc_fast_curvilinear_scratch",
+        if (
+            not self.is_yolo_source(source)
+            and source not in (
+                "pc_fast_review_line",
+                "pc_fast_bright_scratch",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_center_cross_scratch",
+                "pc_fast_curvilinear_scratch",
+            )
         ):
             return False
 
@@ -3463,7 +3971,7 @@ class LensDefectHostApp:
         if center_x < side_boundary:
             return False
 
-        if source in ("yolo_onnx", "yolo_onnx_roi"):
+        if self.is_yolo_source(source):
             return True
 
         if display_gray is None:
@@ -3493,13 +4001,14 @@ class LensDefectHostApp:
         if defect.get("type") != "scratch" or display_gray is None:
             return False
         source = str(defect.get("source", ""))
-        if source not in (
-            "pc_fast_center_cross_scratch",
-            "pc_fast_bright_scratch",
-            "pc_fast_bright_crosshatch",
-            "pc_fast_curvilinear_scratch",
-            "yolo_onnx",
-            "yolo_onnx_roi",
+        if (
+            not self.is_yolo_source(source)
+            and source not in (
+                "pc_fast_center_cross_scratch",
+                "pc_fast_bright_scratch",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_curvilinear_scratch",
+            )
         ):
             return False
 
@@ -3555,7 +4064,7 @@ class LensDefectHostApp:
         if weak_wide_center_cross and strong_glare_near_box:
             return True
 
-        if source in ("yolo_onnx", "yolo_onnx_roi") and strong_glare_near_box and aspect <= 2.0:
+        if self.is_yolo_source(source) and strong_glare_near_box and aspect <= 2.0:
             return True
         return False
 
@@ -3563,15 +4072,16 @@ class LensDefectHostApp:
         if display_gray is None:
             return False
         source = str(defect.get("source", ""))
-        if source not in (
-            "pc_fast_dark_stain",
-            "pc_fast_review",
-            "pc_fast_center_cross_scratch",
-            "pc_fast_bright_scratch",
-            "pc_fast_bright_crosshatch",
-            "pc_fast_curvilinear_scratch",
-            "yolo_onnx",
-            "yolo_onnx_roi",
+        if (
+            not self.is_yolo_source(source)
+            and source not in (
+                "pc_fast_dark_stain",
+                "pc_fast_review",
+                "pc_fast_center_cross_scratch",
+                "pc_fast_bright_scratch",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_curvilinear_scratch",
+            )
         ):
             return False
 
@@ -3763,11 +4273,14 @@ class LensDefectHostApp:
         )
 
     def display_class_result(self, result):
+        normal_text = self.current_mode_config().normal_result_text
+        if result.get("conveyor_waiting"):
+            return "waiting", "等待中心检测区", None
         if result.get("error"):
             return "error", "模型错误", None
 
         if not result.get("has_defect", False):
-            return "normal", "正常镜片", None
+            return "normal", normal_text, None
 
         defects = result.get("defects") or []
         if defects:
@@ -3782,9 +4295,306 @@ class LensDefectHostApp:
         if active:
             defect_type = max(active, key=lambda item: item[1])[0]
             return defect_type, defect_type_name(defect_type), None
-        return "normal", "正常镜片", None
+        return "normal", normal_text, None
+
+    def conveyor_gate_rect(self, image_w, image_h):
+        return {
+            "x": int(image_w * CONVEYOR_GATE_X_MIN),
+            "y": int(image_h * CONVEYOR_GATE_Y_MIN),
+            "w": max(1, int(image_w * (CONVEYOR_GATE_X_MAX - CONVEYOR_GATE_X_MIN))),
+            "h": max(1, int(image_h * (CONVEYOR_GATE_Y_MAX - CONVEYOR_GATE_Y_MIN))),
+        }
+
+    def conveyor_wait_result(self, result, reason, reset_center=True):
+        if reset_center:
+            self.conveyor_centered_count = 0
+            self.conveyor_fusion_results = []
+        held = dict(result) if isinstance(result, dict) else {}
+        held["defects"] = []
+        held["summary"] = {defect_type: 0 for defect_type in SUMMARY_TYPES}
+        held["defect_count"] = 0
+        held["has_defect"] = False
+        held["overall_level"] = "normal"
+        held["conveyor_waiting"] = True
+        held["conveyor_reason"] = reason
+        return held
+
+    def clone_detection_result(self, result):
+        try:
+            return json.loads(json.dumps(result, ensure_ascii=False))
+        except Exception:
+            return dict(result) if isinstance(result, dict) else {}
+
+    def primary_defect_for_class(self, result, class_key):
+        defects = [
+            defect for defect in (result.get("defects") or [])
+            if isinstance(defect, dict) and defect.get("type") == class_key
+        ]
+        if not defects:
+            return None
+        return max(defects, key=lambda item: self.confidence_float(item))
+
+    def fused_conveyor_result_from_buffer(self, current_result):
+        frame_count = len(self.conveyor_fusion_results)
+        if frame_count < CONVEYOR_FUSION_MIN_FRAMES:
+            return self.conveyor_wait_result(current_result, "fusion_wait_frames", reset_center=False)
+
+        scores = {"normal": 0.0, "scratch": 0.0, "stain": 0.0}
+        votes = {"normal": 0, "scratch": 0, "stain": 0}
+        best_by_class = {}
+        for item in self.conveyor_fusion_results:
+            class_key, _class_text, confidence = self.display_class_result(item)
+            if class_key not in scores:
+                continue
+            votes[class_key] += 1
+            confidence_value = 0.0 if confidence is None else max(0.0, min(1.0, float(confidence)))
+            scores[class_key] += 1.0 + confidence_value
+            if class_key in SUPPORTED_DEFECT_TYPES:
+                defect = self.primary_defect_for_class(item, class_key)
+                if defect is not None and self.confidence_float(defect) >= self.confidence_float(best_by_class.get(class_key, {})):
+                    best_by_class[class_key] = defect
+
+        defect_candidates = [key for key in SUPPORTED_DEFECT_TYPES if votes[key] > 0]
+        if defect_candidates:
+            best_defect_class = max(defect_candidates, key=lambda key: (votes[key], scores[key]))
+            best_defect = best_by_class.get(best_defect_class)
+            best_confidence = self.confidence_float(best_defect)
+            if (
+                votes[best_defect_class] < CONVEYOR_FUSION_DEFECT_MIN_VOTES
+                and best_confidence < CONVEYOR_FUSION_STRONG_CONFIDENCE
+            ):
+                return self.conveyor_wait_result(current_result, "fusion_wait_defect_votes", reset_center=False)
+            fused = self.clone_detection_result(current_result)
+            fused["defects"] = [dict(best_defect)] if isinstance(best_defect, dict) else []
+            fused["conveyor_fusion"] = {
+                "frames": frame_count,
+                "votes": votes,
+                "scores": {key: round(value, 3) for key, value in scores.items()},
+            }
+            return self.normalize_detection_result(fused)
+
+        if votes["normal"] < CONVEYOR_FUSION_NORMAL_MIN_VOTES:
+            return self.conveyor_wait_result(current_result, "fusion_wait_normal_votes", reset_center=False)
+        fused = self.clone_detection_result(current_result)
+        fused["defects"] = []
+        fused["conveyor_fusion"] = {
+            "frames": frame_count,
+            "votes": votes,
+            "scores": {key: round(value, 3) for key, value in scores.items()},
+        }
+        return self.normalize_detection_result(fused)
+
+    def apply_conveyor_frame_fusion(self, result):
+        if not self.conveyor_center_gate_var.get() or not isinstance(result, dict):
+            self.conveyor_fusion_results = []
+            return result
+        if result.get("conveyor_waiting") or result.get("error"):
+            if result.get("conveyor_waiting") and result.get("conveyor_reason") != "roi_wait_stable":
+                self.conveyor_fusion_results = []
+            return result
+        self.conveyor_fusion_results.append(self.clone_detection_result(result))
+        self.conveyor_fusion_results = self.conveyor_fusion_results[-CONVEYOR_FUSION_MAX_FRAMES:]
+        return self.fused_conveyor_result_from_buffer(result)
+
+    def roi_is_inside_conveyor_gate(self, roi, image_w, image_h):
+        if not isinstance(roi, dict) or image_w <= 0 or image_h <= 0:
+            return False
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+
+        frame_area = float(max(1, image_w * image_h))
+        area_ratio = float(w * h) / frame_area
+        if area_ratio < 0.035 or area_ratio > 0.74:
+            return False
+
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if aspect_ratio > 3.8:
+            return False
+
+        center_x = (x + w / 2.0) / float(image_w)
+        center_y = (y + h / 2.0) / float(image_h)
+        return (
+            CONVEYOR_ROI_CENTER_X_MIN <= center_x <= CONVEYOR_ROI_CENTER_X_MAX
+            and CONVEYOR_ROI_CENTER_Y_MIN <= center_y <= CONVEYOR_ROI_CENTER_Y_MAX
+        )
+
+    def defect_center_is_inside_conveyor_gate(self, defect, image_w, image_h):
+        if not isinstance(defect, dict) or image_w <= 0 or image_h <= 0:
+            return False
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        if w <= 0 or h <= 0:
+            return False
+        center_x = (x + w / 2.0) / float(image_w)
+        center_y = (y + h / 2.0) / float(image_h)
+        return (
+            CONVEYOR_GATE_X_MIN <= center_x <= CONVEYOR_GATE_X_MAX
+            and CONVEYOR_GATE_Y_MIN <= center_y <= CONVEYOR_GATE_Y_MAX
+        )
+
+    def defect_center_is_inside_workpiece_roi(self, defect, roi, source_w, source_h):
+        if not isinstance(defect, dict) or not isinstance(roi, dict) or source_w <= 0 or source_h <= 0:
+            return False
+        x = self._positive_int(defect.get("x"))
+        y = self._positive_int(defect.get("y"))
+        w = self._positive_int(defect.get("w"))
+        h = self._positive_int(defect.get("h"))
+        rx = self._positive_int(roi.get("x"))
+        ry = self._positive_int(roi.get("y"))
+        rw = self._positive_int(roi.get("w"))
+        rh = self._positive_int(roi.get("h"))
+        if w <= 0 or h <= 0 or rw <= 0 or rh <= 0:
+            return False
+        margin = max(6, int(min(rw, rh) * 0.08))
+        center_x = x + w / 2.0
+        center_y = y + h / 2.0
+        return (
+            rx - margin <= center_x <= rx + rw + margin
+            and ry - margin <= center_y <= ry + rh + margin
+        )
+
+    def conveyor_roi_source_is_fallback(self, roi):
+        if not isinstance(roi, dict):
+            return True
+        source = str(roi.get("source", "") or "").strip().lower()
+        return source in CONVEYOR_FALLBACK_ROI_SOURCES
+
+    def conveyor_roi_requires_live_confirmation(self, roi, source_w, source_h):
+        roi = self.valid_roi_or_none(roi, source_w, source_h)
+        if roi is None or self.roi_is_full_frame(roi, source_w, source_h):
+            return True
+        if self.conveyor_roi_source_is_fallback(roi):
+            return True
+        try:
+            confidence = float(roi.get("confidence", 1.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return confidence < CONVEYOR_MIN_WORKPIECE_CONFIDENCE
+
+    def conveyor_live_workpiece_roi(self, source_w, source_h):
+        if Image is None or cv2 is None or np is None:
+            return None
+        payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else {}
+        image_bytes = payload.get("image_bytes")
+        if not image_bytes:
+            return None
+        payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", len(image_bytes)))
+
+        if payload_key != self.conveyor_workpiece_payload_key:
+            detected = None
+            try:
+                with Image.open(BytesIO(image_bytes)) as image:
+                    image = image.convert("RGB")
+                    roi = self.detect_lens_roi_from_image(image)
+                    if roi is None:
+                        roi = self.detect_conveyor_workpiece_roi_from_image(image)
+                    roi = self.valid_roi_or_none(roi, image.width, image.height)
+                    if (
+                        roi is not None
+                        and not self.roi_is_full_frame(roi, image.width, image.height)
+                        and self.roi_is_inside_conveyor_gate(roi, image.width, image.height)
+                    ):
+                        roi["source"] = "pc_live_workpiece"
+                        detected = {"roi": roi, "w": image.width, "h": image.height}
+            except Exception:
+                detected = None
+            self.conveyor_workpiece_payload_key = payload_key
+            self.conveyor_workpiece_roi = detected
+
+        cached = self.conveyor_workpiece_roi
+        if not isinstance(cached, dict):
+            return None
+        roi = cached.get("roi")
+        image_w = self._positive_int(cached.get("w"))
+        image_h = self._positive_int(cached.get("h"))
+        if not isinstance(roi, dict) or image_w <= 0 or image_h <= 0 or source_w <= 0 or source_h <= 0:
+            return None
+        scaled = {
+            "x": int(self._positive_int(roi.get("x")) * float(source_w) / float(image_w)),
+            "y": int(self._positive_int(roi.get("y")) * float(source_h) / float(image_h)),
+            "w": int(self._positive_int(roi.get("w")) * float(source_w) / float(image_w)),
+            "h": int(self._positive_int(roi.get("h")) * float(source_h) / float(image_h)),
+            "source": "pc_live_workpiece",
+            "confidence": 1.0,
+            "found": True,
+        }
+        return self.valid_roi_or_none(scaled, source_w, source_h)
+
+    def apply_conveyor_center_gate(self, result):
+        if not self.conveyor_center_gate_var.get() or not isinstance(result, dict):
+            self.conveyor_centered_count = 0
+            self.conveyor_fusion_results = []
+            return result
+        if result.get("error"):
+            return result
+
+        payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else {}
+        frame = result.get("frame") if isinstance(result.get("frame"), dict) else {}
+        source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width"))
+        source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height"))
+        if source_w <= 0 or source_h <= 0:
+            return result
+
+        requires_workpiece = self.mode_uses_lens_postprocess()
+        lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
+        roi = lens if isinstance(lens, dict) else None
+        if roi is None:
+            roi = result.get("roi") if isinstance(result.get("roi"), dict) else None
+        roi = self.valid_roi_or_none(roi, source_w, source_h)
+
+        lens_reported_missing = bool(isinstance(lens, dict) and lens.get("found") is False)
+        if requires_workpiece and (
+            lens_reported_missing
+            or self.conveyor_roi_requires_live_confirmation(roi, source_w, source_h)
+        ):
+            live_roi = self.conveyor_live_workpiece_roi(source_w, source_h)
+            if live_roi is None:
+                reason = "no_lens_found" if lens_reported_missing else "no_live_workpiece"
+                return self.conveyor_wait_result(result, reason)
+            roi = live_roi
+
+        if roi is not None and not self.roi_is_full_frame(roi, source_w, source_h):
+            if not self.roi_is_inside_conveyor_gate(roi, source_w, source_h):
+                return self.conveyor_wait_result(result, "roi_outside_center_gate")
+            self.conveyor_centered_count += 1
+            if self.conveyor_centered_count < CONVEYOR_CENTER_STABLE_FRAMES:
+                return self.conveyor_wait_result(result, "roi_wait_stable", reset_center=False)
+        elif requires_workpiece:
+            return self.conveyor_wait_result(result, "no_live_workpiece")
+        else:
+            self.conveyor_centered_count = min(
+                CONVEYOR_CENTER_STABLE_FRAMES,
+                self.conveyor_centered_count + 1,
+            )
+
+        defects = result.get("defects") or []
+        if not defects:
+            return result
+        gated_defects = [
+            defect for defect in defects
+            if (
+                self.defect_center_is_inside_conveyor_gate(defect, source_w, source_h)
+                and (
+                    not requires_workpiece
+                    or self.defect_center_is_inside_workpiece_roi(defect, roi, source_w, source_h)
+                )
+            )
+        ]
+        if len(gated_defects) == len(defects):
+            return result
+        filtered = dict(result)
+        filtered["defects"] = gated_defects
+        filtered["conveyor_filtered_defects"] = len(defects) - len(gated_defects)
+        return self.normalize_detection_result(filtered)
 
     def stabilize_detection_result(self, result):
+        result = self.apply_conveyor_center_gate(result)
         if isinstance(result, dict) and result.get("has_defect"):
             locked_defects = []
             changed_by_black_lock = False
@@ -3796,6 +4606,8 @@ class LensDefectHostApp:
                 result = dict(result)
                 result["defects"] = locked_defects
                 result = self.normalize_detection_result(result)
+
+        result = self.apply_conveyor_frame_fusion(result)
 
         class_key, _class_text, _confidence = self.display_class_result(result)
         if self.stable_detection_result is None:
@@ -3861,9 +4673,12 @@ class LensDefectHostApp:
                 "normal": "#1E6B5C",
                 "scratch": "#B3261E",
                 "stain": "#9A5B00",
+                "waiting": "#1E6B8C",
             }.get(class_key, "#333333")
             self.class_result_label.configure(fg=color)
         self.has_defect_var.set("是否检测到缺陷：%s" % ("是" if has_defect else "否"))
+        if class_key == "waiting":
+            self.has_defect_var.set("是否检测到缺陷：等待检测")
         self.count_var.set("缺陷总数：%d" % defect_count)
         self.level_var.set("整体严重程度：%s" % level_name(overall_level))
         self.lens_track_var.set(self.format_lens_track_text(result.get("lens")))
@@ -3899,6 +4714,9 @@ class LensDefectHostApp:
 
         if render_live_image and self.latest_live_image_payload is not None:
             self.render_live_image(self.latest_live_image_payload)
+            if self.latest_detection_result is not result:
+                return
+        self.maybe_send_mcu_result(result)
 
     def update_live_image(self, payload):
         self.latest_live_image_payload = payload
@@ -3916,12 +4734,14 @@ class LensDefectHostApp:
         try:
             with Image.open(BytesIO(payload["image_bytes"])) as image:
                 display_image = image.convert("RGB")
-                self.apply_yolo_to_live_image(display_image, payload)
-                self.apply_fast_cv_review_to_live_image(display_image, payload)
-                self.apply_stage2_to_live_image(display_image, payload)
-                filtered = self.filter_edge_defects_for_live_image(self.latest_detection_result, payload)
-                if filtered is not self.latest_detection_result:
-                    self.update_result_ui(filtered, render_live_image=False)
+                if self.mode_uses_lens_postprocess():
+                    self.apply_yolo_to_live_image(display_image, payload)
+                    self.apply_fast_cv_review_to_live_image(display_image, payload)
+                    if not self.low_latency_mode_var.get():
+                        self.apply_stage2_to_live_image(display_image, payload)
+                    filtered = self.filter_edge_defects_for_live_image(self.latest_detection_result, payload)
+                    if filtered is not self.latest_detection_result:
+                        self.update_result_ui(filtered, render_live_image=False)
                 self.draw_detection_boxes(display_image, payload)
                 display_image = self.fill_live_image_area(display_image)
                 self.live_image_photo = ImageTk.PhotoImage(display_image.copy())
@@ -4020,14 +4840,211 @@ class LensDefectHostApp:
         except (AttributeError, TypeError, ValueError):
             return float(default)
 
+    def detection_source(self, detection_or_source):
+        if isinstance(detection_or_source, dict):
+            return str(detection_or_source.get("source", ""))
+        return str(detection_or_source or "")
+
+    def is_yolo_source(self, detection_or_source):
+        return self.detection_source(detection_or_source).startswith("yolo_onnx")
+
+    def is_yolo_roi_source(self, detection_or_source):
+        return self.detection_source(detection_or_source).startswith("yolo_onnx_roi")
+
+    def detection_area_ratio(self, detection, image_w, image_h):
+        if not isinstance(detection, dict):
+            return 0.0
+        width = self._positive_int(detection.get("w"))
+        height = self._positive_int(detection.get("h"))
+        frame_area = float(max(1, int(image_w) * int(image_h)))
+        return float(width * height) / frame_area
+
+    def review_detection_is_strong_scratch(self, detection):
+        if not isinstance(detection, dict) or detection.get("type") != "scratch":
+            return False
+        confidence = self.confidence_float(detection)
+        if confidence < 0.72:
+            return False
+        source = self.detection_source(detection)
+        line_source = source in (
+            "pc_fast_review",
+            "pc_fast_review_line",
+            "pc_fast_bright_scratch",
+            "pc_fast_bright_crosshatch",
+            "pc_fast_center_cross_scratch",
+            "pc_fast_curvilinear_scratch",
+        )
+        aspect_ratio = float(detection.get("aspect_ratio", 0) or 0)
+        line_count = int(detection.get("line_count", 0) or 0)
+        total_line_length = float(detection.get("total_line_length", detection.get("length", 0)) or 0)
+        fill_ratio = float(detection.get("fill_ratio", 0) or 0)
+        strong_internal = bool(detection.get("strong_internal_scratch"))
+        if strong_internal and aspect_ratio >= 1.6:
+            return True
+        if (
+            line_source
+            and aspect_ratio >= 1.85
+            and total_line_length >= 60.0
+            and (line_count >= 3 or total_line_length >= 110.0)
+            and (fill_ratio <= 0.55 if fill_ratio > 0 else True)
+        ):
+            return True
+        return aspect_ratio >= 3.2 and total_line_length >= 82.0
+
+    def review_detection_is_strong_stain(self, detection):
+        if not isinstance(detection, dict) or detection.get("type") != "stain":
+            return False
+        if detection.get("black_stain_guard") or detection.get("black_radial_stain"):
+            return True
+        source = self.detection_source(detection)
+        confidence = self.confidence_float(detection)
+        density = float(detection.get("density", 0) or 0)
+        signed_delta = float(detection.get("brightness_signed_delta", 0) or 0)
+        local_dark_delta = float(detection.get("local_dark_delta", 0) or 0)
+        aspect_ratio = float(detection.get("aspect_ratio", 0) or 0)
+        area = int(detection.get("area", 0) or 0)
+        if (
+            source in (
+                "pc_fast_dark_star_stain",
+                "pc_fast_dark_star_stain_lines",
+                "pc_fast_center_radial_stain",
+                "pc_fast_dark_stain",
+                "pc_fast_dark_x_stain",
+            )
+            and confidence >= 0.80
+        ):
+            return True
+        if (
+            source == "pc_fast_review"
+            and confidence >= 0.84
+            and area >= 1600
+            and aspect_ratio <= 4.6
+        ):
+            return True
+        return (
+            confidence >= 0.84
+            and aspect_ratio <= 4.8
+            and (density >= 0.16 or local_dark_delta >= 8.0 or signed_delta <= -6.0)
+        )
+
+    def review_detection_should_override_yolo(self, yolo_detection, review_detection, iou, center_distance):
+        if not isinstance(yolo_detection, dict) or not isinstance(review_detection, dict):
+            return False
+        yolo_confidence = self.confidence_float(yolo_detection)
+        review_confidence = self.confidence_float(review_detection)
+        if (
+            yolo_confidence <= FAST_REVIEW_YOLO_BOX_LOCK_MIN_CONFIDENCE
+            and review_confidence >= yolo_confidence + 0.08
+        ):
+            return True
+        if (
+            iou >= FAST_REVIEW_YOLO_BOX_LOCK_MIN_IOU
+            or center_distance <= FAST_REVIEW_YOLO_BOX_LOCK_MAX_CENTER_DISTANCE_RATIO
+        ):
+            return False
+        if review_detection.get("type") == "scratch":
+            return self.review_detection_is_strong_scratch(review_detection) and review_confidence >= max(0.74, yolo_confidence + 0.02)
+        if review_detection.get("type") == "stain":
+            return self.review_detection_is_strong_stain(review_detection) and (
+                review_confidence >= max(0.80, yolo_confidence - 0.04)
+                or yolo_detection.get("type") == "scratch"
+            )
+        return False
+
+    def review_box_should_replace_locked_box(self, yolo_detection, review_detection, iou, center_distance):
+        if not isinstance(yolo_detection, dict) or not isinstance(review_detection, dict):
+            return False
+        yolo_area = max(1, self._positive_int(yolo_detection.get("w")) * self._positive_int(yolo_detection.get("h")))
+        review_area = max(1, self._positive_int(review_detection.get("w")) * self._positive_int(review_detection.get("h")))
+        if self.review_detection_is_strong_scratch(review_detection):
+            return (
+                center_distance >= 0.04
+                or iou <= 0.38
+                or review_area <= yolo_area * 0.78
+                or self.confidence_float(yolo_detection) <= FAST_REVIEW_YOLO_BOX_LOCK_MIN_CONFIDENCE
+            )
+        if self.review_detection_is_strong_stain(review_detection):
+            return (
+                center_distance >= 0.03
+                or iou <= 0.44
+                or review_area <= yolo_area * 0.88
+                or self.confidence_float(yolo_detection) <= FAST_REVIEW_YOLO_BOX_LOCK_MIN_CONFIDENCE
+            )
+        return False
+
+    def apply_review_geometry_to_detection(self, merged_detection, review_detection):
+        if not isinstance(merged_detection, dict) or not isinstance(review_detection, dict):
+            return merged_detection
+        refined = dict(merged_detection)
+        for key in (
+            "x",
+            "y",
+            "w",
+            "h",
+            "area",
+            "length",
+            "aspect_ratio",
+            "mask_polygon",
+            "line_count",
+            "total_line_length",
+            "fill_ratio",
+            "local_signed_delta",
+            "local_bright_delta",
+            "local_dark_delta",
+            "density",
+            "brightness_signed_delta",
+            "angle_groups",
+            "slender_line_count",
+            "star_scratch",
+            "crosshatch_scratch",
+            "strong_internal_scratch",
+        ):
+            if key in review_detection:
+                refined[key] = review_detection.get(key)
+        refined["box_refined_by_review"] = True
+        refined["review_box_source"] = review_detection.get("source", "")
+        return refined
+
+    def should_run_fast_review_for_yolo(self, result):
+        if not isinstance(result, dict):
+            return True
+        defects = [item for item in (result.get("defects") or []) if isinstance(item, dict)]
+        if not defects:
+            return True
+        best = max(defects, key=lambda item: self.confidence_float(item))
+        confidence = self.confidence_float(best)
+        if confidence < 0.58:
+            return True
+        frame = result.get("frame") or {}
+        frame_w = self._positive_int(frame.get("w"))
+        frame_h = self._positive_int(frame.get("h"))
+        area_ratio = self.detection_area_ratio(best, frame_w or 1, frame_h or 1)
+        defect_type = best.get("type")
+        if defect_type == "stain":
+            if self.review_detection_is_strong_stain(best):
+                return False
+            return confidence < 0.82
+        if defect_type == "scratch":
+            if best.get("black_stain_guard"):
+                return False
+            if self.review_detection_is_strong_scratch(best):
+                return False
+            aspect_ratio = float(best.get("aspect_ratio", 0) or 0)
+            if confidence >= 0.84 and aspect_ratio >= 2.6 and area_ratio <= 0.08:
+                return False
+            return True
+        return confidence < 0.78
+
     def merge_yolo_locked_box_with_review(self, yolo_detection, review_detection, image_w, image_h):
         if (
             not isinstance(yolo_detection, dict)
-            or str(yolo_detection.get("source", "")) not in ("yolo_onnx", "yolo_onnx_roi")
+            or not self.is_yolo_source(yolo_detection)
         ):
             return review_detection
         if not isinstance(review_detection, dict):
             return yolo_detection
+        yolo_confidence = self.confidence_float(yolo_detection)
+        review_confidence = self.confidence_float(review_detection)
         expanded_yolo = self.expand_detection_box(
             yolo_detection,
             FAST_REVIEW_YOLO_BOX_LOCK_EXPAND_RATIO,
@@ -4042,25 +5059,25 @@ class LensDefectHostApp:
             iou < FAST_REVIEW_YOLO_BOX_LOCK_MIN_IOU
             and center_distance > FAST_REVIEW_YOLO_BOX_LOCK_MAX_CENTER_DISTANCE_RATIO
         ):
+            if self.review_detection_should_override_yolo(yolo_detection, review_detection, iou, center_distance):
+                overridden = dict(review_detection)
+                overridden["pc_fast_review"] = True
+                overridden["yolo_override_source"] = yolo_detection.get("source", "")
+                overridden["yolo_override_confidence"] = round(yolo_confidence, 2)
+                overridden["review_iou"] = round(iou, 3)
+                overridden["review_center_distance"] = round(center_distance, 3)
+                return self.apply_black_stain_class_lock(overridden)
             return yolo_detection
 
         merged = dict(yolo_detection)
         yolo_type = yolo_detection.get("type")
         review_type = review_detection.get("type")
-        yolo_confidence = self.confidence_float(yolo_detection)
-        review_confidence = self.confidence_float(review_detection)
-        review_source = str(review_detection.get("source", ""))
+        review_source = self.detection_source(review_detection)
         if (
             yolo_type == "scratch"
             and review_type == "stain"
-            and review_source in (
-                "pc_fast_dark_star_stain",
-                "pc_fast_dark_star_stain_lines",
-                "pc_fast_center_radial_stain",
-                "pc_fast_dark_stain",
-                "pc_fast_dark_x_stain",
-            )
-            and review_confidence >= 0.84
+            and self.review_detection_is_strong_stain(review_detection)
+            and review_confidence >= 0.80
         ):
             merged["type"] = "stain"
         if (
@@ -4070,6 +5087,11 @@ class LensDefectHostApp:
             and review_confidence >= yolo_confidence + FAST_REVIEW_YOLO_BOX_LOCK_CLASS_MARGIN
         ):
             merged["type"] = review_type
+        if (
+            merged.get("type") == review_type
+            and self.review_box_should_replace_locked_box(yolo_detection, review_detection, iou, center_distance)
+        ):
+            merged = self.apply_review_geometry_to_detection(merged, review_detection)
         merged["confidence"] = round(max(yolo_confidence, min(0.96, review_confidence)), 2)
         merged["level"] = review_detection.get("level", yolo_detection.get("level", "medium"))
         merged["pc_fast_review"] = True
@@ -4245,7 +5267,8 @@ class LensDefectHostApp:
         self.last_fast_review_time = now
 
         mask = self.build_detection_mask(image, payload, self.latest_detection_result)
-        detection = self.fast_cv_detect_defect(image, mask)
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        detection = self.fast_cv_detect_defect(image, mask, gray=gray)
         if detection is None:
             self.confirm_fast_review_detection(None)
             return
@@ -4265,7 +5288,7 @@ class LensDefectHostApp:
         )
         current_yolo_defects = [
             defect for defect in (self.latest_detection_result.get("defects") or [])
-            if isinstance(defect, dict) and str(defect.get("source", "")) in ("yolo_onnx", "yolo_onnx_roi")
+            if isinstance(defect, dict) and self.is_yolo_source(defect)
         ]
         if current_yolo_defects:
             best_yolo = max(current_yolo_defects, key=lambda item: self.confidence_float(item))
@@ -4293,7 +5316,8 @@ class LensDefectHostApp:
         if payload_key == self.last_yolo_payload_key:
             return
         now = time.monotonic()
-        if now - self.last_yolo_infer_time < YOLO_MIN_INTERVAL_SECONDS:
+        min_interval = LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS if self.low_latency_mode_var.get() else YOLO_MIN_INTERVAL_SECONDS
+        if now - self.last_yolo_infer_time < min_interval:
             return
         detector = self.get_yolo_detector()
         if detector is None:
@@ -4328,7 +5352,8 @@ class LensDefectHostApp:
             self.yolo_roi_miss_count = 0
         if not detections:
             return
-        detections = self.correct_yolo_black_stain_classes(image, detections)
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        detections = self.correct_yolo_black_stain_classes(image, detections, gray=gray)
 
         refined = dict(base)
         refined["frame"] = {"w": image.width, "h": image.height}
@@ -4345,12 +5370,14 @@ class LensDefectHostApp:
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
-        mask = self.build_detection_mask(image, payload, refined)
-        fallback_detection = self.fast_cv_detect_defect(image, mask)
+        fallback_detection = None
+        if self.should_run_fast_review_for_yolo(refined):
+            mask = self.build_detection_mask(image, payload, refined)
+            fallback_detection = self.fast_cv_detect_defect(image, mask, gray=gray)
         if refined.get("has_defect"):
             yolo_defects = [
                 defect for defect in (refined.get("defects") or [])
-                if isinstance(defect, dict) and str(defect.get("source", "")) in ("yolo_onnx", "yolo_onnx_roi")
+                if isinstance(defect, dict) and self.is_yolo_source(defect)
             ]
             if yolo_defects and fallback_detection is not None:
                 best_yolo = max(yolo_defects, key=lambda item: self.confidence_float(item))
@@ -4384,12 +5411,22 @@ class LensDefectHostApp:
         self.update_result_ui(refined, render_live_image=False)
 
     def should_run_yolo_tile_review(self, detections):
+        if self.low_latency_mode_var.get():
+            return False
         if not self.yolo_low_conf_tile_var.get():
             return False
         if not detections:
             return True
         best = max(detections, key=lambda item: self.confidence_float(item))
-        return self.confidence_float(best) < YOLO_LOW_CONFIDENCE_TILE_THRESHOLD
+        if self.confidence_float(best) < YOLO_LOW_CONFIDENCE_TILE_THRESHOLD:
+            return True
+        detection_type = best.get("type")
+        aspect_ratio = float(best.get("aspect_ratio", 0) or 0)
+        return (
+            detection_type == "scratch"
+            and self.confidence_float(best) < 0.46
+            and aspect_ratio < 2.2
+        )
 
     def merge_yolo_detections(self, base_detections, extra_detections):
         merged = [dict(defect) for defect in (base_detections or []) if isinstance(defect, dict)]
@@ -4408,10 +5445,11 @@ class LensDefectHostApp:
         merged.sort(key=lambda item: self.confidence_float(item), reverse=True)
         return merged[:12]
 
-    def correct_yolo_black_stain_classes(self, image, detections):
+    def correct_yolo_black_stain_classes(self, image, detections, gray=None):
         if cv2 is None or np is None or not detections:
             return detections
-        gray = cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2GRAY)
+        if gray is None:
+            gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         background = cv2.GaussianBlur(gray, (0, 0), sigmaX=13, sigmaY=13)
         dark_response = np.maximum(background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
         bright_response = np.maximum(gray.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
@@ -4423,8 +5461,8 @@ class LensDefectHostApp:
     def correct_single_yolo_black_stain(self, gray, dark_response, bright_response, detection):
         if not isinstance(detection, dict) or detection.get("type") != "scratch":
             return detection
-        source = str(detection.get("source", ""))
-        if source not in ("yolo_onnx", "yolo_onnx_roi"):
+        source = self.detection_source(detection)
+        if not self.is_yolo_source(source):
             return detection
         image_h, image_w = gray.shape[:2]
         x = self._positive_int(detection.get("x"))
@@ -4487,6 +5525,12 @@ class LensDefectHostApp:
             dark_response_limit,
             bright_response_limit,
         )
+        cluster_metrics = self.yolo_black_cluster_stain_metrics(
+            box,
+            box_dark_response,
+            dark_limit,
+            dark_response_limit,
+        )
         dark_is_dominant = (
             bright_response_fraction <= 0.16
             and dark_response_p85 >= bright_response_p85 * 0.75
@@ -4509,6 +5553,22 @@ class LensDefectHostApp:
             )
             and aspect_ratio <= 4.8
         )
+        cluster_black_stain = (
+            cluster_metrics["component_count"] >= FAST_REVIEW_BLACK_CLUSTER_MIN_COMPONENTS
+            and cluster_metrics["total_fill_ratio"] >= FAST_REVIEW_BLACK_CLUSTER_MIN_FILL_RATIO
+            and cluster_metrics["merged_aspect"] <= FAST_REVIEW_BLACK_CLUSTER_MAX_MERGED_ASPECT
+            and cluster_metrics["largest_component_aspect"] <= FAST_REVIEW_BLACK_CLUSTER_MAX_COMPONENT_ASPECT
+            and combined_dark_fraction >= 0.20
+            and bright_response_fraction <= 0.34
+            and dark_response_p85 >= 4.5
+        )
+        compact_black_stain = (
+            cluster_metrics["dense_component_count"] >= 2
+            and cluster_metrics["largest_area_ratio"] >= 0.06
+            and aspect_ratio <= 2.2
+            and combined_dark_fraction >= 0.24
+            and signed_delta <= 6.0
+        )
         if (
             (
                 combined_dark_fraction >= 0.16
@@ -4517,6 +5577,8 @@ class LensDefectHostApp:
                 and aspect_ratio <= 4.2
             )
             or radial_black_stain
+            or cluster_black_stain
+            or compact_black_stain
         ) and w * h >= max(450, int(image_w * image_h * 0.006)):
             corrected = dict(detection)
             corrected["type"] = "stain"
@@ -4528,10 +5590,14 @@ class LensDefectHostApp:
             corrected["brightness_signed_delta"] = round(signed_delta, 1)
             corrected["local_dark_delta"] = round(dark_response_p85, 1)
             corrected["black_radial_stain"] = bool(radial_black_stain)
+            corrected["black_cluster_stain"] = bool(cluster_black_stain or compact_black_stain)
             if radial_black_stain:
                 corrected["line_count"] = int(radial_metrics["line_count"])
                 corrected["angle_groups"] = int(radial_metrics["angle_groups"])
                 corrected["total_line_length"] = round(float(radial_metrics["total_length"]), 1)
+            if cluster_black_stain or compact_black_stain:
+                corrected["cluster_count"] = int(cluster_metrics["component_count"])
+                corrected["cluster_fill_ratio"] = round(float(cluster_metrics["total_fill_ratio"]), 2)
             corrected["level"] = "medium"
             return corrected
         return detection
@@ -4595,6 +5661,69 @@ class LensDefectHostApp:
         metrics["line_count"] = int(line_count)
         metrics["angle_groups"] = int(len(angle_groups))
         metrics["total_length"] = float(total_length)
+        return metrics
+
+    def yolo_black_cluster_stain_metrics(self, box_gray, box_dark_response, dark_limit, dark_response_limit):
+        metrics = {
+            "component_count": 0,
+            "dense_component_count": 0,
+            "largest_area_ratio": 0.0,
+            "total_fill_ratio": 0.0,
+            "merged_aspect": 0.0,
+            "largest_component_aspect": 0.0,
+        }
+        if cv2 is None or np is None:
+            return metrics
+        if box_gray is None or box_dark_response is None:
+            return metrics
+        if box_gray.size <= 0 or box_dark_response.size <= 0:
+            return metrics
+
+        dark_from_gray = np.where(box_gray <= dark_limit, 255, 0).astype(np.uint8)
+        dark_from_response = np.where(box_dark_response >= dark_response_limit, 255, 0).astype(np.uint8)
+        dark_mask = cv2.bitwise_or(dark_from_gray, dark_from_response)
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(dark_mask, 8)
+        if component_count <= 1:
+            return metrics
+
+        box_h, box_w = box_gray.shape[:2]
+        box_area = float(max(1, box_w * box_h))
+        min_component_area = max(18.0, box_area * 0.008)
+        components = []
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < min_component_area or w <= 0 or h <= 0:
+                continue
+            aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+            components.append({
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+                "area": float(area),
+                "aspect_ratio": aspect_ratio,
+            })
+        if not components:
+            return metrics
+
+        metrics["component_count"] = int(len(components))
+        total_area = sum(item["area"] for item in components)
+        largest_area = max(item["area"] for item in components)
+        metrics["dense_component_count"] = int(sum(1 for item in components if item["area"] >= min_component_area * 1.8))
+        metrics["largest_area_ratio"] = float(largest_area) / box_area
+        metrics["total_fill_ratio"] = float(total_area) / box_area
+        metrics["largest_component_aspect"] = float(max(item["aspect_ratio"] for item in components))
+
+        left = min(item["x"] for item in components)
+        top = min(item["y"] for item in components)
+        right = max(item["x"] + item["w"] for item in components)
+        bottom = max(item["y"] + item["h"] for item in components)
+        merged_w = max(1, right - left)
+        merged_h = max(1, bottom - top)
+        metrics["merged_aspect"] = float(max(merged_w, merged_h)) / float(max(1, min(merged_w, merged_h)))
         return metrics
 
     def best_live_detection_roi(self, result, image_w, image_h):
@@ -4789,10 +5918,23 @@ class LensDefectHostApp:
             "source": "pc_center_fallback",
         }
 
-    def fast_cv_detect_defect(self, image, mask=None):
-        rgb = np.array(image)
-        frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    def enhance_gray_for_inspection(self, gray):
+        if cv2 is None or np is None or gray is None:
+            return gray
+        try:
+            if gray.dtype != np.uint8:
+                gray = np.clip(gray, 0, 255).astype(np.uint8)
+            clahe = cv2.createCLAHE(
+                clipLimit=INSPECTION_CLAHE_CLIP_LIMIT,
+                tileGridSize=INSPECTION_CLAHE_TILE_GRID,
+            )
+            return clahe.apply(gray)
+        except Exception:
+            return gray
+
+    def fast_cv_detect_defect(self, image, mask=None, gray=None):
+        if gray is None:
+            gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         height, width = gray.shape[:2]
         if width < 32 or height < 32:
             return None
@@ -4804,25 +5946,32 @@ class LensDefectHostApp:
         if cv2.countNonZero(mask) <= 0:
             return None
 
-        mean_value = float(np.mean(gray[mask > 0]))
-        std_value = float(np.std(gray[mask > 0]))
+        analysis_gray = self.enhance_gray_for_inspection(gray)
+        mean_value = float(np.mean(analysis_gray[mask > 0]))
+        std_value = float(np.std(analysis_gray[mask > 0]))
         contrast_delta = max(18.0, std_value * 1.2)
         edge_distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
 
-        stain = self.fast_cv_find_stain(gray, mask, mean_value, contrast_delta, edge_distance)
-        dark_cluster = self.fast_cv_find_dark_stain_cluster(gray, mask, mean_value, std_value, edge_distance)
+        stain = self.fast_cv_find_stain(analysis_gray, mask, mean_value, contrast_delta, edge_distance)
+        morph_stain = self.fast_cv_find_morphology_stain(analysis_gray, mask, edge_distance)
+        if morph_stain is not None and (stain is None or self.confidence_float(morph_stain) >= self.confidence_float(stain) - 0.03):
+            stain = morph_stain
+        dark_cluster = self.fast_cv_find_dark_stain_cluster(analysis_gray, mask, mean_value, std_value, edge_distance)
         if dark_cluster is not None and (stain is None or dark_cluster.get("area", 0) >= stain.get("area", 0)):
             stain = dark_cluster
-        dark_x_stain = self.fast_cv_find_dark_x_stain(gray, mask, edge_distance)
+        dark_x_stain = self.fast_cv_find_dark_x_stain(analysis_gray, mask, edge_distance)
         if dark_x_stain is None:
             center_mask = self.build_center_defect_fallback_mask(width, height)
             if cv2.countNonZero(center_mask) > 0:
                 center_edge_distance = cv2.distanceTransform(center_mask, cv2.DIST_L2, 3)
-                dark_x_stain = self.fast_cv_find_dark_x_stain(gray, center_mask, center_edge_distance)
+                dark_x_stain = self.fast_cv_find_dark_x_stain(analysis_gray, center_mask, center_edge_distance)
         if dark_x_stain is not None:
             if stain is None or dark_x_stain.get("total_line_length", 0) >= stain.get("length", 0) * 1.35:
                 stain = dark_x_stain
-        scratch = self.fast_cv_find_scratch(gray, mask, edge_distance, None)
+        scratch = self.fast_cv_find_scratch(analysis_gray, mask, edge_distance, None)
+        morph_scratch = self.fast_cv_find_morphology_scratch(analysis_gray, mask, edge_distance)
+        if morph_scratch is not None and (scratch is None or self.confidence_float(morph_scratch) >= self.confidence_float(scratch) - 0.04):
+            scratch = morph_scratch
         detection = self.choose_fast_cv_defect(scratch, stain, mask)
         if dark_x_stain is not None and (
             detection is None
@@ -4831,10 +5980,193 @@ class LensDefectHostApp:
         ):
             detection = dark_x_stain
         if detection is None:
-            detection = self.fast_cv_find_center_radial_stain(gray)
+            detection = self.fast_cv_find_center_radial_stain(analysis_gray)
         if detection is None:
-            detection = self.fast_cv_find_dark_star_stain_lines(gray)
+            detection = self.fast_cv_find_dark_star_stain_lines(analysis_gray)
         return detection
+
+    def inspection_kernel_size(self, width, height, ratio, minimum=7, maximum=31):
+        size = int(min(width, height) * ratio)
+        size = max(minimum, min(maximum, size))
+        if size % 2 == 0:
+            size += 1
+        return max(3, size)
+
+    def fast_cv_find_morphology_stain(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 64 or height < 64 or mask is None:
+            return None
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mask_area <= 0:
+            return None
+
+        kernel_size = self.inspection_kernel_size(width, height, 0.085, minimum=23, maximum=61)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        values = blackhat[mask > 0]
+        if values.size <= 0:
+            return None
+        threshold = max(6.0, min(MORPH_STAIN_MIN_RESPONSE, float(np.percentile(values, 99.2))))
+        stain_mask = np.where(blackhat >= threshold, 255, 0).astype(np.uint8)
+        stain_mask = cv2.bitwise_and(stain_mask, mask)
+        stain_mask = cv2.morphologyEx(stain_mask, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+        stain_mask = cv2.morphologyEx(stain_mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(stain_mask, 8)
+        if component_count <= 1:
+            return None
+
+        min_area = max(18, int(mask_area * 0.0004))
+        max_area = max(min_area + 1, int(mask_area * 0.26))
+        min_edge_distance = max(FAST_REVIEW_STAIN_MIN_EDGE_DISTANCE, int(min(width, height) * 0.018))
+        best = None
+        best_score = 0.0
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < min_area or area > max_area or w <= 0 or h <= 0:
+                continue
+            aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+            if aspect_ratio > 4.4:
+                continue
+            box_area = max(1, w * h)
+            fill_ratio = float(area) / float(box_area)
+            if fill_ratio < 0.08:
+                continue
+            center_x = max(0, min(width - 1, int(x + w / 2)))
+            center_y = max(0, min(height - 1, int(y + h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                continue
+            response_roi = blackhat[y:y + h, x:x + w]
+            active_response = response_roi[stain_mask[y:y + h, x:x + w] > 0]
+            if active_response.size <= 0:
+                continue
+            local_dark_delta = float(np.percentile(active_response, 85.0))
+            score = area + local_dark_delta * 12.0 + fill_ratio * 160.0
+            if score > best_score:
+                best_score = score
+                confidence = min(0.93, 0.76 + min(0.10, local_dark_delta / 110.0) + min(0.07, area / float(mask_area) * 4.0))
+                best = {
+                    "type": "stain",
+                    "confidence": round(confidence, 2),
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "area": int(area),
+                    "length": int(max(w, h)),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "medium" if area >= mask_area * 0.018 or local_dark_delta >= 24.0 else "light",
+                    "source": "pc_morph_blackhat_stain",
+                    "density": round(fill_ratio, 2),
+                    "local_dark_delta": round(local_dark_delta, 1),
+                    "brightness_signed_delta": round(-local_dark_delta, 1),
+                }
+        return best
+
+    def fast_cv_find_morphology_scratch(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 96 or height < 80 or mask is None:
+            return None
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mask_area <= 0:
+            return None
+
+        kernel_size = self.inspection_kernel_size(width, height, 0.030, minimum=9, maximum=25)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+        tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
+        line_response = np.maximum(blackhat, tophat)
+        values = line_response[mask > 0]
+        if values.size <= 0:
+            return None
+        threshold = max(MORPH_SCRATCH_MIN_RESPONSE, float(np.percentile(values, 94.0)))
+        candidate_mask = np.where(line_response >= threshold, 255, 0).astype(np.uint8)
+        candidate_mask = cv2.bitwise_and(candidate_mask, mask)
+
+        line_length = self.inspection_kernel_size(width, height, 0.024, minimum=7, maximum=17)
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, line_length))
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (line_length, 1))
+        diagonal_kernel = np.eye(line_length, dtype=np.uint8)
+        anti_diagonal_kernel = np.fliplr(diagonal_kernel)
+        line_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, vertical_kernel)
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, horizontal_kernel))
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, diagonal_kernel))
+        line_mask = cv2.bitwise_or(line_mask, cv2.morphologyEx(candidate_mask, cv2.MORPH_OPEN, anti_diagonal_kernel))
+        line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        if cv2.countNonZero(line_mask) <= 0 and cv2.countNonZero(candidate_mask) > 0:
+            line_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(line_mask, 8)
+        if component_count <= 1:
+            return None
+
+        min_edge_distance = max(
+            FAST_REVIEW_SCRATCH_MIN_EDGE_DISTANCE,
+            int(min(width, height) * FAST_REVIEW_SCRATCH_EDGE_MARGIN_RATIO),
+        )
+        best = None
+        best_score = 0.0
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < 18 or w <= 0 or h <= 0:
+                continue
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            if length < max(18, int(min(width, height) * 0.035)) or aspect_ratio < 2.2:
+                continue
+            box_area = max(1, w * h)
+            box_ratio = float(box_area) / float(mask_area)
+            if box_ratio > max(FAST_REVIEW_SCRATCH_MAX_BOX_AREA_RATIO, 0.22):
+                continue
+            fill_ratio = float(area) / float(box_area)
+            if fill_ratio > 0.42:
+                continue
+            center_x = max(0, min(width - 1, int(x + w / 2)))
+            center_y = max(0, min(height - 1, int(y + h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and not self.scratch_box_has_safe_edge_distance(
+                edge_distance,
+                x,
+                y,
+                min(width - 1, x + w),
+                min(height - 1, y + h),
+                min_edge_distance,
+                0.76,
+            ):
+                continue
+            response_roi = line_response[y:y + h, x:x + w]
+            active_response = response_roi[line_mask[y:y + h, x:x + w] > 0]
+            if active_response.size <= 0:
+                continue
+            local_delta = float(np.percentile(active_response, 85.0))
+            if local_delta < MORPH_SCRATCH_MIN_RESPONSE:
+                continue
+            score = length * 1.4 + area * 0.45 + local_delta * 7.0 + aspect_ratio * 6.0
+            if score > best_score:
+                best_score = score
+                confidence = min(0.92, 0.75 + min(0.09, length / 360.0) + min(0.06, local_delta / 120.0))
+                best = {
+                    "type": "scratch",
+                    "confidence": round(confidence, 2),
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "area": int(area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "medium" if length >= 70 or area >= 130 else "light",
+                    "source": "pc_morph_line_scratch",
+                    "fill_ratio": round(fill_ratio, 2),
+                    "local_bright_delta": round(float(np.percentile(tophat[y:y + h, x:x + w][line_mask[y:y + h, x:x + w] > 0], 80.0)), 1),
+                    "local_dark_delta": round(float(np.percentile(blackhat[y:y + h, x:x + w][line_mask[y:y + h, x:x + w] > 0], 80.0)), 1),
+                    "strong_internal_scratch": bool(length >= 45 and aspect_ratio >= 2.6 and fill_ratio <= 0.32),
+                }
+        return best
 
     def choose_fast_cv_defect(self, scratch, stain, mask):
         if scratch is None:
@@ -5022,7 +6354,7 @@ class LensDefectHostApp:
         if not isinstance(scratch, dict):
             return False
         source = str(scratch.get("source", ""))
-        if source not in ("pc_fast_review_line", "pc_fast_center_cross_scratch"):
+        if source not in ("pc_fast_review", "pc_fast_review_line", "pc_fast_center_cross_scratch"):
             return False
         signed_delta = float(scratch.get("local_signed_delta", 0) or 0)
         dark_delta = float(scratch.get("local_dark_delta", 0) or 0)
@@ -5032,6 +6364,18 @@ class LensDefectHostApp:
         fill_ratio = float(scratch.get("fill_ratio", 0) or 0)
         aspect_ratio = float(scratch.get("aspect_ratio", 0) or 0)
         dark_fraction = float(scratch.get("dark_fraction", 0) or 0)
+        component_count = int(scratch.get("component_count", 0) or 0)
+        compact_dark_cluster = (
+            fill_ratio >= 0.24
+            and aspect_ratio <= 2.25
+            and component_count >= 3
+            and (
+                dark_delta >= max(4.5, bright_delta * 0.70)
+                or signed_delta <= FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA
+            )
+        )
+        if compact_dark_cluster:
+            return True
         black_dominant_middle_defect = (
             line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
             and angle_groups >= FAST_REVIEW_BLACK_STAIN_MIN_ANGLE_GROUPS
@@ -5053,7 +6397,7 @@ class LensDefectHostApp:
             and fill_ratio >= FAST_REVIEW_STAR_SCRATCH_MIN_FILL
         ):
             return True
-        if source != "pc_fast_center_cross_scratch" or mask is None:
+        if source not in ("pc_fast_center_cross_scratch", "pc_fast_review_line") or mask is None:
             return False
         x = self._positive_int(scratch.get("x"))
         y = self._positive_int(scratch.get("y"))
@@ -5946,6 +7290,7 @@ class LensDefectHostApp:
                 return line_detection
             return None
         confidence = min(0.94, 0.78 + len(selected) * 0.035 + min(0.08, length / 500.0))
+        fill_ratio = float(total_area) / float(max(1, (right - left) * (bottom - top)))
         return {
             "type": "scratch",
             "confidence": round(confidence, 2),
@@ -5958,6 +7303,8 @@ class LensDefectHostApp:
             "aspect_ratio": round(aggregate_aspect, 2),
             "level": "medium" if length >= 70 or total_area >= 180 else "light",
             "source": "pc_fast_review",
+            "fill_ratio": round(fill_ratio, 2),
+            "component_count": int(len(selected)),
             "strong_internal_scratch": (
                 length >= 48
                 and short_side >= 16
@@ -5965,6 +7312,68 @@ class LensDefectHostApp:
                 and box_area_ratio <= 0.08
             ),
         }
+
+    def lsd_scratch_segments(self, gray, candidate_mask, mask, edge_distance, min_edge_distance, min_line_length):
+        if not hasattr(cv2, "createLineSegmentDetector"):
+            return []
+        try:
+            detector = cv2.createLineSegmentDetector()
+            lens_values = gray[mask > 0]
+            if lens_values.size <= 0:
+                return []
+            lsd_gray = gray.copy()
+            lsd_gray[mask == 0] = int(np.median(lens_values))
+            lines = detector.detect(lsd_gray)[0]
+        except Exception:
+            return []
+        if lines is None:
+            return []
+
+        height, width = gray.shape[:2]
+        segments = []
+        seen = set()
+        for line in lines.reshape(-1, 4):
+            x1, y1, x2, y2 = [int(round(float(value))) for value in line]
+            x1 = max(0, min(width - 1, x1))
+            x2 = max(0, min(width - 1, x2))
+            y1 = max(0, min(height - 1, y1))
+            y2 = max(0, min(height - 1, y2))
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+            center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+
+            samples = max(3, int(length / 7.0))
+            active_count = 0
+            distances = []
+            for sample_index in range(samples + 1):
+                ratio = float(sample_index) / float(samples)
+                px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
+                py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
+                if mask[py, px] > 0 and candidate_mask[py, px] > 0:
+                    active_count += 1
+                if edge_distance is not None:
+                    distances.append(float(edge_distance[py, px]))
+            active_fraction = float(active_count) / float(samples + 1)
+            if active_fraction < 0.22:
+                continue
+            if distances and float(np.percentile(distances, 35)) < min_edge_distance * 0.70:
+                continue
+
+            key = (
+                int(round(x1 / 4.0)),
+                int(round(y1 / 4.0)),
+                int(round(x2 / 4.0)),
+                int(round(y2 / 4.0)),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            segments.append((x1, y1, x2, y2, length))
+        return segments
 
     def fast_cv_find_scratch_lines(self, gray, mask, edge_distance=None):
         blurred = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -5991,38 +7400,46 @@ class LensDefectHostApp:
             minLineLength=min_line_length,
             maxLineGap=8,
         )
-        if lines is None:
-            return None
 
         min_edge_distance = max(
             FAST_REVIEW_SCRATCH_MIN_EDGE_DISTANCE,
             int(min(width, height) * FAST_REVIEW_SCRATCH_EDGE_MARGIN_RATIO),
         )
         segments = []
-        for line in lines[:, 0, :]:
-            x1, y1, x2, y2 = [int(value) for value in line]
-            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
-            if length < min_line_length:
-                continue
-            center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
-            center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
-            if mask[center_y, center_x] == 0:
-                continue
-            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
-                continue
-            if edge_distance is not None:
-                line_points = []
-                samples = max(2, int(length / 6.0))
-                for sample_index in range(samples + 1):
-                    ratio = float(sample_index) / float(samples)
-                    px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
-                    py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
-                    line_points.append(float(edge_distance[py, px]))
-                if line_points and float(np.percentile(line_points, 40)) < min_edge_distance * 0.75:
+        if lines is not None:
+            for line in lines[:, 0, :]:
+                x1, y1, x2, y2 = [int(value) for value in line]
+                length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                if length < min_line_length:
                     continue
-                if line_points and float(np.percentile(line_points, 10)) < min_edge_distance * 0.35:
+                center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+                center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+                if mask[center_y, center_x] == 0:
                     continue
-            segments.append((x1, y1, x2, y2, length))
+                if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                    continue
+                if edge_distance is not None:
+                    line_points = []
+                    samples = max(2, int(length / 6.0))
+                    for sample_index in range(samples + 1):
+                        ratio = float(sample_index) / float(samples)
+                        px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
+                        py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
+                        line_points.append(float(edge_distance[py, px]))
+                    if line_points and float(np.percentile(line_points, 40)) < min_edge_distance * 0.75:
+                        continue
+                    if line_points and float(np.percentile(line_points, 10)) < min_edge_distance * 0.35:
+                        continue
+                segments.append((x1, y1, x2, y2, length))
+
+        segments.extend(self.lsd_scratch_segments(
+            gray,
+            candidate_mask,
+            mask,
+            edge_distance,
+            min_edge_distance,
+            min_line_length,
+        ))
 
         if not segments:
             return None
@@ -7217,6 +8634,8 @@ class LensDefectHostApp:
             roi = None
 
         auto_roi = self.detect_lens_roi_from_image(image)
+        if auto_roi is None:
+            auto_roi = self.detect_conveyor_workpiece_roi_from_image(image)
         if auto_roi is not None:
             scaled_auto = {
                 "x": int(auto_roi["x"] * source_w / float(max(1, image_w))),
@@ -7264,6 +8683,7 @@ class LensDefectHostApp:
         image_w, image_h = image.size
         rgb = np.array(image)
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        gray = self.enhance_gray_for_inspection(gray)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 30, 90)
         edges = cv2.dilate(edges, np.ones((5, 5), dtype=np.uint8), iterations=1)
@@ -7315,6 +8735,122 @@ class LensDefectHostApp:
         w = max(1, right - x)
         h = max(1, bottom - y)
         return {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
+
+    def detect_conveyor_workpiece_roi_from_image(self, image):
+        if cv2 is None or np is None:
+            return None
+
+        image_w, image_h = image.size
+        if image_w <= 0 or image_h <= 0:
+            return None
+
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        gray = self.enhance_gray_for_inspection(gray)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 24, 82)
+        top_ignore = int(image_h * 0.20)
+        if top_ignore > 0:
+            edges[:top_ignore, :] = 0
+        edges = cv2.dilate(edges, np.ones((4, 4), dtype=np.uint8), iterations=1)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((13, 13), dtype=np.uint8), iterations=1)
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(edges, 8)
+        if component_count <= 1:
+            return None
+
+        frame_area = float(max(1, image_w * image_h))
+        min_box_area = frame_area * 0.035
+        min_w = max(28, int(image_w * 0.16))
+        min_h = max(22, int(image_h * 0.12))
+        best_box = None
+        best_score = 0.0
+        partial_boxes = []
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area >= max(18, int(frame_area * 0.0012)) and w >= 10 and h >= 10:
+                center_x = (x + w / 2.0) / float(max(1, image_w))
+                center_y = (y + h / 2.0) / float(max(1, image_h))
+                if 0.16 <= center_x <= 0.88 and 0.22 <= center_y <= 0.98:
+                    partial_boxes.append((x, y, w, h, area))
+            if w < min_w or h < min_h:
+                continue
+            box_area = float(max(1, w * h))
+            if box_area < min_box_area:
+                continue
+            area_ratio = box_area / frame_area
+            if area_ratio > 0.74:
+                continue
+            aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+            if aspect_ratio > 3.8:
+                continue
+            roi = {"x": x, "y": y, "w": w, "h": h}
+            if not self.roi_is_inside_conveyor_gate(roi, image_w, image_h):
+                continue
+            edge_fill = float(area) / box_area
+            center_x = (x + w / 2.0) / float(max(1, image_w))
+            center_y = (y + h / 2.0) / float(max(1, image_h))
+            center_bonus = 1.0 - min(1.0, abs(center_x - 0.52) + abs(center_y - 0.62))
+            score = min(0.60, area_ratio) + min(0.25, edge_fill * 1.8) + center_bonus * 0.15
+            if score > best_score:
+                best_score = score
+                best_box = (x, y, w, h)
+
+        union_box = self.union_conveyor_workpiece_components(partial_boxes, image_w, image_h)
+        if union_box is not None:
+            x, y, w, h = union_box
+            box_area = float(max(1, w * h))
+            area_ratio = box_area / frame_area
+            edge_area = float(sum(item[4] for item in partial_boxes))
+            edge_fill = edge_area / box_area
+            center_x = (x + w / 2.0) / float(max(1, image_w))
+            center_y = (y + h / 2.0) / float(max(1, image_h))
+            center_bonus = 1.0 - min(1.0, abs(center_x - 0.52) + abs(center_y - 0.64))
+            score = min(0.64, area_ratio) + min(0.22, edge_fill * 1.6) + center_bonus * 0.18
+            if score > best_score:
+                best_score = score
+                best_box = union_box
+
+        if best_box is None:
+            return None
+
+        x, y, w, h = best_box
+        padding = max(6, int(min(w, h) * 0.05))
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        right = min(image_w, x + w + padding * 2)
+        bottom = min(image_h, y + h + padding * 2)
+        return {
+            "x": int(x),
+            "y": int(y),
+            "w": int(max(1, right - x)),
+            "h": int(max(1, bottom - y)),
+        }
+
+    def union_conveyor_workpiece_components(self, boxes, image_w, image_h):
+        if not boxes:
+            return None
+
+        boxes = sorted(boxes, key=lambda item: item[4], reverse=True)[:12]
+        left = min(item[0] for item in boxes)
+        top = min(item[1] for item in boxes)
+        right = max(item[0] + item[2] for item in boxes)
+        bottom = max(item[1] + item[3] for item in boxes)
+        w = max(1, right - left)
+        h = max(1, bottom - top)
+        roi = {"x": left, "y": top, "w": w, "h": h}
+        if not self.roi_is_inside_conveyor_gate(roi, image_w, image_h):
+            return None
+
+        frame_area = float(max(1, image_w * image_h))
+        area_ratio = float(w * h) / frame_area
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if area_ratio < 0.045 or area_ratio > 0.74 or aspect_ratio > 3.8:
+            return None
+
+        component_area = sum(item[4] for item in boxes)
+        if component_area < frame_area * 0.004 and len(boxes) < 3:
+            return None
+        return (left, top, w, h)
 
     def build_lens_ellipse_mask(self, image, roi_rect):
         if cv2 is None or np is None:
@@ -7453,6 +8989,8 @@ class LensDefectHostApp:
         if ImageDraw is None or not isinstance(self.latest_detection_result, dict):
             return
 
+        draw = ImageDraw.Draw(image)
+        self.draw_conveyor_gate(draw, image)
         defects = self.latest_detection_result.get("defects") or []
         if not defects:
             return
@@ -7462,7 +9000,6 @@ class LensDefectHostApp:
         source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image.height
         x_scale = float(image.width) / float(source_w)
         y_scale = float(image.height) / float(source_h)
-        draw = ImageDraw.Draw(image)
         outline_width = max(2, int(min(image.width, image.height) / 160))
 
         for defect in defects:
@@ -7502,6 +9039,19 @@ class LensDefectHostApp:
             draw.rectangle(text_box, fill=color)
             draw.text((text_x + 3, text_y + 1), label, fill=(255, 255, 255))
 
+    def draw_conveyor_gate(self, draw, image):
+        if not self.conveyor_center_gate_var.get():
+            return
+        gate = self.conveyor_gate_rect(image.width, image.height)
+        left = gate["x"]
+        top = gate["y"]
+        right = gate["x"] + gate["w"]
+        bottom = gate["y"] + gate["h"]
+        width = max(1, int(min(image.width, image.height) / 240))
+        color = (64, 180, 220)
+        draw.rectangle((left, top, right, bottom), outline=color, width=width)
+        draw.text((left + 4, max(0, top - 16)), "中心检测区", fill=color)
+
     def scaled_mask_polygon(self, defect, x_scale, y_scale, image_w, image_h):
         polygon = defect.get("mask_polygon")
         if not isinstance(polygon, list):
@@ -7525,8 +9075,9 @@ class LensDefectHostApp:
             return 0
 
     def format_lens_track_text(self, lens):
+        track_name = self.current_mode_config().track_status_name
         if not isinstance(lens, dict):
-            return "镜片跟踪：暂无数据"
+            return "%s：暂无数据" % track_name
 
         found = bool(lens.get("found", False))
         status = "已锁定" if found else "未找到"
@@ -7538,8 +9089,9 @@ class LensDefectHostApp:
             confidence_text = str(confidence)
 
         return (
-            "镜片跟踪：%s，中心 (%s, %s)，ROI %sx%s+%s+%s，置信度 %s，%s"
+            "%s：%s，中心 (%s, %s)，ROI %sx%s+%s+%s，置信度 %s，%s"
             % (
+                track_name,
                 status,
                 lens.get("cx", "-"),
                 lens.get("cy", "-"),
@@ -7617,7 +9169,7 @@ class LensDefectHostApp:
         self.has_defect_var.set("是否检测到缺陷：暂无数据")
         self.count_var.set("缺陷总数：0")
         self.level_var.set("整体严重程度：暂无数据")
-        self.lens_track_var.set("镜片跟踪：暂无数据")
+        self.lens_track_var.set("%s：暂无数据" % self.current_mode_config().track_status_name)
         self.latest_detection_result = None
         self.last_fast_review_time = 0.0
         self.last_fast_review_key = None
@@ -7637,7 +9189,8 @@ class LensDefectHostApp:
             messagebox.showinfo("提示", "暂无历史记录可导出。")
             return
 
-        default_name = "lens_defect_history_%s.csv" % datetime.now().strftime("%Y%m%d_%H%M%S")
+        prefix = "lens_defect_history" if self.active_mode_key == "lens" else "slide_defect_history"
+        default_name = "%s_%s.csv" % (prefix, datetime.now().strftime("%Y%m%d_%H%M%S"))
         path = filedialog.asksaveasfilename(
             title="导出历史记录",
             defaultextension=".csv",
@@ -7716,6 +9269,7 @@ class LensDefectHostApp:
     def on_close(self):
         self.auto_capture_running = False
         self.reader.stop()
+        self.mcu_client.disconnect()
         self.root.destroy()
 
 

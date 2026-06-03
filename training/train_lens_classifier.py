@@ -17,6 +17,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train lens defect image classifier and export TFLite.")
     parser.add_argument("--dataset", required=True, help="Dataset folder with train/val/test subfolders.")
     parser.add_argument("--output", required=True, help="Output folder for .tflite and labels.txt.")
+    parser.add_argument("--artifact-prefix", default="lens_defect", help="Artifact filename prefix, for example lens_defect or slide_defect.")
+    parser.add_argument("--summary-name", default="training_summary.json", help="Training summary filename written under the output folder.")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=128)
@@ -135,6 +137,10 @@ def main():
     dataset_dir = Path(args.dataset).resolve()
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    artifact_prefix = str(args.artifact_prefix or "lens_defect").strip() or "lens_defect"
+    summary_name = str(args.summary_name or "training_summary.json").strip() or "training_summary.json"
+    classifier_stem = "%s_classifier" % artifact_prefix
+    history_path = output_dir / ("%s_training_history.csv" % artifact_prefix)
 
     labels = check_dataset(dataset_dir)
 
@@ -232,7 +238,7 @@ def main():
     monitor_loss = "val_loss" if val_ds is not None else "loss"
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=str(output_dir / "lens_defect_classifier.keras"),
+            filepath=str(output_dir / ("%s.keras" % classifier_stem)),
             monitor=monitor_accuracy,
             save_best_only=True,
         ),
@@ -251,9 +257,9 @@ def main():
         callbacks=callbacks,
         class_weight=class_weight,
     )
-    write_history_csv(history, output_dir / "training_history.csv")
+    write_history_csv(history, history_path)
 
-    keras_path = output_dir / "lens_defect_classifier.keras"
+    keras_path = output_dir / ("%s.keras" % classifier_stem)
     if keras_path.exists():
         model = tf.keras.models.load_model(keras_path)
 
@@ -270,22 +276,22 @@ def main():
             model,
             confusion_source,
             labels,
-            output_dir / ("confusion_matrix_%s.csv" % confusion_split),
+            output_dir / ("%s_confusion_matrix_%s.csv" % (artifact_prefix, confusion_split)),
         )
 
-    labels_path = output_dir / "lens_defect_labels.txt"
+    labels_path = output_dir / ("%s_labels.txt" % artifact_prefix)
     labels_path.write_text("\n".join(labels) + "\n", encoding="utf-8")
 
     float_converter = tf.lite.TFLiteConverter.from_keras_model(model)
     float_tflite = float_converter.convert()
-    float_path = output_dir / "lens_defect_classifier_float.tflite"
+    float_path = output_dir / ("%s_float.tflite" % classifier_stem)
     float_path.write_bytes(float_tflite)
 
     def representative_dataset():
         for images, _labels in train_ds.unbatch().batch(1).take(100):
             yield [tf.cast(images, tf.float32)]
 
-    int8_path = output_dir / "lens_defect_classifier_int8.tflite"
+    int8_path = output_dir / ("%s_int8.tflite" % classifier_stem)
     try:
         int8_converter = tf.lite.TFLiteConverter.from_keras_model(model)
         int8_converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -306,6 +312,7 @@ def main():
     summary = {
         "dataset": str(dataset_dir),
         "output": str(output_dir),
+        "artifact_prefix": artifact_prefix,
         "image_size": args.image_size,
         "batch_size": args.batch_size,
         "epochs_requested": args.epochs,
@@ -319,11 +326,11 @@ def main():
             "float_tflite": str(float_path),
             "int8_tflite": str(int8_path) if int8_path.exists() else "",
             "labels": str(labels_path),
-            "training_history": str(output_dir / "training_history.csv"),
+            "training_history": str(history_path),
             "confusion_matrix": confusion_path or "",
         },
     }
-    summary_path = output_dir / "training_summary.json"
+    summary_path = output_dir / summary_name
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print("Saved training summary:", summary_path)
 

@@ -1,223 +1,226 @@
-# OpenMV 眼镜片缺陷识别上位机
+# OpenMV N6 缺陷识别项目
 
-本项目用于眼镜片表面缺陷检测，当前只保留 Windows 上位机、OpenMV/N6 脚本、电脑端训练和部署流程。检测类别固定为：
+这个项目现在支持两种检测对象，并继续保留原有眼镜片流程：
 
-```text
-正常 normal
-划痕 scratch
-灰尘颗粒 dust
-污点/油污 stain
-```
+1. 眼镜片
+2. 载玻片
 
-## 1. 系统流程
+载玻片类别固定为三类：
 
 ```text
-OpenMV/N6 拍照
--> 一级规则算法快速找可疑缺陷
--> USB 串口把 JSON 和画面发给 Windows 上位机
--> Windows 上位机显示实时画面并自动红圈标注
--> 可选：电脑端二级异常检测复核
--> 可选：OpenMV UART 输出结果给单片机
+normal  合格
+scratch 划痕
+stain   污渍
 ```
 
-传送带场景建议先采用“到位暂停拍照”方式：
-
-```text
-到位传感器
--> 单片机暂停传送带
--> OpenMV 拍照识别
--> UART 输出 normal / scratch / dust / stain
--> 单片机继续运行或分拣
-```
-
-## 2. 项目结构
+## 1. 当前结构
 
 ```text
 .
-├── openmv/
-│   ├── main.py
-│   ├── n6_usb_image_capture.py
-│   ├── n6_lens_tracker_main.py
-│   ├── n6_lens_defect_rule_main.py
-│   └── n6_classifier_main.py
-├── windows_host/
-│   ├── lens_defect_host.py
-│   ├── pc_camera_rule_test.py
-│   ├── stage2_anomaly.py
-│   ├── run_windows_host.bat
-│   ├── run_pc_camera_test.bat
-│   ├── run_pc_camera_two_stage_test.bat
-│   ├── build_windows_exe.bat
-│   └── README_Windows上位机.md
-├── training/
-│   ├── train_lens_classifier.py
-│   ├── train_stage2_anomaly.py
-│   └── train_stage2_anomaly.bat
-├── dataset/
-├── models/
-└── release/
-    └── LensDefectHost.exe
+├─ dataset/                         # 眼镜片数据集
+├─ dataset_slide/                   # 载玻片数据集
+├─ models/
+├─ openmv/
+│  ├─ n6_usb_image_capture.py
+│  ├─ n6_classifier_main.py
+│  ├─ n6_usb_slide_capture.py
+│  └─ n6_slide_classifier_main.py
+├─ training/
+│  ├─ train_lens_classifier.py
+│  └─ train_slide_classifier.bat
+├─ windows_host/
+│  └─ lens_defect_host.py
+└─ release/
+   └─ LensDefectHost.exe
 ```
 
-## 3. Windows 上位机
+## 2. Windows 上位机
 
-源码版运行：
+上位机仍然只有一个程序：
 
-```bat
-windows_host\run_windows_host.bat
+```text
+release/LensDefectHost.exe
 ```
 
-打包版运行：
+新增了“检测对象”选择：
 
-```bat
-release\LensDefectHost.exe
-```
+- 眼镜片检测
+- 载玻片检测
 
-主要功能：
+切换后会自动切到对应的默认路径：
 
-- 接收 OpenMV/N6 输出的 JSON。
-- 显示 OpenMV 实时画面。
-- 自动用红圈标出划痕、灰尘颗粒、污点。
-- 采集训练图片并按 `train/val/test` 保存。
-- 启动本地训练脚本。
-- 复制模型到 OpenMV/N6。
-- 可选启用电脑端二级异常检测复核。
+- 眼镜片数据集：`dataset/`
+- 载玻片数据集：`dataset_slide/`
+- 眼镜片模型：`models/lens_defect_classifier_int8.tflite`
+- 载玻片模型：`models/slide_defect_classifier_int8.tflite`
+- 眼镜片标签：`models/lens_defect_labels.txt`
+- 载玻片标签：`models/slide_defect_labels.txt`
 
-## 4. OpenMV/N6 脚本
+说明：
 
-采集训练图片时运行：
+- 眼镜片模式继续保留原来的电脑端 YOLO/二级复核逻辑。
+- 载玻片模式默认直接显示 OpenMV 输出的 JSON 结果，不套用镜片专用复核逻辑，避免误修正。
+
+## 3. 数据采集
+
+### 3.1 眼镜片
+
+在 OpenMV IDE 运行：
 
 ```text
 openmv/n6_usb_image_capture.py
 ```
 
-没有训练模型时，先运行规则检测版：
+上位机切到“眼镜片检测”后，在“采集训练数据”页采集，默认保存到：
 
 ```text
-openmv/n6_lens_defect_rule_main.py
+dataset/train|val|test/normal|scratch|stain/
 ```
 
-只调镜片跟踪时运行：
+### 3.2 载玻片
+
+在 OpenMV IDE 运行：
 
 ```text
-openmv/n6_lens_tracker_main.py
+openmv/n6_usb_slide_capture.py
 ```
 
-训练模型复制到 N6 后运行：
+这个脚本使用适合载玻片的矩形 ROI。
+
+上位机切到“载玻片检测”后，在“采集训练数据”页采集，默认保存到：
+
+```text
+dataset_slide/
+├─ train/
+│  ├─ normal/
+│  ├─ scratch/
+│  └─ stain/
+├─ val/
+└─ test/
+```
+
+建议先采：
+
+- `normal` 100 张以上
+- `scratch` 100 张以上
+- `stain` 100 张以上
+
+## 4. 训练载玻片模型
+
+### 4.1 在上位机里训练
+
+1. 打开 `LensDefectHost.exe`
+2. 选择“载玻片检测”
+3. 进入“3 训练和部署”
+4. 点击“启动本地训练脚本”
+
+它会调用：
+
+```text
+training/train_lens_classifier.py
+```
+
+并输出：
+
+```text
+models/slide_defect_classifier.keras
+models/slide_defect_classifier_float.tflite
+models/slide_defect_classifier_int8.tflite
+models/slide_defect_labels.txt
+models/slide_training_summary.json
+```
+
+### 4.2 直接用 bat 启动
+
+```bat
+training\train_slide_classifier.bat
+```
+
+### 4.3 直接用命令行启动
+
+```bat
+.venv_training\Scripts\python.exe training\train_lens_classifier.py ^
+  --dataset dataset_slide ^
+  --output models ^
+  --artifact-prefix slide_defect ^
+  --summary-name slide_training_summary.json ^
+  --epochs 20 ^
+  --batch-size 16 ^
+  --image-size 128
+```
+
+说明：
+
+- 训练入口仍然复用现有分类训练流程。
+- 眼镜片默认文件名不变，所以旧流程不会被破坏。
+- 当前载玻片模式主走分类模型；原镜片 YOLO 种子导出与训练仍保留给眼镜片模式。
+
+## 5. 把载玻片模型复制到 OpenMV
+
+上位机切到“载玻片检测”后，在“3 训练和部署”页选择：
+
+- 模型：`models/slide_defect_classifier_int8.tflite`
+- 标签：`models/slide_defect_labels.txt`
+- OpenMV 盘符/目录
+
+点击“复制模型到 OpenMV N6”后，会复制成：
+
+```text
+/slide_defect_classifier_int8.tflite
+/slide_defect_labels.txt
+```
+
+## 6. OpenMV 上运行哪个脚本
+
+### 6.1 载玻片采集
+
+```text
+openmv/n6_usb_slide_capture.py
+```
+
+### 6.2 载玻片检测
+
+```text
+openmv/n6_slide_classifier_main.py
+```
+
+这个脚本：
+
+- 使用载玻片专用矩形 ROI
+- 每次输出一行 JSON
+- 继续支持 `IMG_BEGIN / IMG_END` 画面协议
+- JSON 结构保持和原上位机兼容
+
+### 6.3 眼镜片检测
+
+原脚本不变，继续使用：
 
 ```text
 openmv/n6_classifier_main.py
+openmv/n6_lens_defect_rule_main.py
+openmv/n6_usb_image_capture.py
 ```
 
-需要把识别结果给单片机时，在 OpenMV 脚本里打开 UART 输出。N6 的 UART3 默认引脚为：
+## 7. 上位机显示结果
+
+载玻片模式下显示结果仍然是：
+
+- 划痕
+- 污渍
+- 合格
+
+眼镜片模式继续显示原来的眼镜片结果。
+
+## 8. EXE
+
+最终仍然只保留一个 Windows 程序：
 
 ```text
-P4 = TX
-P5 = RX
-GND 必须共地
-信号电平按 3.3V 处理
+release/LensDefectHost.exe
 ```
 
-## 5. 训练数据
-
-上位机采集数据时，目录结构为：
-
-```text
-dataset/
-├── train/
-│   ├── normal/
-│   ├── scratch/
-│   ├── dust/
-│   └── stain/
-├── val/
-└── test/
-```
-
-建议先采集：
-
-```text
-normal 正常：100 张以上
-scratch 划痕：100 张以上
-dust 灰尘颗粒：100 张以上
-stain 污点/油污：100 张以上
-```
-
-效果更稳时，每类建议 300 张以上。
-
-## 6. 训练分类模型
-
-上位机“3 训练和部署”页可以启动训练。也可以手动运行：
+如需重新打包：
 
 ```bat
-.venv_training\Scripts\python.exe training\train_lens_classifier.py --dataset dataset --output models --epochs 30 --batch-size 8 --image-size 128
+windows_host\build_windows_exe.bat
 ```
-
-训练完成后会生成：
-
-```text
-models/lens_defect_classifier_int8.tflite
-models/lens_defect_labels.txt
-```
-
-## 7. 二级异常检测
-
-电脑端二级异常检测用于减少误检，并补充 OpenMV 规则算法没有抓到的异常区域。它需要先采集正常镜片图片，然后训练正常参考模型：
-
-```bat
-training\train_stage2_anomaly.bat
-```
-
-输出文件：
-
-```text
-models/lens_stage2_anomaly.npz
-```
-
-两级检测电脑摄像头测试：
-
-```bat
-windows_host\run_pc_camera_two_stage_test.bat
-```
-
-Windows 上位机检测页也可以直接启用“电脑二级复核”。
-
-## 8. JSON 数据格式
-
-OpenMV 每次发送一行 JSON，末尾带换行符 `\n`。示例：
-
-```json
-{
-  "has_defect": true,
-  "defect_count": 2,
-  "summary": {
-    "scratch": 1,
-    "dust": 1,
-    "stain": 0
-  },
-  "overall_level": "medium",
-  "defects": [
-    {
-      "type": "scratch",
-      "confidence": 0.86,
-      "x": 120,
-      "y": 80,
-      "w": 70,
-      "h": 5,
-      "area": 350,
-      "length": 70,
-      "aspect_ratio": 14.0,
-      "level": "medium"
-    }
-  ],
-  "timestamp": 123456
-}
-```
-
-## 9. 调试建议
-
-- 固定镜片位置，尽量让镜片每次进入同一画面区域。
-- 使用纯色背景，避免镜片后面有复杂纹理。
-- 使用侧向 LED 或暗场照明，让划痕更明显。
-- 传送带场景优先暂停拍照，先保证清晰度。
-- 误检多时先检查光源和镜片 mask，再调阈值。
-- 训练数据不要混类，正常样本必须是真正干净的正常镜片。

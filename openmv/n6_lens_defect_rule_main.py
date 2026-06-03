@@ -31,42 +31,46 @@ LENS_ROI = (120, 90, 430, 280)
 
 # Real-time lens tracking. When enabled, defect detection follows the tracked
 # lens rectangle instead of using the fixed LENS_ROI above.
-ENABLE_LENS_TRACKING = False
+ENABLE_LENS_TRACKING = True
 TRACK_SEARCH_ROI = None          # None means full frame, or set (x, y, w, h).
-TRACK_SEARCH_MARGIN = 180        # Expand the previous ROI by this many pixels.
-TRACK_ROI_PADDING = 38           # Expand the detected lens blob before detect.
-TRACK_SMOOTHING = 0.35           # 0..1, larger follows motion faster.
-TRACK_HOLD_FRAMES = 8            # Keep last ROI for short tracking dropouts.
+TRACK_SEARCH_MARGIN = 170        # Expand the previous ROI by this many pixels.
+TRACK_ROI_PADDING = 34           # Expand the detected lens blob before detect.
+TRACK_SMOOTHING = 0.62           # 0..1, larger follows motion faster.
+TRACK_HOLD_FRAMES = 4            # Keep last ROI for short tracking dropouts.
 
 # Tune these after the camera arrives. Black background + side/ring light works
 # best because the transparent lens edge becomes a bright/dark contour.
-TRACK_STD_FACTOR = 1.15
-TRACK_MIN_CONTRAST_DELTA = 12
-TRACK_MIN_PIXELS = 287
-TRACK_MIN_AREA = 9216
-TRACK_MIN_WIDTH = 102
-TRACK_MIN_HEIGHT = 77
+TRACK_STD_FACTOR = 0.95
+TRACK_MIN_CONTRAST_DELTA = 9
+TRACK_MIN_PIXELS = 140
+TRACK_MIN_AREA = 2800
+TRACK_MIN_WIDTH = 58
+TRACK_MIN_HEIGHT = 42
 TRACK_MAX_AREA_RATIO = 0.80
-TRACK_MAX_ASPECT_RATIO = 3.2
-TRACK_MERGE_MARGIN = 32
-TRACK_EDGE_CANNY_LOW = 45
-TRACK_EDGE_CANNY_HIGH = 85
-TRACK_EDGE_BINARY_THRESHOLD = 180
-TRACK_MIN_CONFIDENCE = 0.16
+TRACK_MAX_ASPECT_RATIO = 4.0
+TRACK_MERGE_MARGIN = 48
+TRACK_EDGE_CANNY_LOW = 36
+TRACK_EDGE_CANNY_HIGH = 78
+TRACK_EDGE_BINARY_THRESHOLD = 160
+TRACK_MIN_CONFIDENCE = 0.12
+TRACK_CENTER_X_MIN = 0.14
+TRACK_CENTER_X_MAX = 0.90
+TRACK_CENTER_Y_MIN = 0.20
+TRACK_CENTER_Y_MAX = 0.96
 
-SEND_INTERVAL_MS = 150
+SEND_INTERVAL_MS = 100
 PRINT_JSON_TO_IDE = False
 DRAW_DEBUG = False
 
 # Temporal stability: one-frame glare/noise must not flip the final result.
-STABLE_DEFECT_CONFIRM_FRAMES = 1
+STABLE_DEFECT_CONFIRM_FRAMES = 2
 STABLE_DEFECT_SWITCH_FRAMES = 2
 STABLE_NORMAL_CONFIRM_FRAMES = 3
 STABLE_DEFECT_HOLD_FRAMES = 4
 
 # USB 发给上位机的实时画面。上位机识别 IMG_BEGIN/IMG_END 后显示。
 ENABLE_USB_IMAGE_STREAM = True
-USB_IMAGE_INTERVAL_MS = 260
+USB_IMAGE_INTERVAL_MS = 600
 USB_IMAGE_JPEG_QUALITY = 88
 USB_IMAGE_JPEG_SUBSAMPLING = None
 SEND_PREVIEW_ROI_ONLY = False
@@ -75,12 +79,12 @@ USB_WRITE_CHUNK_DELAY_MS = 0
 
 # 预留给单片机的口：开启后会把同一条检测 JSON 从 UART 发出。
 # 接线示例：OpenMV TX -> 单片机 RX，OpenMV GND -> 单片机 GND。
-ENABLE_UART_OUTPUT = False
+ENABLE_UART_OUTPUT = True
 UART_ID = 3
 UART_BAUDRATE = 115200
 
-DISABLE_AUTO_GAIN_AFTER_START = False
-DISABLE_AUTO_WHITEBAL_AFTER_START = False
+DISABLE_AUTO_GAIN_AFTER_START = True
+DISABLE_AUTO_WHITEBAL_AFTER_START = True
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +369,8 @@ def find_tracking_blobs(img, roi):
     return blobs
 
 
-def tracking_blob_score(blob, frame_w, frame_h):
-    x, y, w, h = blob_rect(blob)
+def tracking_rect_score(rect, pixels, density, frame_w, frame_h):
+    x, y, w, h = rect
     if w < TRACK_MIN_WIDTH or h < TRACK_MIN_HEIGHT:
         return 0.0
 
@@ -379,15 +383,22 @@ def tracking_blob_score(blob, frame_w, frame_h):
     if aspect > TRACK_MAX_ASPECT_RATIO:
         return 0.0
 
-    pixels = blob_pixels(blob)
+    cx, cy = rect_center((x, y, w, h))
+    center_x = float(cx) / float(max(1, frame_w))
+    center_y = float(cy) / float(max(1, frame_h))
+    if center_x < TRACK_CENTER_X_MIN or center_x > TRACK_CENTER_X_MAX:
+        return 0.0
+    if center_y < TRACK_CENTER_Y_MIN or center_y > TRACK_CENTER_Y_MAX:
+        return 0.0
+
     area_score = min(1.0, rect_area / float(frame_area * 0.28))
     pixel_score = min(1.0, pixels / float(frame_area * 0.018))
     aspect_score = 1.0 - min(1.0, abs(aspect - 1.55) / 2.2)
-    density_score = 1.0 - min(1.0, abs(blob_density(blob) - 0.22) / 0.55)
+    density_score = 1.0 - min(1.0, abs(density - 0.22) / 0.55)
+    position_score = 1.0 - min(1.0, abs(center_x - 0.52) + abs(center_y - 0.64))
 
     distance_score = 0.65
     if tracked_roi is not None:
-        cx, cy = rect_center((x, y, w, h))
         pcx, pcy = rect_center(tracked_roi)
         dx = cx - pcx
         dy = cy - pcy
@@ -398,21 +409,79 @@ def tracking_blob_score(blob, frame_w, frame_h):
     return (
         area_score * 0.30 +
         pixel_score * 0.24 +
-        aspect_score * 0.18 +
+        aspect_score * 0.14 +
         density_score * 0.10 +
-        distance_score * 0.18
+        distance_score * 0.16 +
+        position_score * 0.10
     )
 
 
-def choose_lens_blob(blobs, frame_w, frame_h):
-    best_blob = None
+def tracking_blob_score(blob, frame_w, frame_h):
+    rect = blob_rect(blob)
+    return tracking_rect_score(rect, blob_pixels(blob), blob_density(blob), frame_w, frame_h)
+
+
+def union_blob_rects(blobs):
+    if not blobs:
+        return None
+    left = 100000
+    top = 100000
+    right = 0
+    bottom = 0
+    pixels = 0
+    for blob in blobs:
+        x, y, w, h = blob_rect(blob)
+        left = min(left, x)
+        top = min(top, y)
+        right = max(right, x + w)
+        bottom = max(bottom, y + h)
+        pixels += blob_pixels(blob)
+    w = max(1, right - left)
+    h = max(1, bottom - top)
+    density = float(pixels) / float(max(1, w * h))
+    return (left, top, w, h), pixels, density
+
+
+def choose_lens_region(blobs, frame_w, frame_h):
+    best_rect = None
     best_score = 0.0
+    best_source = "tracked"
     for blob in blobs:
         score = tracking_blob_score(blob, frame_w, frame_h)
         if score > best_score:
             best_score = score
-            best_blob = blob
-    return best_blob, best_score
+            best_rect = blob_rect(blob)
+            best_source = "tracked"
+
+    candidates = []
+    frame_area = frame_w * frame_h
+    for blob in blobs:
+        x, y, w, h = blob_rect(blob)
+        cx, cy = rect_center((x, y, w, h))
+        center_x = float(cx) / float(max(1, frame_w))
+        center_y = float(cy) / float(max(1, frame_h))
+        if center_x < TRACK_CENTER_X_MIN or center_x > TRACK_CENTER_X_MAX:
+            continue
+        if center_y < TRACK_CENTER_Y_MIN or center_y > TRACK_CENTER_Y_MAX:
+            continue
+        if blob_rect_area(blob) < TRACK_MIN_AREA * 0.45 and blob_pixels(blob) < TRACK_MIN_PIXELS:
+            continue
+        candidates.append(blob)
+
+    if len(candidates) >= 2:
+        candidates.sort(key=lambda item: blob_rect_area(item), reverse=True)
+        merged = union_blob_rects(candidates[:10])
+        if merged is not None:
+            rect, pixels, density = merged
+            score = tracking_rect_score(rect, pixels, density, frame_w, frame_h) * 0.94
+            score += min(0.06, len(candidates) * 0.012)
+            x, y, w, h = rect
+            if w * h <= frame_area * TRACK_MAX_AREA_RATIO and score > best_score:
+                best_score = score
+                best_rect = rect
+                best_source = "tracked_union"
+
+    return best_rect, best_score, best_source
 
 
 def lens_info(found, roi, confidence, source):
@@ -443,14 +512,14 @@ def track_lens(img):
 
     search_roi = tracking_search_roi(img)
     blobs = find_tracking_blobs(img, search_roi)
-    best_blob, confidence = choose_lens_blob(blobs, img.width(), img.height())
+    best_roi, confidence, source = choose_lens_region(blobs, img.width(), img.height())
 
-    if best_blob is not None and confidence >= TRACK_MIN_CONFIDENCE:
-        raw_roi = expand_rect(blob_rect(best_blob), TRACK_ROI_PADDING, img.width(), img.height())
+    if best_roi is not None and confidence >= TRACK_MIN_CONFIDENCE:
+        raw_roi = expand_rect(best_roi, TRACK_ROI_PADDING, img.width(), img.height())
         tracked_roi = clamp_rect(smooth_rect(tracked_roi, raw_roi, TRACK_SMOOTHING), img.width(), img.height())
         track_lost_frames = 0
         last_track_confidence = confidence
-        return lens_info(True, tracked_roi, confidence, "tracked")
+        return lens_info(True, tracked_roi, confidence, source)
 
     if tracked_roi is not None and track_lost_frames < TRACK_HOLD_FRAMES:
         track_lost_frames += 1
@@ -962,6 +1031,15 @@ candidate_count = 0
 defect_hold_frames = 0
 
 
+def reset_stability():
+    global stable_defects, stable_class, candidate_class, candidate_count, defect_hold_frames
+    stable_defects = []
+    stable_class = "normal"
+    candidate_class = None
+    candidate_count = 0
+    defect_hold_frames = 0
+
+
 def stabilize_defects(defects):
     global stable_defects, stable_class, candidate_class, candidate_count, defect_hold_frames
 
@@ -1138,15 +1216,19 @@ while True:
     active_roi = clamp_rect((lens["x"], lens["y"], lens["w"], lens["h"]), img.width(), img.height())
     preprocess_image(detect_img)
 
-    blobs = find_defect_candidates(detect_img, active_roi)
     defects = []
-    for blob in blobs:
-        defect = classify_defect(blob, active_roi, detect_img)
-        if defect is not None:
-            defects.append(defect)
+    if lens.get("found"):
+        blobs = find_defect_candidates(detect_img, active_roi)
+        for blob in blobs:
+            defect = classify_defect(blob, active_roi, detect_img)
+            if defect is not None:
+                defects.append(defect)
+        defects = refine_defect_types(defects, active_roi)
+        stable_frame_defects = stabilize_defects(defects)
+    else:
+        reset_stability()
+        stable_frame_defects = []
 
-    defects = refine_defect_types(defects, active_roi)
-    stable_frame_defects = stabilize_defects(defects)
     result = build_result(stable_frame_defects, img.width(), img.height(), active_roi, lens)
     result["raw_defect_count"] = len(defects)
     result["stability"] = {
