@@ -196,6 +196,10 @@ FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY = 182.0
 FAST_REVIEW_REFLECTION_GLARE_MIN_LOCAL_DELTA = 48.0
 FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA = 72.0
 FAST_REVIEW_REFLECTION_SHADOW_MAX_SIGNED_DELTA = -2.0
+FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION = 0.18
+FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BRIGHT_FRACTION = 0.10
+FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BOX_RATIO = 0.055
+FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_SIGNED_DELTA = -7.0
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_TOTAL_LENGTH = 900.0
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_SLENDER_RATIO = 0.68
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_FILL_RATIO = 0.25
@@ -3559,6 +3563,21 @@ class LensDefectHostApp:
             defect_type == "stain"
             and self.dark_stain_candidate_is_safe_middle_defect(defect, roi, source_w, source_h)
         )
+        if (
+            not safe_middle_dark_stain
+            and self.yolo_stain_looks_like_reflection(
+                defect,
+                display_gray=display_gray,
+                mask=mask,
+                roi=roi,
+                source_w=source_w,
+                source_h=source_h,
+                image_w=image_w,
+                image_h=image_h,
+                scaled_box=(x, y, w, h),
+            )
+        ):
+            return False
         if self.defect_looks_like_side_glare_line(
             defect,
             display_gray=display_gray,
@@ -4177,6 +4196,130 @@ class LensDefectHostApp:
             ):
                 return True
         return False
+
+    def yolo_stain_looks_like_reflection(
+        self,
+        defect,
+        display_gray,
+        mask,
+        roi,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+        scaled_box=None,
+    ):
+        if display_gray is None or mask is None:
+            return False
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return False
+
+        if scaled_box is None:
+            x_scale = float(image_w) / float(max(1, source_w))
+            y_scale = float(image_h) / float(max(1, source_h))
+            x = int(self._positive_int(defect.get("x")) * x_scale)
+            y = int(self._positive_int(defect.get("y")) * y_scale)
+            w = int(self._positive_int(defect.get("w")) * x_scale)
+            h = int(self._positive_int(defect.get("h")) * y_scale)
+        else:
+            x, y, w, h = scaled_box
+        if w <= 0 or h <= 0:
+            return False
+
+        x = max(0, min(int(x), image_w - 1))
+        y = max(0, min(int(y), image_h - 1))
+        w = max(1, min(int(w), image_w - x))
+        h = max(1, min(int(h), image_h - y))
+        box = display_gray[y:y + h, x:x + w]
+        box_mask = mask[y:y + h, x:x + w]
+        if box.size <= 0 or box_mask.size <= 0 or cv2.countNonZero(box_mask) <= 0:
+            return False
+
+        mask_area = float(max(1, cv2.countNonZero(mask)))
+        box_area_ratio = float(w * h) / mask_area
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+
+        pad = max(12, int(min(image_w, image_h) * 0.045))
+        lx1 = max(0, x - pad)
+        ly1 = max(0, y - pad)
+        lx2 = min(image_w, x + w + pad)
+        ly2 = min(image_h, y + h + pad)
+        local = display_gray[ly1:ly2, lx1:lx2]
+        local_mask = mask[ly1:ly2, lx1:lx2]
+        if local.size <= 0 or local_mask.size <= 0:
+            return False
+
+        analysis_gray = self.enhance_gray_for_inspection(display_gray)
+        background = cv2.GaussianBlur(analysis_gray, (0, 0), sigmaX=15, sigmaY=15)
+        dark_response = np.maximum(background.astype(np.int16) - analysis_gray.astype(np.int16), 0).astype(np.uint8)
+        bright_response = np.maximum(analysis_gray.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+
+        active_box = box_mask > 0
+        active_local = local_mask > 0
+        if not np.any(active_box):
+            return False
+
+        box_values = box[active_box]
+        local_values = local[active_local] if np.any(active_local) else local.reshape(-1)
+        local_mean = float(np.mean(local_values)) if local_values.size else float(np.mean(display_gray))
+        box_mean = float(np.mean(box_values)) if box_values.size else float(np.mean(box))
+        signed_delta = box_mean - local_mean
+
+        box_dark = dark_response[y:y + h, x:x + w][active_box]
+        box_bright = bright_response[y:y + h, x:x + w][active_box]
+        local_bright = bright_response[ly1:ly2, lx1:lx2][active_local] if np.any(active_local) else bright_response[ly1:ly2, lx1:lx2].reshape(-1)
+        local_gray = local[active_local] if np.any(active_local) else local.reshape(-1)
+        if box_dark.size <= 0 or box_bright.size <= 0:
+            return False
+
+        dark_threshold = max(8.0, float(np.percentile(box_dark, 85.0)) * 0.70)
+        bright_threshold = max(9.0, float(np.percentile(local_bright, 92.0)) if local_bright.size else 9.0)
+        glare_gray_threshold = max(
+            FAST_REVIEW_GLARE_MASK_MIN_GRAY,
+            float(np.percentile(local_gray, FAST_REVIEW_GLARE_MASK_PERCENTILE)) if local_gray.size else FAST_REVIEW_GLARE_MASK_MIN_GRAY,
+        )
+
+        dark_fraction = float(np.count_nonzero(box_dark >= dark_threshold)) / float(max(1, box_dark.size))
+        bright_fraction = float(np.count_nonzero((box_bright >= bright_threshold) | (box_values >= glare_gray_threshold))) / float(max(1, box_bright.size))
+        dark_p85 = float(np.percentile(box_dark, 85.0))
+        bright_p85 = float(np.percentile(box_bright, 85.0))
+        box_p98 = float(np.percentile(box_values, 98.0))
+        local_p995 = float(np.percentile(local_gray, 99.5)) if local_gray.size else box_p98
+        glare_delta = local_p995 - local_mean
+
+        real_dark_stain = (
+            signed_delta <= -11.0
+            or dark_fraction >= 0.24
+            or dark_p85 >= 18.0
+            or float(defect.get("local_dark_delta", 0) or 0) >= 12.0
+        )
+        if real_dark_stain:
+            return False
+
+        touches_edge = self.defect_touches_roi_edge(
+            defect,
+            roi,
+            source_w,
+            source_h,
+            FAST_REVIEW_EDGE_FILTER_STAIN_ROI_MARGIN_RATIO * 1.35,
+        )
+        large_or_wide_box = (
+            box_area_ratio >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BOX_RATIO
+            or aspect_ratio >= 1.55
+            or touches_edge
+        )
+        reflection_bright = (
+            bright_fraction >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BRIGHT_FRACTION
+            or bright_p85 >= max(10.0, dark_p85 * 1.20)
+            or box_p98 >= glare_gray_threshold
+            or glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.45
+        )
+        weak_dark_evidence = (
+            dark_fraction <= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION
+            and signed_delta >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_SIGNED_DELTA
+            and dark_p85 <= 15.0
+        )
+        return bool(large_or_wide_box and reflection_bright and weak_dark_evidence)
 
     def defect_box_is_inside_roi(self, defect, roi, source_w, source_h):
         if not isinstance(roi, dict):
