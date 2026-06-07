@@ -418,6 +418,19 @@ FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MAX_BLOB_FILL = 0.48
 FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MAX_ASPECT = 1.35
 FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_FILL = 0.28
 FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_DOMINANCE = 0.38
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_BRIGHT_DELTA = 5.0
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_RESPONSE_PEAK = 18.0
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_LINE_COUNT = 3
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_DOMINANT_LINES = 3
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_TOTAL_RATIO = 0.46
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_LONGEST_RATIO = 0.16
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_FILL = 0.24
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_OFFSET_BUCKETS = 2
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_OFFSET_SPAN_RATIO = 0.055
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_BOX_RATIO = 0.085
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_SIDE_PAD_RATIO = 0.55
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_BOTTOM_PAD_RATIO = 1.10
+FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_SEARCH_BOTTOM_RATIO = 0.92
 FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LOCAL_DELTA = 4.8
 FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_TOTAL_LENGTH = 50.0
 FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LINE_COUNT = 3
@@ -4597,6 +4610,17 @@ class LensDefectHostApp:
         )
         refined_reason = "thin_line_in_yolo_stain_box"
         if scratch_info is None:
+            scratch_info = self.yolo_stain_looks_like_parallel_bright_scratch_cluster(
+                defect,
+                display_gray,
+                mask,
+                source_w,
+                source_h,
+                image_w,
+                image_h,
+            )
+            refined_reason = "parallel_bright_lines_in_yolo_stain_box"
+        if scratch_info is None:
             scratch_info = self.yolo_stain_looks_like_curved_scratch_edge(
                 defect,
                 display_gray,
@@ -4854,6 +4878,332 @@ class LensDefectHostApp:
             "strong_internal_scratch": True,
         }
 
+    def yolo_stain_looks_like_parallel_bright_scratch_cluster(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 18 or h < 14:
+            return None
+
+        pad_x = max(
+            8,
+            int(w * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_SIDE_PAD_RATIO),
+        )
+        pad_top = max(6, int(h * 0.30))
+        pad_bottom = max(
+            8,
+            int(h * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_BOTTOM_PAD_RATIO),
+        )
+        crop_left = max(0, x - pad_x)
+        crop_top = max(0, y - pad_top)
+        crop_right = min(image_w, x + w + pad_x)
+        crop_bottom = min(image_h, y + h + pad_bottom)
+        crop_w = max(1, crop_right - crop_left)
+        crop_h = max(1, crop_bottom - crop_top)
+        if crop_w < 24 or crop_h < 20:
+            return None
+
+        crop_gray = display_gray[crop_top:crop_bottom, crop_left:crop_right]
+        crop_mask = mask[crop_top:crop_bottom, crop_left:crop_right]
+        if crop_gray.size <= 0 or crop_mask.size <= 0:
+            return None
+
+        active = crop_mask > 0
+        if np.count_nonzero(active) < max(28, int(crop_w * crop_h * 0.10)):
+            active = np.ones_like(crop_gray, dtype=bool)
+        active_gray = crop_gray[active]
+        if active_gray.size <= 0:
+            return None
+
+        analysis_crop = self.enhance_gray_for_inspection(crop_gray)
+        background = cv2.GaussianBlur(analysis_crop, (0, 0), sigmaX=4.2, sigmaY=4.2)
+        signed_diff = analysis_crop.astype(np.int16) - background.astype(np.int16)
+        bright_response = np.maximum(signed_diff, 0).astype(np.uint8)
+        dark_response = np.maximum(-signed_diff, 0).astype(np.uint8)
+        active_bright = bright_response[active]
+        active_dark = dark_response[active]
+        if active_bright.size <= 0:
+            return None
+
+        bright_delta = float(np.percentile(active_bright, 94.0))
+        response_peak = float(np.percentile(active_bright, 98.5))
+        dark_delta = float(np.percentile(active_dark, 92.0)) if active_dark.size else 0.0
+        local_contrast = float(np.percentile(active_gray, 96.0) - np.percentile(active_gray, 4.0))
+        if response_peak < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_RESPONSE_PEAK:
+            return None
+
+        response_threshold = max(
+            FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_BRIGHT_DELTA,
+            min(float(np.percentile(active_bright, 88.0)), response_peak * 0.72),
+        )
+        candidate = np.where((bright_response >= response_threshold) & active, 255, 0).astype(np.uint8)
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_pixels = int(cv2.countNonZero(candidate))
+        active_pixels = max(1, int(np.count_nonzero(active)))
+        fill_ratio = float(candidate_pixels) / float(active_pixels)
+        if candidate_pixels < 10 or fill_ratio > FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_FILL:
+            return None
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate, 8)
+        compact_blob_area = 0
+        for index in range(1, component_count):
+            comp_x, comp_y, comp_w, comp_h, comp_area = [int(value) for value in stats[index]]
+            if comp_area <= 0 or comp_w <= 0 or comp_h <= 0:
+                continue
+            comp_aspect = float(max(comp_w, comp_h)) / float(max(1, min(comp_w, comp_h)))
+            comp_fill = float(comp_area) / float(max(1, comp_w * comp_h))
+            if comp_aspect <= 1.55 and comp_fill >= 0.58:
+                compact_blob_area += comp_area
+        if compact_blob_area >= candidate_pixels * 0.62:
+            return None
+
+        inner_left = x - crop_left
+        inner_top = y - crop_top
+        inner_right = inner_left + w
+        inner_bottom = inner_top + h
+        focus_margin = max(4, int(min(w, h) * 0.18))
+        inner_line_margin = max(4, int(min(w, h) * 0.13))
+        line_search_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+        search_left = max(0, inner_left + inner_line_margin)
+        search_top = max(0, inner_top + inner_line_margin)
+        search_right = min(
+            crop_w - 1,
+            inner_right + max(inner_line_margin, int(w * 0.45)),
+        )
+        search_bottom = min(
+            crop_h - 1,
+            inner_bottom + max(
+                inner_line_margin,
+                int(h * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_SEARCH_BOTTOM_RATIO),
+            ),
+        )
+        if search_right <= search_left or search_bottom <= search_top:
+            return None
+        cv2.rectangle(
+            line_search_mask,
+            (search_left, search_top),
+            (search_right, search_bottom),
+            255,
+            -1,
+        )
+        line_search_mask = cv2.bitwise_and(line_search_mask, np.where(active, 255, 0).astype(np.uint8))
+
+        low_threshold = max(12, int(max(6.0, local_contrast * 0.40)))
+        high_threshold = max(36, int(max(18.0, local_contrast * 1.35)))
+        edges = cv2.Canny(analysis_crop, low_threshold, high_threshold)
+        edges = cv2.bitwise_or(edges, candidate)
+        edges = cv2.bitwise_and(edges, line_search_mask)
+
+        min_line_length = max(
+            8,
+            int(max(w, h) * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_LONGEST_RATIO),
+            int(min(w, h) * 0.16),
+        )
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=5,
+            minLineLength=min_line_length,
+            maxLineGap=max(3, int(min(w, h) * 0.12)),
+        )
+        if lines is None:
+            return None
+
+        segments = []
+        angle_totals = {}
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            line_left = min(x1, x2)
+            line_right = max(x1, x2)
+            line_top = min(y1, y2)
+            line_bottom = max(y1, y2)
+            if (
+                line_right < search_left - focus_margin
+                or line_left > search_right + focus_margin
+                or line_bottom < search_top - focus_margin
+                or line_top > search_bottom + focus_margin
+            ):
+                continue
+            center_x = (x1 + x2) / 2.0
+            center_y = (y1 + y2) / 2.0
+            if (
+                center_x < search_left
+                or center_x > search_right
+                or center_y < search_top
+                or center_y > search_bottom
+            ):
+                continue
+            line_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+            cv2.line(line_mask, (x1, y1), (x2, y2), 255, 2)
+            line_active = (line_mask > 0) & (line_search_mask > 0)
+            if np.count_nonzero(line_active) < max(4, int(length * 0.32)):
+                continue
+            line_bright = bright_response[line_active]
+            if line_bright.size <= 0:
+                continue
+            line_bright_p65 = float(np.percentile(line_bright, 65.0))
+            line_support = float(np.mean(line_bright >= response_threshold * 0.72))
+            if line_bright_p65 < response_threshold * 0.48 and line_support < 0.16:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_group = int(angle // 12.0)
+            angle_totals[angle_group] = angle_totals.get(angle_group, 0.0) + length
+            segments.append((x1, y1, x2, y2, length, angle_group, angle))
+
+        if len(segments) < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_LINE_COUNT:
+            return None
+
+        total_length = float(sum(item[4] for item in segments))
+        best_parallel_group = None
+        best_parallel_segments = []
+        best_parallel_total = 0.0
+        best_parallel_score = -1.0
+        for group in angle_totals:
+            parallel_segments = [
+                item for item in segments
+                if min(abs(item[5] - group), 15 - abs(item[5] - group)) <= 1
+            ]
+            if not parallel_segments:
+                continue
+            parallel_total = float(sum(item[4] for item in parallel_segments))
+            parallel_score = parallel_total + len(parallel_segments) * 12.0
+            if parallel_score > best_parallel_score:
+                best_parallel_score = parallel_score
+                best_parallel_group = group
+                best_parallel_segments = parallel_segments
+                best_parallel_total = parallel_total
+        if best_parallel_group is None:
+            return None
+        dominant_group = best_parallel_group
+        dominant_segments = best_parallel_segments
+        dominant_total = best_parallel_total
+        dominant_ratio = dominant_total / float(max(1.0, total_length))
+        if len(dominant_segments) < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_DOMINANT_LINES:
+            return None
+        required_total = max(
+            30.0,
+            float(max(w, h)) * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_TOTAL_RATIO,
+        )
+        longest = max(dominant_segments, key=lambda item: item[4])
+        if dominant_total < required_total and total_length < required_total * 1.18:
+            return None
+        if longest[4] < min_line_length:
+            return None
+
+        dominant_angles = np.array([item[6] for item in dominant_segments], dtype=np.float32)
+        mean_angle = float(np.median(dominant_angles))
+        theta = np.deg2rad(mean_angle)
+        normal_x = -float(np.sin(theta))
+        normal_y = float(np.cos(theta))
+        offsets = []
+        xs = []
+        ys = []
+        for x1, y1, x2, y2, _length, _angle_group, _angle in dominant_segments:
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            offsets.append(cx * normal_x + cy * normal_y)
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+        if not offsets:
+            return None
+        offset_span = float(max(offsets) - min(offsets))
+        offset_bucket = max(3.0, float(min(w, h)) * 0.045)
+        offset_buckets = len({int(round(value / offset_bucket)) for value in offsets})
+        if offset_buckets < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_OFFSET_BUCKETS:
+            return None
+        if offset_span < float(min(w, h)) * FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_OFFSET_SPAN_RATIO:
+            return None
+        if (
+            dominant_ratio < 0.42
+            and (
+                len(dominant_segments) < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_DOMINANT_LINES + 1
+                or offset_buckets < FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MIN_OFFSET_BUCKETS + 1
+            )
+        ):
+            return None
+
+        left = max(0, min(xs) - 3)
+        top = max(0, min(ys) - 3)
+        right = min(crop_w - 1, max(xs) + 4)
+        bottom = min(crop_h - 1, max(ys) + 4)
+        refined_w = max(1, right - left)
+        refined_h = max(1, bottom - top)
+        cluster_center_x = (left + right) / 2.0
+        cluster_center_y = (top + bottom) / 2.0
+        contact_margin_x = max(5, int(w * 0.35))
+        contact_margin_top = max(4, int(h * 0.20))
+        contact_margin_bottom = max(6, int(h * 1.05))
+        if (
+            cluster_center_x < inner_left - contact_margin_x
+            or cluster_center_x > inner_right + contact_margin_x
+            or cluster_center_y < inner_top - contact_margin_top
+            or cluster_center_y > inner_bottom + contact_margin_bottom
+        ):
+            return None
+        refined_area_ratio = float(refined_w * refined_h) / float(max(1, image_w * image_h))
+        if refined_area_ratio > FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_BOX_RATIO:
+            return None
+
+        refined_candidate = candidate[top:bottom + 1, left:right + 1]
+        refined_fill = float(cv2.countNonZero(refined_candidate)) / float(max(1, refined_candidate.size))
+        if refined_fill > FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_FILL * 1.25:
+            return None
+        if response_peak < 28.0 and refined_fill > FAST_REVIEW_YOLO_STAIN_PARALLEL_BRIGHT_MAX_FILL:
+            return None
+
+        aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        return {
+            "x": int(round((crop_left + left) / x_scale)),
+            "y": int(round((crop_top + top) / y_scale)),
+            "w": int(round(refined_w / x_scale)),
+            "h": int(round(refined_h / y_scale)),
+            "area": int(candidate_pixels),
+            "length": int(round(max(longest[4], dominant_total))),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "line_count": int(len(dominant_segments)),
+            "angle_groups": int(len(angle_totals)),
+            "total_line_length": round(total_length, 1),
+            "dominant_line_ratio": round(dominant_ratio, 2),
+            "parallel_offset_buckets": int(offset_buckets),
+            "parallel_offset_span": round(offset_span, 1),
+            "local_bright_delta": round(bright_delta, 1),
+            "local_dark_delta": round(dark_delta, 1),
+            "local_contrast": round(local_contrast, 1),
+            "local_response": round(response_peak, 1),
+            "fill_ratio": round(fill_ratio, 3),
+            "refined_fill_ratio": round(refined_fill, 3),
+            "parallel_bright_internal_scratch": True,
+            "strong_internal_scratch": True,
+        }
+
     def yolo_stain_looks_like_curved_scratch_edge(
         self,
         defect,
@@ -5035,6 +5385,25 @@ class LensDefectHostApp:
             return None
 
         aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        compact_low_response_blob_edge = (
+            aspect_ratio < 1.55
+            and local_delta < 22.0
+            and response_peak < 16.0
+            and blob_fill >= 0.24
+            and edge_fill >= 0.24
+            and secondary_ratio >= 0.25
+        )
+        if compact_low_response_blob_edge:
+            return None
+        compact_smooth_glare_patch = (
+            aspect_ratio < 1.45
+            and response_peak < 48.0
+            and blob_fill >= 0.28
+            and edge_fill >= 0.30
+            and secondary_ratio <= 0.22
+        )
+        if compact_smooth_glare_patch:
+            return None
         return {
             "x": int(round((crop_left + left) / x_scale)),
             "y": int(round((crop_top + top) / y_scale)),
@@ -6934,6 +7303,24 @@ class LensDefectHostApp:
             return None
         return max(defects, key=lambda item: self.confidence_float(item))
 
+    def defect_is_strong_yolo_stain_to_scratch_refine(self, defect):
+        if not isinstance(defect, dict):
+            return False
+        if defect.get("type") != "scratch" or defect.get("class_refined_from") != "stain":
+            return False
+        if not self.is_yolo_source(defect):
+            return False
+        if not defect.get("strong_internal_scratch"):
+            return False
+        if self.confidence_float(defect) < 0.88:
+            return False
+        return bool(
+            defect.get("parallel_bright_internal_scratch")
+            or defect.get("thin_internal_scratch")
+            or defect.get("curved_internal_scratch")
+            or defect.get("ring_edge_scratch")
+        )
+
     def fused_conveyor_result_from_buffer(self, current_result):
         frame_count = len(self.conveyor_fusion_results)
         strong_defect = self.primary_strong_conveyor_defect(current_result)
@@ -7286,6 +7673,14 @@ class LensDefectHostApp:
         result = self.apply_conveyor_frame_fusion(result)
 
         class_key, _class_text, _confidence = self.display_class_result(result)
+        primary_scratch = self.primary_defect_for_class(result, "scratch") if class_key == "scratch" else None
+        if self.defect_is_strong_yolo_stain_to_scratch_refine(primary_scratch):
+            self.stable_detection_result = result
+            self.pending_detection_class = None
+            self.pending_detection_count = 0
+            self.last_black_stain_result = None
+            self.last_black_stain_time = 0.0
+            return result
         if self.stable_detection_result is None:
             self.stable_detection_result = result
             self.pending_detection_class = None
@@ -7856,6 +8251,11 @@ class LensDefectHostApp:
         if not isinstance(result, dict) or not result.get("has_defect"):
             return
         for defect in result.get("defects") or []:
+            if self.defect_is_strong_yolo_stain_to_scratch_refine(defect):
+                self.last_black_stain_result = None
+                self.last_black_stain_time = 0.0
+                return
+        for defect in result.get("defects") or []:
             if self.detection_looks_like_locked_black_stain(defect):
                 self.last_black_stain_result = dict(defect)
                 self.last_black_stain_time = time.monotonic()
@@ -7863,6 +8263,8 @@ class LensDefectHostApp:
 
     def apply_black_stain_class_lock(self, detection):
         if not isinstance(detection, dict) or detection.get("type") != "scratch":
+            return detection
+        if self.defect_is_strong_yolo_stain_to_scratch_refine(detection):
             return detection
         recent = self.last_black_stain_result
         if not isinstance(recent, dict):
@@ -14989,6 +15391,159 @@ def main():
         raise
 
 
+def yolo_stain_refine_regression_self_test():
+    if cv2 is None or np is None:
+        return {"ok": False, "error": "cv2_or_numpy_unavailable"}
+    try:
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+        width, height = 240, 180
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.ellipse(mask, (140, 92), (72, 56), 0, 0, 360, 255, -1)
+        stain_box = {
+            "type": "stain",
+            "confidence": 0.95,
+            "x": 118,
+            "y": 86,
+            "w": 54,
+            "h": 38,
+            "source": "yolo_onnx",
+        }
+
+        scratch_like = np.full((height, width), 76, dtype=np.uint8)
+        cv2.rectangle(scratch_like, (118, 86), (172, 124), 68, -1)
+        for line_y in (98, 104, 110, 116):
+            cv2.line(scratch_like, (126, line_y), (162, line_y - 4), 172, 1, cv2.LINE_AA)
+
+        cases = []
+        cases.append(("parallel_bright_scratch", scratch_like, "scratch"))
+
+        below_box_scratch = np.full((height, width), 76, dtype=np.uint8)
+        cv2.rectangle(below_box_scratch, (118, 86), (172, 124), 70, -1)
+        for line_y in (126, 132, 138, 144):
+            cv2.line(below_box_scratch, (126, line_y), (164, line_y - 5), 185, 1, cv2.LINE_AA)
+        cases.append(("parallel_bright_scratch_below_box", below_box_scratch, "scratch"))
+
+        round_dot = np.full((height, width), 76, dtype=np.uint8)
+        cv2.circle(round_dot, (145, 105), 6, 178, -1, cv2.LINE_AA)
+        cases.append(("round_bright_dot", round_dot, "stain"))
+
+        soft_dark_blob = np.full((height, width), 78, dtype=np.uint8)
+        blob = np.zeros((height, width), dtype=np.uint8)
+        cv2.ellipse(blob, (145, 105), (28, 18), -8, 0, 360, 255, -1)
+        blob = cv2.GaussianBlur(blob, (0, 0), sigmaX=7, sigmaY=5)
+        soft_dark_blob = np.clip(
+            soft_dark_blob.astype(np.int16) - (blob.astype(np.int16) // 5),
+            0,
+            255,
+        ).astype(np.uint8)
+        cases.append(("soft_dark_blob", soft_dark_blob, "stain"))
+
+        hard_rect_stain = np.full((height, width), 78, dtype=np.uint8)
+        cv2.rectangle(hard_rect_stain, (118, 86), (172, 124), 62, -1)
+        cases.append(("hard_rect_stain", hard_rect_stain, "stain"))
+
+        soft_bright_patch = np.full((height, width), 78, dtype=np.uint8)
+        glare = np.zeros((height, width), dtype=np.uint8)
+        cv2.ellipse(glare, (146, 103), (24, 13), -10, 0, 360, 255, -1)
+        glare = cv2.GaussianBlur(glare, (0, 0), sigmaX=5, sigmaY=3)
+        soft_bright_patch = np.clip(
+            soft_bright_patch.astype(np.int16) + (glare.astype(np.int16) // 3),
+            0,
+            255,
+        ).astype(np.uint8)
+        cases.append(("soft_bright_patch", soft_bright_patch, "stain"))
+
+        results = []
+        ok = True
+        for name, gray, expected_type in cases:
+            refined = app.refine_yolo_stain_class_for_live_image(
+                stain_box,
+                mask,
+                width,
+                height,
+                width,
+                height,
+                gray,
+            )
+            actual_type = str(refined.get("type", ""))
+            reason = str(refined.get("class_refined_reason", ""))
+            case_ok = actual_type == expected_type
+            if name in ("parallel_bright_scratch", "parallel_bright_scratch_below_box"):
+                case_ok = case_ok and reason == "parallel_bright_lines_in_yolo_stain_box"
+            ok = ok and case_ok
+            results.append({
+                "name": name,
+                "expected": expected_type,
+                "actual": actual_type,
+                "reason": reason,
+                "ok": bool(case_ok),
+            })
+
+        class DisabledVar:
+            def get(self):
+                return False
+
+        app.conveyor_center_gate_var = DisabledVar()
+        app.conveyor_centered_count = 0
+        app.conveyor_fusion_results = []
+        app.pending_detection_class = None
+        app.pending_detection_count = 0
+        app.last_black_stain_result = dict(stain_box)
+        app.last_black_stain_result["black_stain_guard"] = True
+        app.last_black_stain_time = time.monotonic()
+        strong_scratch = app.refine_yolo_stain_class_for_live_image(
+            stain_box,
+            mask,
+            width,
+            height,
+            width,
+            height,
+            below_box_scratch,
+        )
+        lock_result = app.apply_black_stain_class_lock(strong_scratch)
+        lock_ok = lock_result.get("type") == "scratch"
+        ok = ok and lock_ok
+        results.append({
+            "name": "strong_refined_scratch_bypasses_black_stain_lock",
+            "expected": "scratch",
+            "actual": lock_result.get("type", ""),
+            "reason": lock_result.get("class_refined_reason", lock_result.get("review_source", "")),
+            "ok": bool(lock_ok),
+        })
+
+        stable_stain = app.normalize_detection_result({
+            "has_defect": True,
+            "defects": [dict(app.last_black_stain_result)],
+            "frame": {"w": width, "h": height},
+        })
+        strong_scratch_result = app.normalize_detection_result({
+            "has_defect": True,
+            "defects": [dict(strong_scratch)],
+            "frame": {"w": width, "h": height},
+        })
+        app.stable_detection_result = stable_stain
+        app.pending_detection_class = None
+        app.pending_detection_count = 0
+        app.last_black_stain_result = dict(stain_box)
+        app.last_black_stain_result["black_stain_guard"] = True
+        app.last_black_stain_time = time.monotonic()
+        stabilized = app.stabilize_detection_result(strong_scratch_result)
+        stabilized_type, _text, _confidence = app.display_class_result(stabilized)
+        stabilizer_ok = stabilized_type == "scratch" and not stabilized.get("stabilizer")
+        ok = ok and stabilizer_ok
+        results.append({
+            "name": "strong_refined_scratch_bypasses_stain_stabilizer_hold",
+            "expected": "scratch",
+            "actual": stabilized_type,
+            "reason": (app.primary_defect_for_class(stabilized, "scratch") or {}).get("class_refined_reason", ""),
+            "ok": bool(stabilizer_ok),
+        })
+        return {"ok": bool(ok), "cases": results}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def runtime_self_test():
     checks = {
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -15002,6 +15557,7 @@ def runtime_self_test():
         "yolo_new_lens_scratch": None,
         "yolo_new_lens_stain": None,
         "yolo_seg": None,
+        "yolo_stain_refine": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -15083,6 +15639,7 @@ def runtime_self_test():
             checks["yolo_seg"] = {"ok": False, "error": str(exc), "model": str(DEFAULT_YOLO_SEG_MODEL)}
     else:
         checks["yolo_seg"] = {"ok": True, "available": False, "model": str(DEFAULT_YOLO_SEG_MODEL)}
+    checks["yolo_stain_refine"] = yolo_stain_refine_regression_self_test()
 
     scratch_aux_ok = bool(
         checks["yolo_new_lens_scratch"]["ok"]
@@ -15099,6 +15656,7 @@ def runtime_self_test():
         and checks["yolo"]["ok"]
         and scratch_aux_ok
         and stain_aux_ok
+        and checks["yolo_stain_refine"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:
