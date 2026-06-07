@@ -488,7 +488,9 @@ LENS_PRESENCE_PRECISE_MAX_HEIGHT_RATIO = 0.70
 LENS_PRESENCE_PRECISE_MAX_ASPECT_RATIO = 2.45
 LENS_PRESENCE_ROUND_MIN_RADIUS_RATIO = 0.045
 LENS_PRESENCE_ROUND_MAX_RADIUS_RATIO = 0.28
-LENS_PRESENCE_ROUND_MIN_EDGE_SUPPORT = 0.006
+LENS_PRESENCE_ROUND_MIN_BALANCED_EDGE_SUPPORT = 0.012
+LENS_PRESENCE_ROUND_MIN_BALANCED_RESPONSE_SUPPORT = 0.060
+LENS_PRESENCE_ROUND_MIN_VERTICAL_BALANCE = 0.16
 FAST_REVIEW_AUTO_ROI_MIN_AREA_RATIO = 0.018
 FAST_REVIEW_AUTO_ROI_MIN_WIDTH_RATIO = 0.20
 FAST_REVIEW_AUTO_ROI_MIN_HEIGHT_RATIO = 0.18
@@ -4341,14 +4343,53 @@ class LensDefectHostApp:
         ring_area = int(cv2.countNonZero(ring))
         if ring_area <= 0:
             return False
-        support = float(cv2.countNonZero(cv2.bitwise_and(edges, ring))) / float(ring_area)
-        if support >= LENS_PRESENCE_ROUND_MIN_EDGE_SUPPORT:
+        edge_support_mask = cv2.bitwise_and(edges, ring)
+        support = float(cv2.countNonZero(edge_support_mask)) / float(ring_area)
+        if (
+            support >= LENS_PRESENCE_ROUND_MIN_BALANCED_EDGE_SUPPORT
+            and self.round_lens_ring_support_is_balanced(edge_support_mask, ring, support)
+        ):
             return True
 
         background = cv2.GaussianBlur(crop, (0, 0), sigmaX=9, sigmaY=9)
         response = cv2.absdiff(crop, background)
         ring_response = response[ring > 0]
-        return bool(ring_response.size and float(np.percentile(ring_response, 90.0)) >= 10.0)
+        response_mask = np.where((response >= 10) & (ring > 0), 255, 0).astype(np.uint8)
+        response_support = float(cv2.countNonZero(response_mask)) / float(ring_area)
+        return bool(
+            ring_response.size
+            and float(np.percentile(ring_response, 90.0)) >= 10.0
+            and response_support >= LENS_PRESENCE_ROUND_MIN_BALANCED_RESPONSE_SUPPORT
+            and self.round_lens_ring_support_is_balanced(response_mask, ring, response_support)
+        )
+
+    def round_lens_ring_support_is_balanced(self, support_mask, ring, total_support):
+        if support_mask is None or ring is None or support_mask.shape[:2] != ring.shape[:2]:
+            return False
+        h, w = ring.shape[:2]
+        if h <= 2 or w <= 2:
+            return False
+        support = (support_mask > 0) & (ring > 0)
+        ring_active = ring > 0
+
+        def region_density(region):
+            region_ring = ring_active[region]
+            if not np.any(region_ring):
+                return 0.0
+            return float(np.count_nonzero(support[region])) / float(np.count_nonzero(region_ring))
+
+        top = region_density(np.s_[:h // 2, :])
+        bottom = region_density(np.s_[h // 2:, :])
+        left = region_density(np.s_[:, :w // 2])
+        right = region_density(np.s_[:, w // 2:])
+        vertical_balance = min(top, bottom) / float(max(top, bottom, 1e-6))
+        horizontal_balance = min(left, right) / float(max(left, right, 1e-6))
+        min_required = max(0.003, float(total_support) * 0.10)
+        return bool(
+            vertical_balance >= LENS_PRESENCE_ROUND_MIN_VERTICAL_BALANCE
+            and horizontal_balance >= 0.12
+            and min(top, bottom) >= min_required
+        )
 
     def detect_center_lens_presence_blob(self, image):
         if cv2 is None or np is None or image is None:
@@ -15544,6 +15585,98 @@ def yolo_stain_refine_regression_self_test():
         return {"ok": False, "error": str(exc)}
 
 
+def lens_presence_regression_self_test():
+    if cv2 is None or np is None or Image is None:
+        return {"ok": False, "error": "cv2_numpy_or_pillow_unavailable"}
+    try:
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+        app.lens_presence_payload_key = None
+        app.lens_presence_result = None
+
+        width, height = 640, 360
+        empty = np.zeros((height, width, 3), dtype=np.uint8)
+        empty[:] = (32, 36, 38)
+        empty[:, 140:540] = (42, 64, 50)
+        top_glare = np.array([[410, 0], [540, 0], [540, 38], [455, 20]], dtype=np.int32)
+        cv2.fillPoly(empty, [top_glare], (190, 122, 174))
+        cv2.rectangle(empty, (510, 25), (540, height), (74, 56, 52), -1)
+        for glare_x in (330, 350):
+            cv2.ellipse(empty, (glare_x, 335), (16, 52), 0, 0, 360, (210, 145, 190), -1)
+        empty = cv2.GaussianBlur(empty, (5, 5), 0)
+        empty_image = Image.fromarray(empty, "RGB")
+
+        empty_round_roi = app.detect_round_lens_roi_from_image(empty_image)
+        empty_presence = app.detect_lens_presence_from_image(empty_image)
+        empty_presence_ok = not bool(empty_presence.get("found", True))
+
+        buffer = BytesIO()
+        empty_image.save(buffer, format="JPEG", quality=90)
+        image_bytes = buffer.getvalue()
+        payload = {
+            "image_bytes": image_bytes,
+            "width": width,
+            "height": height,
+            "receive_time": "empty_glare_regression",
+            "byte_count": len(image_bytes),
+        }
+        yolo_false_positive = app.normalize_detection_result({
+            "has_defect": True,
+            "defects": [{
+                "type": "scratch",
+                "confidence": 0.88,
+                "x": 370,
+                "y": 185,
+                "w": 44,
+                "h": 18,
+                "source": "yolo_onnx",
+            }],
+            "frame": {"w": width, "h": height},
+            "model": "yolo_onnx",
+        })
+        guarded = app.apply_no_lens_guard_to_result(yolo_false_positive, payload)
+        guard_ok = bool(guarded.get("no_lens")) and not bool(guarded.get("has_defect"))
+
+        lens = np.zeros((height, width, 3), dtype=np.uint8)
+        lens[:] = (38, 48, 42)
+        lens[:, 120:560] = (48, 76, 58)
+        cv2.circle(lens, (330, 190), 74, (125, 165, 130), 3, cv2.LINE_AA)
+        cv2.circle(lens, (330, 190), 62, (70, 96, 76), 1, cv2.LINE_AA)
+        cv2.ellipse(lens, (330, 190), (58, 12), -12, 0, 360, (92, 120, 95), 1, cv2.LINE_AA)
+        cv2.line(lens, (285, 220), (370, 210), (155, 185, 160), 2, cv2.LINE_AA)
+        lens_image = Image.fromarray(lens, "RGB")
+        lens_presence = app.detect_lens_presence_from_image(lens_image)
+        lens_presence_ok = bool(lens_presence.get("found"))
+
+        cases = [
+            {
+                "name": "empty_glare_no_lens_presence",
+                "expected": "no_lens",
+                "actual": "lens" if empty_presence.get("found") else "no_lens",
+                "round_roi": bool(empty_round_roi),
+                "reason": str(empty_presence.get("reason", "")),
+                "ok": bool(empty_presence_ok),
+            },
+            {
+                "name": "empty_glare_yolo_false_positive_guard",
+                "expected": "no_lens",
+                "actual": "no_lens" if guarded.get("no_lens") else "defect",
+                "reason": str(guarded.get("no_lens_reason", "")),
+                "ok": bool(guard_ok),
+            },
+            {
+                "name": "balanced_round_lens_still_detected",
+                "expected": "lens",
+                "actual": "lens" if lens_presence.get("found") else "no_lens",
+                "reason": str(lens_presence.get("reason", "")),
+                "ok": bool(lens_presence_ok),
+            },
+        ]
+        return {"ok": all(case["ok"] for case in cases), "cases": cases}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def runtime_self_test():
     checks = {
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -15558,6 +15691,7 @@ def runtime_self_test():
         "yolo_new_lens_stain": None,
         "yolo_seg": None,
         "yolo_stain_refine": None,
+        "lens_presence": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -15640,6 +15774,7 @@ def runtime_self_test():
     else:
         checks["yolo_seg"] = {"ok": True, "available": False, "model": str(DEFAULT_YOLO_SEG_MODEL)}
     checks["yolo_stain_refine"] = yolo_stain_refine_regression_self_test()
+    checks["lens_presence"] = lens_presence_regression_self_test()
 
     scratch_aux_ok = bool(
         checks["yolo_new_lens_scratch"]["ok"]
@@ -15657,6 +15792,7 @@ def runtime_self_test():
         and scratch_aux_ok
         and stain_aux_ok
         and checks["yolo_stain_refine"]["ok"]
+        and checks["lens_presence"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:
