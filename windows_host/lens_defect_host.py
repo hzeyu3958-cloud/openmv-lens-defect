@@ -57,7 +57,7 @@ SINGLE_INSTANCE_LOCK_FILE_HANDLE = None
 
 APP_TITLE = "OpenMV N6 缺陷识别上位机"
 DEFAULT_BAUDRATE = "115200"
-READ_TIMEOUT_SECONDS = 0.02
+READ_TIMEOUT_SECONDS = 0.005
 CAPTURE_TIMEOUT_SECONDS = 12
 FRAME_TIMEOUT_SECONDS = 2.0
 SERIAL_READ_CHUNK_SIZE = 16384
@@ -68,6 +68,8 @@ SERIAL_MAX_IMAGE_BYTES = 2_000_000
 SERIAL_MAX_TEXT_LINE_BYTES = 8192
 SERIAL_SYNC_KEEP_BYTES = 32
 SERIAL_SYNC_STATUS_SECONDS = 2.0
+LIVE_IMAGE_UI_POLL_MS = 12
+LIVE_IMAGE_INFERENCE_DELAY_MS = 4
 AUTO_START_RECEIVE = False
 BLUETOOTH_SEND_MIN_INTERVAL_SECONDS = 1.0
 LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.12
@@ -658,6 +660,7 @@ FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_FILL_RATIO = 0.34
 FAST_REVIEW_CURVILINEAR_SCRATCH_MIN_LOCAL_DELTA = 4.5
 FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_BOX_RATIO = 0.090
 FAST_REVIEW_KEEP_PC_RESULT_SECONDS = 2.20
+FAST_REVIEW_KEEP_PC_RESULT_MAX_FRAME_GAP = 2
 YOLO_INPUT_SIZE = 640
 YOLO_CONFIDENCE_THRESHOLD = 0.08
 YOLO_NMS_THRESHOLD = 0.45
@@ -1859,6 +1862,7 @@ class SerialLineReader:
         self.serial_port = None
         self.thread = None
         self.running = False
+        self.frame_seq = 0
 
     def start(self, port, baudrate):
         if serial is None:
@@ -1975,6 +1979,7 @@ class SerialLineReader:
             size = int(parts[1])
             width = int(parts[2]) if len(parts) >= 4 else 0
             height = int(parts[3]) if len(parts) >= 4 else 0
+            device_frame_id = int(parts[4]) if len(parts) >= 5 else None
         except ValueError:
             del buffer[:header_end + 1]
             self.ui_queue.put(UiMessage("status", "OpenMV 画面头格式错误：%s" % header_line))
@@ -2002,11 +2007,16 @@ class SerialLineReader:
 
         data = bytes(buffer[payload_start:payload_end])
         del buffer[:frame_end]
+        self.frame_seq += 1
+        frame_id = device_frame_id if device_frame_id is not None else self.frame_seq
         self.ui_queue.put(UiMessage("live_image", {
             "image_bytes": data,
             "width": width,
             "height": height,
             "byte_count": len(data),
+            "frame_id": frame_id,
+            "host_frame_id": self.frame_seq,
+            "receive_monotonic": time.monotonic(),
             "receive_time": now_text(),
         }))
         return True
@@ -2127,6 +2137,11 @@ class LensDefectHostApp:
         self.auto_capture_running = False
         self.latest_detection_result = None
         self.latest_live_image_payload = None
+        self.latest_live_image_payload_key = None
+        self.live_image_host_frame_seq = 0
+        self.live_image_inference_pending_key = None
+        self.live_image_inference_after_id = None
+        self.live_image_inference_busy = False
         self.stage2_model = None
         self.stage2_model_path = None
         self.stage2_model_mtime = None
@@ -3922,33 +3937,57 @@ class LensDefectHostApp:
                 break
 
             if message.kind == "line":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.handle_json_line(message.payload)
             elif message.kind == "status":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.status_var.set("状态：" + str(message.payload))
             elif message.kind == "error":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.status_var.set("状态：" + str(message.payload))
                 messagebox.showerror("串口错误", str(message.payload))
             elif message.kind == "no_data":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.status_var.set("状态：" + str(message.payload))
                 if self.latest_live_image_payload is None:
                     self.live_image_var.set("OpenMV 画面：N6 暂无输出，请按 RESET 或重新插拔 USB")
             elif message.kind == "capture_error":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.status_var.set("状态：采集失败")
                 self.log_capture("采集失败：%s" % message.payload)
                 messagebox.showerror("采集失败", str(message.payload))
             elif message.kind == "capture_saved":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.apply_capture_result(message.payload)
             elif message.kind == "live_image":
                 latest_live_payload = message.payload
             elif message.kind == "bluetooth_scan_done":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.apply_bluetooth_scan_results(message.payload)
             elif message.kind == "bluetooth_scan_error":
+                if latest_live_payload is not None:
+                    self.update_live_image(latest_live_payload)
+                    latest_live_payload = None
                 self.apply_bluetooth_scan_error(str(message.payload))
 
         if latest_live_payload is not None:
             self.update_live_image(latest_live_payload)
 
-        self.root.after(20, self._poll_ui_queue)
+        self.root.after(LIVE_IMAGE_UI_POLL_MS, self._poll_ui_queue)
 
     def handle_json_line(self, raw_line):
         self._set_raw_text(raw_line)
@@ -3961,16 +4000,20 @@ class LensDefectHostApp:
             return
 
         result = self.normalize_detection_result(result)
+        payload_for_result = self.live_payload_for_result(result)
+        if self.result_is_older_than_live_payload(result, self.latest_live_image_payload):
+            return
+        result = self.bind_result_to_live_payload(result, payload_for_result)
         if self.mode_uses_lens_postprocess():
-            result = self.apply_no_lens_guard_to_result(result, self.latest_live_image_payload)
+            result = self.apply_no_lens_guard_to_result(result, payload_for_result)
             if not result.get("no_lens"):
                 result = self.final_filter_result_for_current_image(
                     result,
-                    self.latest_live_image_payload,
+                    payload_for_result,
                     clear_recent=False,
                 )
                 result = self.merge_recent_pc_defect_result(result)
-                result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
+                result = self.final_filter_result_for_current_image(result, payload_for_result)
         result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
         final_result = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else result
@@ -4093,6 +4136,9 @@ class LensDefectHostApp:
 
     def lens_presence_payload_key_for_image(self, image, payload):
         if isinstance(payload, dict):
+            frame_id = payload.get("frame_id")
+            if frame_id not in (None, ""):
+                return "frame:%s:%s" % (frame_id, payload.get("byte_count", ""))
             receive_time = payload.get("receive_time", "")
             byte_count = payload.get("byte_count", "")
             if receive_time or byte_count:
@@ -4100,6 +4146,159 @@ class LensDefectHostApp:
         if image is None:
             return None
         return "image:%s:%s:%s" % (image.width, image.height, id(image))
+
+    def live_payload_is_current(self, payload, image=None):
+        if not isinstance(payload, dict):
+            return False
+        latest = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else None
+        if latest is None:
+            return False
+        key = self.lens_presence_payload_key_for_image(image, payload)
+        latest_key = self.latest_live_image_payload_key or self.lens_presence_payload_key_for_image(None, latest)
+        if key is not None and latest_key is not None:
+            return key == latest_key
+        return payload is latest
+
+    def result_device_frame_id(self, result):
+        if not isinstance(result, dict):
+            return None
+        for key_name in ("frame_id", "image_frame_id", "device_frame_id"):
+            value = result.get(key_name)
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+        frame = result.get("frame") if isinstance(result.get("frame"), dict) else {}
+        for key_name in ("id", "frame_id"):
+            value = frame.get(key_name)
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def live_frame_key_matches(self, first_key, second_key):
+        first_frame = self.live_payload_frame_id(first_key)
+        second_frame = self.live_payload_frame_id(second_key)
+        return first_frame is not None and second_frame is not None and first_frame == second_frame
+
+    def live_payload_for_result(self, result):
+        latest = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else None
+        if latest is None:
+            return None
+        result_frame_id = self.result_device_frame_id(result)
+        latest_frame_id = self.live_payload_frame_id(latest)
+        if result_frame_id is None or latest_frame_id is None or result_frame_id == latest_frame_id:
+            return latest
+        return None
+
+    def bind_result_to_live_payload(self, result, payload):
+        if not isinstance(result, dict):
+            return result
+        result = dict(result)
+        result_frame_id = self.result_device_frame_id(result)
+        payload_key = self.lens_presence_payload_key_for_image(None, payload)
+        payload_frame_id = self.live_payload_frame_id(payload)
+        if payload_key and (result_frame_id is None or payload_frame_id is None or result_frame_id == payload_frame_id):
+            result["_live_payload_key"] = payload_key
+        elif result_frame_id is not None and not self.result_live_payload_key(result):
+            result["_live_payload_key"] = "frame:%s:" % result_frame_id
+        return result
+
+    def result_is_older_than_live_payload(self, result, payload):
+        result_frame_id = self.result_device_frame_id(result)
+        payload_frame_id = self.live_payload_frame_id(payload)
+        return result_frame_id is not None and payload_frame_id is not None and result_frame_id < payload_frame_id
+
+    def result_is_newer_than_live_payload(self, result, payload):
+        result_frame_id = self.result_device_frame_id(result)
+        payload_frame_id = self.live_payload_frame_id(payload)
+        return result_frame_id is not None and payload_frame_id is not None and result_frame_id > payload_frame_id
+
+    def result_live_payload_key(self, result):
+        if not isinstance(result, dict):
+            return ""
+        for key_name in (
+            "_live_payload_key",
+            "yolo_payload_key",
+            "pc_fast_review_payload_key",
+            "_stage2_payload_key",
+        ):
+            value = result.get(key_name)
+            if value:
+                return str(value)
+        frame_id = self.result_device_frame_id(result)
+        if frame_id is not None:
+            return "frame:%s:" % frame_id
+        return ""
+
+    def live_payload_frame_id(self, payload_or_key):
+        if isinstance(payload_or_key, dict):
+            value = payload_or_key.get("frame_id")
+            if value not in (None, ""):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+            payload_or_key = self.lens_presence_payload_key_for_image(None, payload_or_key)
+        text = str(payload_or_key or "")
+        if text.startswith("frame:"):
+            parts = text.split(":")
+            if len(parts) >= 2:
+                try:
+                    return int(parts[1])
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def live_payload_frame_gap(self, newer, older):
+        newer_id = self.live_payload_frame_id(newer)
+        older_id = self.live_payload_frame_id(older)
+        if newer_id is None or older_id is None:
+            return None
+        return int(newer_id) - int(older_id)
+
+    def result_matches_live_payload(self, result, payload, image=None):
+        result_key = self.result_live_payload_key(result)
+        if not result_key:
+            return True
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if not payload_key:
+            return True
+        return result_key == payload_key or self.live_frame_key_matches(result_key, payload_key)
+
+    def clear_stale_live_defects_for_payload(self, result, payload_key):
+        if not isinstance(result, dict):
+            return result
+        result_key = self.result_live_payload_key(result)
+        if not result_key or not payload_key:
+            return result
+        if result_key == payload_key or self.live_frame_key_matches(result_key, payload_key):
+            return result
+
+        cleaned = dict(result)
+        cleaned["defects"] = []
+        cleaned["summary"] = {defect_type: 0 for defect_type in SUMMARY_TYPES}
+        cleaned["defect_count"] = 0
+        cleaned["has_defect"] = False
+        cleaned["overall_level"] = "normal"
+        cleaned["stale_live_payload_key"] = result_key
+        for key_name in (
+            "yolo_payload_key",
+            "pc_fast_review_payload_key",
+            "_stage2_payload_key",
+            "pc_fast_review",
+            "pc_fast_review_hold",
+            "yolo_box_locked",
+            "yolo_edge_fallback",
+            "model",
+            "yolo",
+            "stage2",
+        ):
+            cleaned.pop(key_name, None)
+        return cleaned
 
     def live_lens_presence_for_image(self, image, payload=None):
         payload_key = self.lens_presence_payload_key_for_image(image, payload)
@@ -4129,6 +4328,7 @@ class LensDefectHostApp:
             presence = self.live_lens_presence_for_image(image, payload)
         presence = dict(presence) if isinstance(presence, dict) else {}
         payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        result = self.clear_stale_live_defects_for_payload(result, payload_key)
         result["frame"] = {"w": int(image_w), "h": int(image_h)}
 
         raw_roi = presence.get("roi") if isinstance(presence.get("roi"), dict) else presence
@@ -4538,6 +4738,7 @@ class LensDefectHostApp:
     def no_lens_result_for_image(self, image, payload=None, base_result=None, reason="no_lens", presence=None):
         base_result = base_result if isinstance(base_result, dict) else {}
         payload = payload if isinstance(payload, dict) else {}
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
         frame = base_result.get("frame") if isinstance(base_result.get("frame"), dict) else {}
         image_w = image.width if image is not None else 0
         image_h = image.height if image is not None else 0
@@ -4558,6 +4759,7 @@ class LensDefectHostApp:
             "no_lens": True,
             "no_lens_reason": reason,
             "model": "pc_lens_presence",
+            "_live_payload_key": payload_key or "",
         }
         if isinstance(presence, dict):
             result["lens_presence"] = presence
@@ -4586,9 +4788,11 @@ class LensDefectHostApp:
 
     def show_no_lens_result_for_image(self, image, payload=None, reason="no_lens", presence=None):
         result = self.no_lens_result_for_image(image, payload, None, reason=reason, presence=presence)
+        if not self.live_payload_is_current(payload, image):
+            return result
         self.clear_detection_memory_for_no_lens()
         self.stable_detection_result = result
-        self.update_result_ui(result, render_live_image=False)
+        self.update_live_result_if_current(result, payload, image)
         self.status_var.set("状态：未检测到镜片")
         return result
 
@@ -4602,6 +4806,11 @@ class LensDefectHostApp:
         if not isinstance(recent, dict) or not recent.get("has_defect"):
             return result
         if time.monotonic() - float(self.last_pc_defect_time or 0.0) > FAST_REVIEW_KEEP_PC_RESULT_SECONDS:
+            return result
+        current_key = self.result_live_payload_key(result)
+        recent_key = self.result_live_payload_key(recent)
+        frame_gap = self.live_payload_frame_gap(current_key, recent_key)
+        if frame_gap is not None and frame_gap > FAST_REVIEW_KEEP_PC_RESULT_MAX_FRAME_GAP:
             return result
 
         recent_defects = [
@@ -7990,13 +8199,67 @@ class LensDefectHostApp:
         self.maybe_send_bluetooth_result(result)
 
     def update_live_image(self, payload):
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        if payload.get("frame_id") in (None, ""):
+            self.live_image_host_frame_seq += 1
+            payload["frame_id"] = self.live_image_host_frame_seq
         self.latest_live_image_payload = payload
+        self.latest_live_image_payload_key = self.lens_presence_payload_key_for_image(None, payload)
         self.live_image_var.set("")
         if Image is None or ImageTk is None:
             self.live_image_label.configure(image="")
             return
 
-        self.render_live_image(payload)
+        self.render_live_image(payload, run_inference=False)
+        self.schedule_live_image_inference(payload)
+
+    def schedule_live_image_inference(self, payload):
+        if not self.mode_uses_lens_postprocess() or Image is None or ImageTk is None:
+            return
+        key = self.lens_presence_payload_key_for_image(None, payload)
+        if not key:
+            return
+        self.live_image_inference_pending_key = key
+        if self.live_image_inference_after_id is not None:
+            try:
+                self.root.after_cancel(self.live_image_inference_after_id)
+            except Exception:
+                pass
+            self.live_image_inference_after_id = None
+        self.live_image_inference_after_id = self.root.after(
+            LIVE_IMAGE_INFERENCE_DELAY_MS,
+            self.run_live_image_inference_if_latest,
+        )
+
+    def run_live_image_inference_if_latest(self):
+        self.live_image_inference_after_id = None
+        if self.live_image_inference_busy:
+            return
+        payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else None
+        if payload is None:
+            return
+        key = self.lens_presence_payload_key_for_image(None, payload)
+        if key != self.live_image_inference_pending_key:
+            return
+
+        image = self.image_from_live_payload(payload)
+        if image is None or not self.live_payload_is_current(payload, image):
+            return
+
+        self.live_image_inference_busy = True
+        try:
+            self.process_live_image_inference(image, payload)
+        finally:
+            self.live_image_inference_busy = False
+
+        if self.live_payload_is_current(payload, image):
+            try:
+                if self.ui_queue.empty():
+                    self.render_live_image(payload, run_inference=False)
+                else:
+                    self.root.after(0, self._poll_ui_queue)
+            except Exception:
+                pass
 
     def refresh_live_lens_follow_for_preview(self, image, payload):
         if cv2 is None or np is None:
@@ -8004,6 +8267,8 @@ class LensDefectHostApp:
         if not isinstance(self.latest_detection_result, dict):
             return
         if self.latest_detection_result.get("error"):
+            return
+        if self.result_is_newer_than_live_payload(self.latest_detection_result, payload):
             return
         presence = self.live_lens_presence_for_image(image, payload)
         if not presence.get("found", True):
@@ -8020,22 +8285,53 @@ class LensDefectHostApp:
         self.latest_detection_result = refreshed
         self.lens_track_var.set(self.format_lens_track_text(refreshed.get("lens")))
 
-    def render_live_image(self, payload):
+    def process_live_image_inference(self, display_image, payload):
+        if not self.mode_uses_lens_postprocess():
+            return
+        if not self.live_payload_is_current(payload, display_image):
+            return
+        self.apply_yolo_to_live_image(display_image, payload)
+        if not self.live_payload_is_current(payload, display_image):
+            return
+        self.apply_fast_cv_review_to_live_image(display_image, payload)
+        if not self.live_payload_is_current(payload, display_image):
+            return
+        if not self.low_latency_mode_var.get():
+            self.apply_stage2_to_live_image(display_image, payload)
+            if not self.live_payload_is_current(payload, display_image):
+                return
+        self.refresh_live_lens_follow_for_preview(display_image, payload)
+        if not self.live_payload_is_current(payload, display_image):
+            return
+        filtered = self.filter_edge_defects_for_live_image(self.latest_detection_result, payload)
+        if filtered is not self.latest_detection_result:
+            self.update_live_result_if_current(filtered, payload, display_image)
+
+    def update_live_result_if_current(self, result, payload, image=None):
+        if not isinstance(result, dict):
+            return False
+        if not self.live_payload_is_current(payload, image):
+            return False
+        if self.result_is_newer_than_live_payload(self.latest_detection_result, payload):
+            return False
+        if not self.ui_queue.empty():
+            return False
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if payload_key:
+            result = dict(result)
+            result["_live_payload_key"] = payload_key
+        self.update_result_ui(result, render_live_image=False)
+        return True
+
+    def render_live_image(self, payload, run_inference=False):
         if Image is None or ImageTk is None:
             return
 
         try:
             with Image.open(BytesIO(payload["image_bytes"])) as image:
                 display_image = image.convert("RGB")
-                if self.mode_uses_lens_postprocess():
-                    self.apply_yolo_to_live_image(display_image, payload)
-                    self.apply_fast_cv_review_to_live_image(display_image, payload)
-                    if not self.low_latency_mode_var.get():
-                        self.apply_stage2_to_live_image(display_image, payload)
-                    self.refresh_live_lens_follow_for_preview(display_image, payload)
-                    filtered = self.filter_edge_defects_for_live_image(self.latest_detection_result, payload)
-                    if filtered is not self.latest_detection_result:
-                        self.update_result_ui(filtered, render_live_image=False)
+                if run_inference:
+                    self.process_live_image_inference(display_image, payload)
                 self.draw_detection_boxes(display_image, payload)
                 display_image = self.fill_live_image_area(display_image)
                 self.live_image_photo = ImageTk.PhotoImage(display_image.copy())
@@ -8072,7 +8368,7 @@ class LensDefectHostApp:
 
     def on_live_image_resize(self, _event):
         if self.latest_live_image_payload is not None:
-            self.render_live_image(self.latest_live_image_payload)
+            self.render_live_image(self.latest_live_image_payload, run_inference=False)
 
     def fast_review_iou(self, first, second):
         ax = int(first.get("x", 0))
@@ -8683,7 +8979,9 @@ class LensDefectHostApp:
             return
 
         payload = payload if isinstance(payload, dict) else {}
-        payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if not self.live_payload_is_current(payload, image):
+            return
         presence = self.live_lens_presence_for_image(image, payload)
         if not presence.get("found", True):
             self.last_fast_review_key = payload_key
@@ -8746,19 +9044,24 @@ class LensDefectHostApp:
             refined["yolo_box_locked"] = True
         refined["defects"] = [detection]
         refined["pc_fast_review"] = True
+        refined["pc_fast_review_payload_key"] = payload_key
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
+        if not self.live_payload_is_current(payload, image):
+            return
         if refined.get("has_defect"):
             self.last_pc_defect_result = dict(refined)
             self.last_pc_defect_time = time.monotonic()
         refined = self.stabilize_detection_result(refined)
-        self.update_result_ui(refined, render_live_image=False)
+        self.update_live_result_if_current(refined, payload, image)
 
     def apply_yolo_to_live_image(self, image, payload):
         if cv2 is None or np is None:
             return
         payload = payload if isinstance(payload, dict) else {}
-        payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if not self.live_payload_is_current(payload, image):
+            return
         presence = self.live_lens_presence_for_image(image, payload)
         if not presence.get("found", True):
             self.last_yolo_payload_key = payload_key
@@ -8864,6 +9167,8 @@ class LensDefectHostApp:
                 self.yolo_roi_miss_count = 0
         if not detections:
             return
+        if not self.live_payload_is_current(payload, image):
+            return
         gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         detections = self.correct_yolo_black_stain_classes(image, detections, gray=gray)
 
@@ -8887,6 +9192,8 @@ class LensDefectHostApp:
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
+        if not self.live_payload_is_current(payload, image):
+            return
         fallback_detection = None
         if self.should_run_fast_review_for_yolo(refined):
             mask = self.build_detection_mask(image, payload, refined)
@@ -8913,6 +9220,7 @@ class LensDefectHostApp:
                 locked_result = dict(refined)
                 locked_result["defects"] = [merged_detection]
                 locked_result["pc_fast_review"] = True
+                locked_result["pc_fast_review_payload_key"] = payload_key
                 locked_result["yolo_box_locked"] = True
                 locked_result = self.normalize_detection_result(locked_result)
                 locked_result = self.filter_edge_defects_for_image(locked_result, payload, image)
@@ -8922,6 +9230,7 @@ class LensDefectHostApp:
             fallback_result = dict(refined)
             fallback_result["defects"] = [fallback_detection]
             fallback_result["pc_fast_review"] = True
+            fallback_result["pc_fast_review_payload_key"] = payload_key
             fallback_result["yolo_edge_fallback"] = True
             fallback_result = self.normalize_detection_result(fallback_result)
             fallback_result = self.filter_edge_defects_for_image(fallback_result, payload, image)
@@ -8931,7 +9240,7 @@ class LensDefectHostApp:
             self.last_pc_defect_result = dict(refined)
             self.last_pc_defect_time = time.monotonic()
         refined = self.stabilize_detection_result(refined)
-        self.update_result_ui(refined, render_live_image=False)
+        self.update_live_result_if_current(refined, payload, image)
 
     def should_run_yolo_tile_review(self, detections):
         if self.low_latency_mode_var.get():
@@ -15074,6 +15383,9 @@ class LensDefectHostApp:
         if not self.stage2_enabled_var.get():
             return
         payload = payload if isinstance(payload, dict) else {}
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if not self.live_payload_is_current(payload, image):
+            return
         presence = self.live_lens_presence_for_image(image, payload)
         if not presence.get("found", True):
             self.show_no_lens_result_for_image(
@@ -15093,7 +15405,6 @@ class LensDefectHostApp:
         if now - self.last_stage2_infer_time < STAGE2_MIN_INTERVAL_SECONDS:
             return
 
-        payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
         if current_result.get("_stage2_payload_key") == payload_key:
             return
 
@@ -15109,6 +15420,8 @@ class LensDefectHostApp:
         rgb = np.array(image)
         frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         stage2_result = model.infer(frame, analysis_mask)
+        if not self.live_payload_is_current(payload, image):
+            return
         rule_defects = current_result.get("defects") or []
         merged_defects, stage2_result = merge_with_rule_defects(
             rule_defects,
@@ -15139,8 +15452,10 @@ class LensDefectHostApp:
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
+        if not self.live_payload_is_current(payload, image):
+            return
         refined = self.stabilize_detection_result(refined)
-        self.update_result_ui(refined, render_live_image=False)
+        self.update_live_result_if_current(refined, payload, image)
 
     def build_detection_mask(self, image, payload, result):
         return self.build_lens_detection_mask(
@@ -15567,6 +15882,15 @@ class LensDefectHostApp:
         payload = payload if isinstance(payload, dict) else {}
         draw = ImageDraw.Draw(image)
         self.draw_conveyor_gate(draw, image)
+        current_payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        result_payload_key = self.result_live_payload_key(self.latest_detection_result)
+        if (
+            result_payload_key
+            and current_payload_key
+            and result_payload_key != current_payload_key
+            and not self.live_frame_key_matches(result_payload_key, current_payload_key)
+        ):
+            return
         frame = self.latest_detection_result.get("frame") or {}
         source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or image.width
         source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image.height
@@ -15580,12 +15904,16 @@ class LensDefectHostApp:
         if not defects:
             return
 
-        current_payload_key = self.lens_presence_payload_key_for_image(image, payload)
         yolo_payload_key = self.latest_detection_result.get("yolo_payload_key", "")
         for defect in defects:
             if defect.get("type") not in SUPPORTED_DEFECT_TYPES:
                 continue
-            if self.is_yolo_source(defect) and yolo_payload_key and yolo_payload_key != current_payload_key:
+            if (
+                self.is_yolo_source(defect)
+                and yolo_payload_key
+                and yolo_payload_key != current_payload_key
+                and not self.live_frame_key_matches(yolo_payload_key, current_payload_key)
+            ):
                 continue
             x = self._positive_int(defect.get("x"))
             y = self._positive_int(defect.get("y"))
@@ -16405,6 +16733,177 @@ def green_conveyor_black_stain_regression_self_test():
         return {"ok": False, "error": str(exc)}
 
 
+def live_image_latest_frame_regression_self_test():
+    if cv2 is None or np is None or Image is None or ImageDraw is None:
+        return {"ok": False, "error": "cv2_numpy_pillow_or_imagedraw_unavailable"}
+    try:
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+
+        class DisabledVar:
+            def get(self):
+                return False
+
+        app.conveyor_center_gate_var = DisabledVar()
+        app.conveyor_centered_count = 0
+        app.conveyor_fusion_results = []
+        app.latest_detection_result = None
+        app.latest_live_image_payload = None
+        app.latest_live_image_payload_key = None
+        app.last_pc_defect_result = None
+        app.last_pc_defect_time = 0.0
+        app.lens_presence_payload_key = None
+        app.lens_presence_result = None
+        app.live_lens_track_payload_key = None
+        app.live_lens_track_result = None
+        app.live_lens_track_miss_count = 0
+
+        width, height = 220, 140
+        old_payload = {"frame_id": 7, "byte_count": 500, "width": width, "height": height}
+        current_payload = {"frame_id": 8, "byte_count": 500, "width": width, "height": height}
+        future_payload = {"frame_id": 10, "byte_count": 501, "width": width, "height": height}
+        future_json_payload = {"frame_id": 9, "byte_count": 502, "width": width, "height": height}
+        app.latest_live_image_payload = dict(current_payload)
+        app.latest_live_image_payload_key = app.lens_presence_payload_key_for_image(None, current_payload)
+
+        old_key = app.lens_presence_payload_key_for_image(None, old_payload)
+        current_key = app.lens_presence_payload_key_for_image(None, current_payload)
+        future_key = app.lens_presence_payload_key_for_image(None, future_payload)
+        frame_key_ok = old_key != current_key and app.live_frame_key_matches("frame:8:", current_key)
+
+        stale_result = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "defects": [{
+                "type": "scratch",
+                "confidence": 0.91,
+                "x": 34,
+                "y": 42,
+                "w": 46,
+                "h": 16,
+                "source": "yolo_onnx",
+            }],
+            "_live_payload_key": old_key,
+            "yolo_payload_key": old_key,
+        })
+        cleaned = app.clear_stale_live_defects_for_payload(stale_result, current_key)
+        stale_clear_ok = not bool(cleaned.get("has_defect")) and cleaned.get("stale_live_payload_key") == old_key
+
+        image = Image.new("RGB", (width, height), (255, 255, 255))
+        presence = {
+            "found": True,
+            "reason": "pc_round_lens_presence",
+            "roi": {"x": 122, "y": 32, "w": 72, "h": 72, "source": "pc_round_lens_presence"},
+        }
+        tracked = app.result_with_current_lens_presence(image, current_payload, stale_result, presence)
+        tracked_lens = tracked.get("lens") if isinstance(tracked.get("lens"), dict) else {}
+        tracked_ok = (
+            bool(tracked.get("live_lens_follow"))
+            and not bool(tracked.get("has_defect"))
+            and tracked_lens.get("cx") == 158
+            and app.result_live_payload_key(tracked) == current_key
+        )
+
+        stale_draw_image = Image.new("RGB", (width, height), (255, 255, 255))
+        before = np.array(stale_draw_image)
+        app.latest_detection_result = stale_result
+        app.draw_detection_boxes(stale_draw_image, current_payload)
+        stale_draw_changed = bool(np.any(np.array(stale_draw_image) != before))
+
+        current_draw_image = Image.new("RGB", (width, height), (255, 255, 255))
+        before_current = np.array(current_draw_image)
+        current_result = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "defects": [{
+                "type": "scratch",
+                "confidence": 0.91,
+                "x": 34,
+                "y": 42,
+                "w": 46,
+                "h": 16,
+                "source": "yolo_onnx",
+            }],
+            "_live_payload_key": "frame:8:",
+            "yolo_payload_key": "frame:8:",
+        })
+        app.latest_detection_result = current_result
+        app.draw_detection_boxes(current_draw_image, current_payload)
+        current_draw_changed = bool(np.any(np.array(current_draw_image) != before_current))
+        draw_ok = (not stale_draw_changed) and current_draw_changed
+
+        app.last_pc_defect_result = stale_result
+        app.last_pc_defect_time = time.monotonic()
+        normal_after_gap = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "defects": [],
+            "_live_payload_key": future_key,
+        })
+        held = app.merge_recent_pc_defect_result(normal_after_gap)
+        hold_gap_ok = not bool(held.get("has_defect"))
+
+        future_json = app.normalize_detection_result({
+            "frame": {"w": width, "h": height, "id": 9},
+            "frame_id": 9,
+            "defects": [{
+                "type": "stain",
+                "confidence": 0.86,
+                "x": 128,
+                "y": 58,
+                "w": 34,
+                "h": 22,
+                "source": "rule_detector",
+            }],
+        })
+        bound_future = app.bind_result_to_live_payload(future_json, app.live_payload_for_result(future_json))
+        future_binding_ok = (
+            app.result_live_payload_key(bound_future) == "frame:9:"
+            and app.result_is_newer_than_live_payload(bound_future, current_payload)
+            and app.result_matches_live_payload(bound_future, future_json_payload)
+            and not app.result_matches_live_payload(bound_future, current_payload)
+        )
+
+        cases = [
+            {
+                "name": "frame_ids_distinguish_same_size_payloads",
+                "expected": "different_keys",
+                "actual": {"old": old_key, "current": current_key},
+                "ok": bool(frame_key_ok),
+            },
+            {
+                "name": "stale_live_defects_are_cleared",
+                "expected": "normal_current_frame",
+                "actual": "defect" if cleaned.get("has_defect") else "normal",
+                "ok": bool(stale_clear_ok),
+            },
+            {
+                "name": "current_lens_follow_clears_old_frame_defect",
+                "expected": "current_lens_no_old_defect",
+                "actual": {"cx": tracked_lens.get("cx"), "has_defect": bool(tracked.get("has_defect"))},
+                "ok": bool(tracked_ok),
+            },
+            {
+                "name": "draw_boxes_only_for_current_frame",
+                "expected": "stale_skipped_current_drawn",
+                "actual": {"stale_changed": stale_draw_changed, "current_changed": current_draw_changed},
+                "ok": bool(draw_ok),
+            },
+            {
+                "name": "recent_pc_review_not_held_after_frame_gap",
+                "expected": "not_held",
+                "actual": "held" if held.get("has_defect") else "not_held",
+                "ok": bool(hold_gap_ok),
+            },
+            {
+                "name": "future_json_waits_for_matching_image_frame",
+                "expected": "future_frame_key_only",
+                "actual": app.result_live_payload_key(bound_future),
+                "ok": bool(future_binding_ok),
+            },
+        ]
+        return {"ok": all(case["ok"] for case in cases), "cases": cases}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def runtime_self_test():
     checks = {
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -16422,6 +16921,7 @@ def runtime_self_test():
         "lens_presence": None,
         "moving_lens_follow": None,
         "green_conveyor_black_stain": None,
+        "live_image_latest_frame": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -16507,6 +17007,7 @@ def runtime_self_test():
     checks["lens_presence"] = lens_presence_regression_self_test()
     checks["moving_lens_follow"] = moving_lens_follow_regression_self_test()
     checks["green_conveyor_black_stain"] = green_conveyor_black_stain_regression_self_test()
+    checks["live_image_latest_frame"] = live_image_latest_frame_regression_self_test()
 
     scratch_aux_ok = bool(
         checks["yolo_new_lens_scratch"]["ok"]
@@ -16527,6 +17028,7 @@ def runtime_self_test():
         and checks["lens_presence"]["ok"]
         and checks["moving_lens_follow"]["ok"]
         and checks["green_conveyor_black_stain"]["ok"]
+        and checks["live_image_latest_frame"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:

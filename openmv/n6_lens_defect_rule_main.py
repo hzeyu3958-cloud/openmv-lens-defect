@@ -70,11 +70,14 @@ STABLE_DEFECT_HOLD_FRAMES = 4
 
 # USB 发给上位机的实时画面。上位机识别 IMG_BEGIN/IMG_END 后显示。
 ENABLE_USB_IMAGE_STREAM = True
-USB_IMAGE_INTERVAL_MS = 600
-USB_IMAGE_JPEG_QUALITY = 88
-USB_IMAGE_JPEG_SUBSAMPLING = None
+USB_IMAGE_INTERVAL_MS = 160
+USB_IMAGE_JPEG_QUALITY = 76
+try:
+    USB_IMAGE_JPEG_SUBSAMPLING = image.JPEG_SUBSAMPLING_422
+except Exception:
+    USB_IMAGE_JPEG_SUBSAMPLING = None
 SEND_PREVIEW_ROI_ONLY = False
-USB_WRITE_CHUNK_SIZE = 4096
+USB_WRITE_CHUNK_SIZE = 8192
 USB_WRITE_CHUNK_DELAY_MS = 0
 
 # 预留给单片机的口：开启后会把同一条检测 JSON 从 UART 发出。
@@ -1125,7 +1128,7 @@ def fatal_error_loop(message):
         time.sleep_ms(1000)
 
 
-def send_usb_image(img, roi=None):
+def send_usb_image(img, roi=None, frame_id=0):
     if not ENABLE_USB_IMAGE_STREAM:
         return
 
@@ -1145,7 +1148,7 @@ def send_usb_image(img, roi=None):
         except TypeError:
             jpg = preview.compress(quality=USB_IMAGE_JPEG_QUALITY)
         jpg_size = jpg.size()
-        usb.write(("IMG_BEGIN %d %d %d\n" % (jpg_size, width, height)).encode("utf-8"))
+        usb.write(("IMG_BEGIN %d %d %d %d\n" % (jpg_size, width, height, int(frame_id))).encode("utf-8"))
         try:
             jpg_bytes = jpg.bytearray()
         except Exception:
@@ -1205,11 +1208,13 @@ if DISABLE_AUTO_WHITEBAL_AFTER_START:
         print("auto_whitebal failed:", exc)
 
 clock = time.clock()
-last_send_ms = time.ticks_ms()
-last_image_ms = time.ticks_ms()
+last_send_ms = 0
+last_image_ms = 0
+frame_id = 0
 
 while True:
     clock.tick()
+    frame_id += 1
     img = csi0.snapshot()
     detect_img = make_detection_image(img)
     lens = track_lens(detect_img)
@@ -1230,6 +1235,8 @@ while True:
         stable_frame_defects = []
 
     result = build_result(stable_frame_defects, img.width(), img.height(), active_roi, lens)
+    result["frame_id"] = frame_id
+    result["frame"]["id"] = frame_id
     result["raw_defect_count"] = len(defects)
     result["stability"] = {
         "stable_class": stable_class,
@@ -1244,5 +1251,5 @@ while True:
         send_line(ujson.dumps(result))
         last_send_ms = now_ms
     if time.ticks_diff(now_ms, last_image_ms) >= USB_IMAGE_INTERVAL_MS:
-        send_usb_image(img, active_roi)
+        send_usb_image(img, active_roi, frame_id)
         last_image_ms = now_ms
