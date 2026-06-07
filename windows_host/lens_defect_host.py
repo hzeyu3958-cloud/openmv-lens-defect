@@ -577,6 +577,20 @@ FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_RATIO = 0.30
 FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_LENGTH_RATIO = 0.30
 FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_BLOB_RATIO = 0.34
 FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_FILL_RATIO = 0.14
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LINE_COUNT = 4
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_ANGLE_GROUPS = 2
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_TOTAL_LENGTH = 120.0
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LONGEST_LENGTH = 36.0
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LOCAL_DELTA = 10.0
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_INTERSECTIONS = 1
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_SPAN_RATIO = 0.12
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_MASK_OVERLAP = 0.24
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MAX_FILL_RATIO = 0.34
+FAST_REVIEW_STRONG_BRIGHT_CROSS_MAX_DENSITY = 0.34
+FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_TOTAL_LENGTH = 360.0
+FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_LOCAL_DELTA = 48.0
+FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_ANGLE_GROUPS = 3
+FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_SLENDER_LINES = 5
 FAST_REVIEW_CENTER_CROSS_MIN_X_RATIO = 0.46
 FAST_REVIEW_CENTER_CROSS_MAX_X_RATIO = 0.66
 FAST_REVIEW_CENTER_CROSS_MIN_Y_RATIO = 0.30
@@ -6685,6 +6699,7 @@ class LensDefectHostApp:
                 "pc_fast_review_line",
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
                 "pc_micro_line_scratch",
@@ -7064,6 +7079,7 @@ class LensDefectHostApp:
                 "pc_fast_review_line",
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
                 "pc_micro_line_scratch",
@@ -7138,6 +7154,7 @@ class LensDefectHostApp:
                 "pc_fast_center_cross_scratch",
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
                 "pc_fast_curvilinear_scratch",
             )
         ):
@@ -7211,6 +7228,7 @@ class LensDefectHostApp:
                 "pc_fast_center_cross_scratch",
                 "pc_fast_bright_scratch",
                 "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
                 "pc_fast_curvilinear_scratch",
             )
         ):
@@ -8465,6 +8483,7 @@ class LensDefectHostApp:
             "pc_fast_review_line",
             "pc_fast_bright_scratch",
             "pc_fast_bright_crosshatch",
+            "pc_fast_strong_bright_cross_scratch",
             "pc_fast_center_cross_scratch",
             "pc_fast_curvilinear_scratch",
             "pc_micro_line_scratch",
@@ -8474,6 +8493,14 @@ class LensDefectHostApp:
         total_line_length = float(detection.get("total_line_length", detection.get("length", 0)) or 0)
         fill_ratio = float(detection.get("fill_ratio", 0) or 0)
         strong_internal = bool(detection.get("strong_internal_scratch"))
+        if (
+            strong_internal
+            and detection.get("strong_bright_cross_scratch")
+            and line_count >= FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LINE_COUNT
+            and int(detection.get("angle_groups", 0) or 0) >= FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_ANGLE_GROUPS
+            and total_line_length >= FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_TOTAL_LENGTH
+        ):
+            return True
         if strong_internal and aspect_ratio >= 1.6:
             return True
         if (
@@ -8634,8 +8661,13 @@ class LensDefectHostApp:
             "brightness_signed_delta",
             "angle_groups",
             "slender_line_count",
+            "intersection_count",
+            "longest_line_length",
+            "candidate_density",
+            "mask_overlap",
             "star_scratch",
             "crosshatch_scratch",
+            "strong_bright_cross_scratch",
             "strong_internal_scratch",
         ):
             if key in review_detection:
@@ -9910,7 +9942,12 @@ class LensDefectHostApp:
         if dark_x_stain is not None:
             if stain is None or dark_x_stain.get("total_line_length", 0) >= stain.get("length", 0) * 1.35:
                 stain = dark_x_stain
-        if self.fast_cv_stain_can_skip_scratch_review(stain):
+        strong_bright_cross_scratch = self.fast_cv_find_strong_bright_cross_scratch(
+            analysis_gray,
+            mask,
+            edge_distance,
+        )
+        if strong_bright_cross_scratch is None and self.fast_cv_stain_can_skip_scratch_review(stain):
             return stain
         micro_scratch = None
         run_micro_scratch_review = self.should_run_micro_scratch_review(analysis_gray, mask, stain)
@@ -9930,6 +9967,12 @@ class LensDefectHostApp:
         if run_micro_scratch_review and not morph_scratch_is_strong:
             micro_scratch = self.fast_cv_find_micro_scratch(analysis_gray, mask, edge_distance)
         scratch = morph_scratch
+        if strong_bright_cross_scratch is not None and (
+            scratch is None
+            or self.confidence_float(strong_bright_cross_scratch) >= self.confidence_float(scratch) - 0.04
+            or strong_bright_cross_scratch.get("total_line_length", 0) >= scratch.get("total_line_length", scratch.get("length", 0)) * 0.70
+        ):
+            scratch = strong_bright_cross_scratch
         run_heavy_scratch = not (
             morph_scratch_is_strong
             or (
@@ -9964,6 +10007,7 @@ class LensDefectHostApp:
                     "pc_fast_review_line",
                     "pc_fast_bright_scratch",
                     "pc_fast_bright_crosshatch",
+                    "pc_fast_strong_bright_cross_scratch",
                     "pc_fast_center_cross_scratch",
                     "pc_fast_curvilinear_scratch",
                 )
@@ -12284,12 +12328,23 @@ class LensDefectHostApp:
         if scratch_is_long_slender:
             return scratch
         scratch_is_crosshatch = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
+            scratch_source in (
+                "pc_fast_review_line",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
+                "pc_fast_center_cross_scratch",
+                "pc_fast_curvilinear_scratch",
+            )
             and scratch_strong
             and scratch_line_count >= 4
             and (
-                scratch_source not in ("pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+                scratch_source not in (
+                    "pc_fast_bright_crosshatch",
+                    "pc_fast_strong_bright_cross_scratch",
+                    "pc_fast_center_cross_scratch",
+                )
                 or scratch_slender_lines >= FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_SLENDER_LINES
+                or scratch.get("strong_bright_cross_scratch")
             )
             and scratch_total_line_length >= FAST_REVIEW_SCRATCH_CROSSHATCH_MIN_LINE_LENGTH
             and scratch_area <= max(2200, int(stain_area * 0.28))
@@ -12298,12 +12353,24 @@ class LensDefectHostApp:
         if scratch_is_crosshatch and stain_area_ratio < FAST_REVIEW_SCRATCH_CROSSHATCH_STAIN_MAX_RATIO:
             return scratch
         scratch_is_star = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
+            scratch_source in (
+                "pc_fast_review_line",
+                "pc_fast_bright_scratch",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
+                "pc_fast_center_cross_scratch",
+                "pc_fast_curvilinear_scratch",
+            )
             and scratch_strong
             and scratch_line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
             and (
-                scratch_source not in ("pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+                scratch_source not in (
+                    "pc_fast_bright_crosshatch",
+                    "pc_fast_strong_bright_cross_scratch",
+                    "pc_fast_center_cross_scratch",
+                )
                 or scratch_slender_lines >= FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_SLENDER_LINES
+                or scratch.get("strong_bright_cross_scratch")
             )
             and scratch_total_line_length >= FAST_REVIEW_STAR_SCRATCH_MIN_LENGTH
             and scratch_area_ratio <= 0.055
@@ -12332,14 +12399,26 @@ class LensDefectHostApp:
         if scratch_is_star:
             return scratch
         bright_line_scratch = (
-            scratch_source in ("pc_fast_review_line", "pc_fast_bright_scratch", "pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch", "pc_fast_curvilinear_scratch")
+            scratch_source in (
+                "pc_fast_review_line",
+                "pc_fast_bright_scratch",
+                "pc_fast_bright_crosshatch",
+                "pc_fast_strong_bright_cross_scratch",
+                "pc_fast_center_cross_scratch",
+                "pc_fast_curvilinear_scratch",
+            )
             and scratch_signed_delta >= FAST_REVIEW_BRIGHT_SCRATCH_MIN_SIGNED_DELTA
             and scratch_bright_delta >= max(6.0, scratch_dark_delta * 0.9)
             and scratch_total_line_length >= 82.0
             and scratch_line_count >= 3
             and (
-                scratch_source not in ("pc_fast_bright_crosshatch", "pc_fast_center_cross_scratch")
+                scratch_source not in (
+                    "pc_fast_bright_crosshatch",
+                    "pc_fast_strong_bright_cross_scratch",
+                    "pc_fast_center_cross_scratch",
+                )
                 or scratch_slender_lines >= FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_SLENDER_LINES
+                or scratch.get("strong_bright_cross_scratch")
             )
             and scratch_area_ratio <= 0.020
         )
@@ -13741,6 +13820,282 @@ class LensDefectHostApp:
             seen.add(key)
             segments.append((x1, y1, x2, y2, length))
         return segments
+
+    def fast_cv_find_strong_bright_cross_scratch(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 120 or height < 90 or mask is None:
+            return None
+        mask_points = cv2.findNonZero(mask)
+        if mask_points is None:
+            return None
+        mx, my, mw, mh = cv2.boundingRect(mask_points)
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mw <= 0 or mh <= 0 or mask_area <= 0:
+            return None
+
+        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=9, sigmaY=9)
+        bright_diff = np.maximum(gray.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+        kernel_size = self.inspection_kernel_size(width, height, 0.018, minimum=5, maximum=15)
+        top_hat = cv2.morphologyEx(
+            gray,
+            cv2.MORPH_TOPHAT,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size)),
+        )
+        line_response = np.maximum(bright_diff, top_hat)
+        values = line_response[mask > 0]
+        if values.size <= 0:
+            return None
+
+        response_p98 = float(np.percentile(values, 98.0))
+        if response_p98 < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LOCAL_DELTA:
+            return None
+        threshold = max(
+            FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LOCAL_DELTA,
+            float(np.percentile(values, 90.0)),
+        )
+        bright_mask = np.where(line_response >= threshold, 255, 0).astype(np.uint8)
+        bright_mask = cv2.bitwise_and(bright_mask, mask)
+        weak_threshold = max(6.0, threshold * 0.62)
+        weak_bright_mask = np.where(line_response >= weak_threshold, 255, 0).astype(np.uint8)
+        weak_bright_mask = cv2.bitwise_and(weak_bright_mask, mask)
+        edge_mask = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 18, 58)
+        edge_mask = cv2.bitwise_and(edge_mask, cv2.dilate(weak_bright_mask, np.ones((3, 3), dtype=np.uint8), iterations=1))
+        candidate_mask = cv2.bitwise_or(bright_mask, edge_mask)
+        candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_area_all = int(cv2.countNonZero(candidate_mask))
+        if candidate_area_all <= 0:
+            return None
+        candidate_density = float(candidate_area_all) / float(mask_area)
+        if candidate_density > FAST_REVIEW_STRONG_BRIGHT_CROSS_MAX_DENSITY:
+            return None
+
+        mask_short_side = max(1, min(mw, mh))
+        min_line_length = max(12, int(mask_short_side * 0.16))
+        lines = cv2.HoughLinesP(
+            candidate_mask,
+            1,
+            np.pi / 180.0,
+            threshold=6,
+            minLineLength=min_line_length,
+            maxLineGap=10,
+        )
+        if lines is None:
+            return None
+
+        min_edge_distance = max(4, int(mask_short_side * 0.055))
+        segments = []
+        seen = set()
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+            center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            samples = max(3, int(length / 6.0))
+            active_count = 0
+            distances = []
+            for sample_index in range(samples + 1):
+                ratio = float(sample_index) / float(samples)
+                px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
+                py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
+                if mask[py, px] > 0 and candidate_mask[py, px] > 0:
+                    active_count += 1
+                if edge_distance is not None:
+                    distances.append(float(edge_distance[py, px]))
+            if float(active_count) / float(samples + 1) < 0.24:
+                continue
+            if distances and float(np.percentile(distances, 30.0)) < min_edge_distance:
+                continue
+            key = (
+                int(round(min(x1, x2) / 3.0)),
+                int(round(min(y1, y2) / 3.0)),
+                int(round(max(x1, x2) / 3.0)),
+                int(round(max(y1, y2) / 3.0)),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            segments.append((x1, y1, x2, y2, length))
+
+        if len(segments) < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LINE_COUNT:
+            return None
+
+        def segment_intersection(first, second, tolerance):
+            x1, y1, x2, y2, _first_length = first
+            x3, y3, x4, y4, _second_length = second
+            denominator = float((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+            if abs(denominator) < 1e-6:
+                return None
+            px = (
+                (x1 * y2 - y1 * x2) * (x3 - x4)
+                - (x1 - x2) * (x3 * y4 - y3 * x4)
+            ) / denominator
+            py = (
+                (x1 * y2 - y1 * x2) * (y3 - y4)
+                - (y1 - y2) * (x3 * y4 - y3 * x4)
+            ) / denominator
+            if (
+                px < min(x1, x2) - tolerance
+                or px > max(x1, x2) + tolerance
+                or px < min(x3, x4) - tolerance
+                or px > max(x3, x4) + tolerance
+                or py < min(y1, y2) - tolerance
+                or py > max(y1, y2) + tolerance
+                or py < min(y3, y4) - tolerance
+                or py > max(y3, y4) + tolerance
+            ):
+                return None
+            ix = max(0, min(width - 1, int(round(px))))
+            iy = max(0, min(height - 1, int(round(py))))
+            if mask[iy, ix] == 0:
+                return None
+            return ix, iy
+
+        clusters = self.cluster_scratch_line_segments(segments)
+        best = None
+        best_score = 0.0
+        for cluster in clusters:
+            if len(cluster) < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LINE_COUNT:
+                continue
+            xs = []
+            ys = []
+            total_line_length = 0.0
+            longest_length = 0.0
+            angle_groups = set()
+            angles = []
+            slender_count = 0
+            for x1, y1, x2, y2, line_length in cluster:
+                xs.extend([x1, x2])
+                ys.extend([y1, y2])
+                total_line_length += line_length
+                longest_length = max(longest_length, line_length)
+                angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                angle_groups.add(int(angle // 25.0))
+                angles.append(angle)
+                short_side = max(1, min(abs(x2 - x1) + 1, abs(y2 - y1) + 1))
+                if line_length / float(short_side) >= 2.7 and line_length >= max(18.0, mask_short_side * 0.16):
+                    slender_count += 1
+
+            if total_line_length < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_TOTAL_LENGTH:
+                continue
+            if longest_length < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LONGEST_LENGTH:
+                continue
+            if len(angle_groups) < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_ANGLE_GROUPS:
+                continue
+
+            intersections = set()
+            for first_index, first in enumerate(cluster):
+                first_angle = angles[first_index]
+                for second_index in range(first_index + 1, len(cluster)):
+                    angle_gap = abs(first_angle - angles[second_index])
+                    angle_gap = min(angle_gap, 180.0 - angle_gap)
+                    if angle_gap < 24.0:
+                        continue
+                    point = segment_intersection(first, cluster[second_index], max(5, int(mask_short_side * 0.045)))
+                    if point is not None:
+                        intersections.add((int(round(point[0] / 4.0)), int(round(point[1] / 4.0))))
+            if len(intersections) < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_INTERSECTIONS:
+                continue
+
+            left = max(0, min(xs) - 4)
+            top = max(0, min(ys) - 4)
+            right = min(width, max(xs) + 5)
+            bottom = min(height, max(ys) + 5)
+            box_w = max(1, right - left)
+            box_h = max(1, bottom - top)
+            box_area = max(1, box_w * box_h)
+            span = max(box_w, box_h)
+            if float(span) / float(mask_short_side) < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_SPAN_RATIO:
+                continue
+            mask_roi = mask[top:bottom, left:right]
+            if mask_roi.size <= 0:
+                continue
+            mask_overlap = float(cv2.countNonZero(mask_roi)) / float(box_area)
+            if mask_overlap < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_MASK_OVERLAP:
+                continue
+            candidate_roi = candidate_mask[top:bottom, left:right]
+            candidate_area = int(cv2.countNonZero(candidate_roi))
+            if candidate_area <= 0:
+                continue
+            fill_ratio = float(candidate_area) / float(box_area)
+            if fill_ratio > FAST_REVIEW_STRONG_BRIGHT_CROSS_MAX_FILL_RATIO:
+                continue
+            response_roi = line_response[top:bottom, left:right]
+            local_peak = float(np.percentile(response_roi[candidate_roi > 0], 85.0))
+            if local_peak < FAST_REVIEW_STRONG_BRIGHT_CROSS_MIN_LOCAL_DELTA:
+                continue
+            weak_soft_glare_like = (
+                total_line_length <= FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_TOTAL_LENGTH
+                and local_peak <= FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_LOCAL_DELTA
+                and len(angle_groups) <= FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_ANGLE_GROUPS
+                and slender_count <= FAST_REVIEW_STRONG_BRIGHT_CROSS_WEAK_MAX_SLENDER_LINES
+            )
+            if weak_soft_glare_like:
+                continue
+
+            aspect_ratio = float(span) / float(max(1, min(box_w, box_h)))
+            score = (
+                total_line_length
+                + longest_length * 0.35
+                + len(angle_groups) * 42.0
+                + len(intersections) * 55.0
+                + local_peak * 4.0
+            )
+            if score <= best_score:
+                continue
+            best_score = score
+            confidence = min(
+                0.95,
+                0.86
+                + min(0.05, total_line_length / 900.0)
+                + min(0.04, local_peak / 180.0)
+                + min(0.03, len(intersections) * 0.01),
+            )
+            best = {
+                "type": "scratch",
+                "confidence": round(confidence, 2),
+                "x": int(left),
+                "y": int(top),
+                "w": int(box_w),
+                "h": int(box_h),
+                "area": int(candidate_area),
+                "length": int(span),
+                "aspect_ratio": round(aspect_ratio, 2),
+                "level": "medium" if total_line_length >= 180.0 or span >= 70 else "light",
+                "source": "pc_fast_strong_bright_cross_scratch",
+                "line_count": int(len(cluster)),
+                "angle_groups": int(len(angle_groups)),
+                "slender_line_count": int(slender_count),
+                "intersection_count": int(len(intersections)),
+                "total_line_length": round(total_line_length, 1),
+                "longest_line_length": round(longest_length, 1),
+                "local_bright_delta": round(local_peak, 1),
+                "local_signed_delta": round(local_peak, 1),
+                "local_dark_delta": 0.0,
+                "fill_ratio": round(fill_ratio, 3),
+                "candidate_density": round(candidate_density, 4),
+                "mask_overlap": round(mask_overlap, 3),
+                "crosshatch_scratch": True,
+                "strong_bright_cross_scratch": True,
+                "strong_internal_scratch": True,
+                "candidates": [
+                    {
+                        "x": int(min(x1, x2)),
+                        "y": int(min(y1, y2)),
+                        "w": int(abs(x2 - x1) + 1),
+                        "h": int(abs(y2 - y1) + 1),
+                        "area": int(max(1, line_length)),
+                        "length": int(line_length),
+                        "aspect_ratio": round(float(line_length) / float(max(1, min(abs(x2 - x1) + 1, abs(y2 - y1) + 1))), 2),
+                    }
+                    for x1, y1, x2, y2, line_length in cluster
+                ],
+            }
+
+        return best
 
     def fast_cv_find_scratch_lines(self, gray, mask, edge_distance=None):
         blurred = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -16733,6 +17088,140 @@ def green_conveyor_black_stain_regression_self_test():
         return {"ok": False, "error": str(exc)}
 
 
+def bright_cross_scratch_regression_self_test():
+    if cv2 is None or np is None or Image is None:
+        return {"ok": False, "error": "cv2_numpy_or_pillow_unavailable"}
+    try:
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+        app.lens_presence_payload_key = None
+        app.lens_presence_result = None
+        app.live_lens_track_payload_key = None
+        app.live_lens_track_result = None
+        app.live_lens_track_miss_count = 0
+        app.latest_live_image_payload = None
+        app.latest_detection_result = {}
+        app._last_effective_roi = None
+
+        width, height = 640, 360
+        payload = {
+            "width": width,
+            "height": height,
+            "receive_time": "bright_cross_scratch",
+            "byte_count": 320,
+        }
+        presence = {
+            "found": True,
+            "reason": "pc_round_lens_presence",
+            "roi": {
+                "x": 382,
+                "y": 110,
+                "w": 156,
+                "h": 136,
+                "source": "pc_round_lens_presence",
+            },
+        }
+
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (34, 88, 42)
+        frame[:, 90:590] = (50, 128, 60)
+        lens_center = (460, 178)
+        cv2.ellipse(frame, lens_center, (78, 68), 0, 0, 360, (92, 118, 88), -1, cv2.LINE_AA)
+        cv2.ellipse(frame, lens_center, (78, 68), 0, 0, 360, (138, 174, 136), 3, cv2.LINE_AA)
+        cv2.circle(frame, lens_center, 57, (78, 104, 78), 1, cv2.LINE_AA)
+        for start, end in (
+            ((410, 151), (516, 148)),
+            ((414, 160), (508, 118)),
+            ((430, 122), (501, 205)),
+            ((456, 111), (461, 209)),
+            ((402, 173), (522, 171)),
+            ((424, 192), (500, 135)),
+        ):
+            cv2.line(frame, start, end, (205, 235, 208), 1, cv2.LINE_AA)
+
+        image = Image.fromarray(frame, "RGB")
+        current = app.result_with_current_lens_presence(
+            image,
+            payload,
+            app.normalize_detection_result({
+                "frame": {"w": width, "h": height},
+                "defects": [],
+            }),
+            presence,
+        )
+        mask = app.build_detection_mask(image, payload, current)
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        detection = app.fast_cv_detect_defect(image, mask, gray=gray)
+        source = str(detection.get("source", "")) if isinstance(detection, dict) else ""
+        cross_ok = bool(
+            isinstance(detection, dict)
+            and detection.get("type") == "scratch"
+            and source == "pc_fast_strong_bright_cross_scratch"
+            and detection.get("strong_bright_cross_scratch")
+            and app.should_apply_fast_review_detection(detection, current)
+        )
+
+        soft_glare = np.zeros((height, width, 3), dtype=np.uint8)
+        soft_glare[:] = (34, 88, 42)
+        soft_glare[:, 90:590] = (50, 128, 60)
+        cv2.ellipse(soft_glare, lens_center, (78, 68), 0, 0, 360, (92, 118, 88), -1, cv2.LINE_AA)
+        cv2.ellipse(soft_glare, lens_center, (78, 68), 0, 0, 360, (138, 174, 136), 3, cv2.LINE_AA)
+        glare = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.ellipse(glare, (456, 170), (44, 16), -8, 0, 360, (230, 255, 232), -1, cv2.LINE_AA)
+        glare = cv2.GaussianBlur(glare, (0, 0), sigmaX=10, sigmaY=4)
+        soft_glare = np.clip(soft_glare.astype(np.int16) + (glare.astype(np.int16) // 3), 0, 255).astype(np.uint8)
+        soft_image = Image.fromarray(soft_glare, "RGB")
+        soft_current = app.result_with_current_lens_presence(
+            soft_image,
+            payload,
+            app.normalize_detection_result({
+                "frame": {"w": width, "h": height},
+                "defects": [],
+            }),
+            presence,
+        )
+        soft_mask = app.build_detection_mask(soft_image, payload, soft_current)
+        soft_gray = cv2.cvtColor(np.array(soft_image), cv2.COLOR_RGB2GRAY)
+        soft_analysis = app.enhance_gray_for_inspection(soft_gray)
+        soft_edge_distance = cv2.distanceTransform(soft_mask, cv2.DIST_L2, 3)
+        soft_cross = app.fast_cv_find_strong_bright_cross_scratch(soft_analysis, soft_mask, soft_edge_distance)
+        soft_ok = soft_cross is None
+
+        empty = np.zeros((height, width, 3), dtype=np.uint8)
+        empty[:] = (34, 88, 42)
+        empty[:, 90:590] = (50, 128, 60)
+        empty = cv2.GaussianBlur(empty, (3, 3), 0)
+        empty_presence = app.detect_lens_presence_from_image(Image.fromarray(empty, "RGB"))
+        empty_ok = not bool(empty_presence.get("found"))
+
+        cases = [
+            {
+                "name": "right_lens_bright_cross_lines_are_scratch",
+                "expected": "scratch",
+                "actual": detection.get("type", "none") if isinstance(detection, dict) else "none",
+                "source": source,
+                "confidence": round(app.confidence_float(detection), 2) if isinstance(detection, dict) else 0.0,
+                "ok": bool(cross_ok),
+            },
+            {
+                "name": "soft_bright_glare_not_cross_scratch",
+                "expected": "not_strong_bright_cross_scratch",
+                "actual": soft_cross.get("source", "none") if isinstance(soft_cross, dict) else "none",
+                "ok": bool(soft_ok),
+            },
+            {
+                "name": "green_conveyor_without_lens_still_background",
+                "expected": "no_lens",
+                "actual": "lens" if empty_presence.get("found") else "no_lens",
+                "reason": str(empty_presence.get("reason", "")),
+                "ok": bool(empty_ok),
+            },
+        ]
+        return {"ok": all(case["ok"] for case in cases), "cases": cases}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def live_image_latest_frame_regression_self_test():
     if cv2 is None or np is None or Image is None or ImageDraw is None:
         return {"ok": False, "error": "cv2_numpy_pillow_or_imagedraw_unavailable"}
@@ -16921,6 +17410,7 @@ def runtime_self_test():
         "lens_presence": None,
         "moving_lens_follow": None,
         "green_conveyor_black_stain": None,
+        "bright_cross_scratch": None,
         "live_image_latest_frame": None,
     }
     if cv2 is None:
@@ -17007,6 +17497,7 @@ def runtime_self_test():
     checks["lens_presence"] = lens_presence_regression_self_test()
     checks["moving_lens_follow"] = moving_lens_follow_regression_self_test()
     checks["green_conveyor_black_stain"] = green_conveyor_black_stain_regression_self_test()
+    checks["bright_cross_scratch"] = bright_cross_scratch_regression_self_test()
     checks["live_image_latest_frame"] = live_image_latest_frame_regression_self_test()
 
     scratch_aux_ok = bool(
@@ -17028,6 +17519,7 @@ def runtime_self_test():
         and checks["lens_presence"]["ok"]
         and checks["moving_lens_follow"]["ok"]
         and checks["green_conveyor_black_stain"]["ok"]
+        and checks["bright_cross_scratch"]["ok"]
         and checks["live_image_latest_frame"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
