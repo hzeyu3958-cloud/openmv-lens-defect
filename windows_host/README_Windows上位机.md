@@ -1,42 +1,35 @@
 # Windows 上位机说明
 
-当前上位机只有一个程序：
+当前上位机只保留一个程序：
 
 ```text
 release/LensDefectHost.exe
 ```
 
-它现在支持两种检测对象：
+## 1. 通讯方式
 
-- 眼镜片检测
-- 载玻片检测
+上位机现在有两路通讯：
 
-## 1. 先切检测对象
+- OpenMV N6：仍然使用 USB 串口通讯，负责接收识别 JSON 和实时画面。
+- 蓝牙模块：在上位机里点击“扫描蓝牙”，选择扫描到的蓝牙设备名，然后连接模块发送识别结果。
 
-主界面顶部新增“检测对象”下拉框。
+## 2. 蓝牙发送内容
 
-切换后会自动切换默认资源：
+蓝牙模块上电后，先在上位机点击“扫描蓝牙”，选择类似 `YANGYANG`、`BH207-1` 这样的设备名，再点击“连接蓝牙模块”。蓝牙连接界面不需要选择波特率，上位机会用内部默认值连接。
 
-- 数据集目录
-- 模型文件
-- 标签文件
-- 训练结果摘要文件
-
-默认对应关系：
+连接成功后，勾选“自动发送结果”，上位机会按识别结果发送一行中文文本：
 
 ```text
-眼镜片:
-  dataset/
-  models/lens_defect_classifier_int8.tflite
-  models/lens_defect_labels.txt
-
-载玻片:
-  dataset_slide/
-  models/slide_defect_classifier_int8.tflite
-  models/slide_defect_labels.txt
+正常
+划痕
+污渍
 ```
 
-## 2. 采集训练数据
+每次发送末尾带换行，方便蓝牙模块或下位机按行读取。
+
+说明：HC-05、BH207 等串口蓝牙模块在 Windows 底层仍会对应一个蓝牙串口，但界面上优先按设备名选择。模块和下位机之间的 UART 波特率需要在模块/下位机上匹配，上位机界面不再手动选择。若扫描到了设备但提示“未发现蓝牙串口”，请先在 Windows 蓝牙设置里完成配对，再回到上位机重新扫描。
+
+## 3. OpenMV 端脚本
 
 眼镜片采集脚本：
 
@@ -44,65 +37,31 @@ release/LensDefectHost.exe
 openmv/n6_usb_image_capture.py
 ```
 
-载玻片采集脚本：
-
-```text
-openmv/n6_usb_slide_capture.py
-```
-
-在上位机“2 采集训练数据”页里：
-
-1. 先切检测对象
-2. 选择类别
-3. 点击“拍一张保存到电脑”或“开始自动采集”
-
-## 3. 训练模型
-
-在“3 训练和部署”页点击“启动本地训练脚本”。
-
-说明：
-
-- 眼镜片模式输出原文件名，兼容旧流程。
-- 载玻片模式会输出 `slide_defect_*` 文件。
-- 当前载玻片模式主走分类训练流程。
-
-## 4. 复制模型到 OpenMV
-
-眼镜片模式会复制成：
-
-```text
-/lens_defect_classifier_int8.tflite
-/lens_defect_labels.txt
-```
-
-载玻片模式会复制成：
-
-```text
-/slide_defect_classifier_int8.tflite
-/slide_defect_labels.txt
-```
-
-## 5. OpenMV 端脚本
-
-眼镜片模型检测：
+眼镜片模型检测脚本：
 
 ```text
 openmv/n6_classifier_main.py
 ```
 
-载玻片模型检测：
+## 4. 训练和部署
+
+在上位机“3 训练和部署”页可以启动本地训练、生成 YOLO 标注、训练 ONNX，并复制模型到 OpenMV N6。
+
+默认资源：
 
 ```text
-openmv/n6_slide_classifier_main.py
+dataset/
+models/lens_defect_classifier_int8.tflite
+models/lens_defect_labels.txt
 ```
 
-## 6. 打包 exe
+## 5. 打包 exe
 
 ```bat
 windows_host\build_windows_exe.bat
 ```
 
-打包后仍然只有一个 exe：
+打包后仍然只保留一个 exe：
 
 ```text
 release/LensDefectHost.exe

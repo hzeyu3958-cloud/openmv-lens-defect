@@ -2,6 +2,7 @@ import csv
 import ctypes
 import json
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -68,7 +69,7 @@ SERIAL_MAX_TEXT_LINE_BYTES = 8192
 SERIAL_SYNC_KEEP_BYTES = 32
 SERIAL_SYNC_STATUS_SECONDS = 2.0
 AUTO_START_RECEIVE = False
-MCU_SEND_MIN_INTERVAL_SECONDS = 1.0
+BLUETOOTH_SEND_MIN_INTERVAL_SECONDS = 1.0
 LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.12
 CONVEYOR_CENTER_STABLE_FRAMES = 2
 CONVEYOR_GATE_X_MIN = 0.20
@@ -98,6 +99,187 @@ INSPECTION_CLAHE_CLIP_LIMIT = 2.0
 INSPECTION_CLAHE_TILE_GRID = (8, 8)
 MORPH_STAIN_MIN_RESPONSE = 10.0
 MORPH_SCRATCH_MIN_RESPONSE = 9.0
+MORPH_SCRATCH_SHORT_NOISE_MAX_LENGTH = 42
+MORPH_SCRATCH_SHORT_NOISE_MAX_DOMINANT_DELTA = 16.0
+MICRO_STAIN_MIN_RESPONSE = 5.8
+MICRO_STAIN_MIN_AREA = 5
+MICRO_STAIN_MAX_BOX_AREA_RATIO = 0.010
+MICRO_STAIN_MAX_ASPECT = 1.95
+MICRO_STAIN_MIN_FILL = 0.18
+MICRO_STAIN_MIN_RING_DELTA = 4.2
+MICRO_STAIN_TINY_MIN_RESPONSE = 30.0
+MICRO_STAIN_TINY_MIN_RING_DELTA = 7.0
+MICRO_STAIN_ULTRA_TINY_MAX_AREA = 6
+MICRO_STAIN_ULTRA_TINY_MAX_LENGTH = 3
+MICRO_STAIN_ULTRA_TINY_MAX_ASPECT = 1.35
+MICRO_STAIN_ULTRA_TINY_MIN_FILL = 0.45
+MICRO_STAIN_ULTRA_TINY_MIN_RESPONSE = 70.0
+MICRO_STAIN_ULTRA_TINY_MIN_RING_DELTA = 22.0
+MICRO_STAIN_ULTRA_TINY_MAX_SIGNED_DELTA = -6.5
+MICRO_STAIN_ULTRA_TINY_CONFIRM_FRAMES = 2
+MICRO_STAIN_ULTRA_TINY_MIN_IOU = 0.18
+MICRO_STAIN_ULTRA_TINY_MAX_CENTER_DISTANCE = 0.42
+MICRO_STAIN_PINPOINT_MAX_AREA = 16
+MICRO_STAIN_PINPOINT_MAX_LENGTH = 5
+MICRO_STAIN_PINPOINT_MAX_ASPECT = 1.85
+MICRO_STAIN_PINPOINT_MIN_FILL = 0.60
+MICRO_STAIN_PINPOINT_MIN_RESPONSE = 70.0
+MICRO_STAIN_PINPOINT_MIN_RING_DELTA = 22.0
+MICRO_STAIN_MAX_CANDIDATE_DENSITY = 0.035
+MICRO_BRIGHT_STAIN_MIN_RESPONSE = 16.0
+MICRO_BRIGHT_STAIN_MIN_AREA = 5
+MICRO_BRIGHT_STAIN_MAX_BOX_AREA_RATIO = 0.0045
+MICRO_BRIGHT_STAIN_MAX_LENGTH = 16
+MICRO_BRIGHT_STAIN_MAX_ASPECT = 1.55
+MICRO_BRIGHT_STAIN_MIN_FILL = 0.42
+MICRO_BRIGHT_STAIN_MIN_RING_DELTA = 9.0
+MICRO_BRIGHT_STAIN_TINY_MIN_RESPONSE = 30.0
+MICRO_BRIGHT_STAIN_TINY_MIN_RING_DELTA = 14.0
+MICRO_BRIGHT_STAIN_MAX_CANDIDATE_DENSITY = 0.018
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_AREA = 6
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_LENGTH = 3
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_ASPECT = 1.35
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_FILL = 0.45
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_RESPONSE = 96.0
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_RING_DELTA = 28.0
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_SIGNED_DELTA = 8.0
+MICRO_BRIGHT_STAIN_ULTRA_TINY_CONFIRM_FRAMES = 2
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_IOU = 0.18
+MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_CENTER_DISTANCE = 0.42
+MICRO_BRIGHT_STAIN_PINPOINT_MAX_AREA = 16
+MICRO_BRIGHT_STAIN_PINPOINT_MAX_LENGTH = 5
+MICRO_BRIGHT_STAIN_PINPOINT_MAX_ASPECT = 1.85
+MICRO_BRIGHT_STAIN_PINPOINT_MIN_FILL = 0.60
+MICRO_BRIGHT_STAIN_PINPOINT_MIN_RESPONSE = 96.0
+MICRO_BRIGHT_STAIN_PINPOINT_MIN_RING_DELTA = 28.0
+MICRO_BRIGHT_STAIN_SMALL_RING_MAX_AREA = 36
+MICRO_BRIGHT_STAIN_SMALL_RING_MAX_LENGTH = 8
+MICRO_BRIGHT_STAIN_SMALL_RING_MIN_FILL = 0.55
+MICRO_BRIGHT_STAIN_SMALL_RING_MIN_RESPONSE = 42.0
+MICRO_BRIGHT_STAIN_SMALL_RING_MIN_RING_DELTA = 16.0
+MICRO_BRIGHT_STAIN_SMALL_RING_MIN_SIGNED_DELTA = 1.0
+MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE = 0.84
+MICRO_BRIGHT_STAIN_SKIP_MAX_AREA = 72
+MICRO_BRIGHT_STAIN_SKIP_MAX_LENGTH = 12
+MICRO_BRIGHT_STAIN_SKIP_MAX_ASPECT = 1.40
+MICRO_BRIGHT_STAIN_SKIP_MIN_DENSITY = 0.48
+MICRO_BRIGHT_STAIN_SKIP_MIN_BRIGHT_DELTA = 28.0
+MICRO_BRIGHT_STAIN_SKIP_MIN_RING_DELTA = 13.0
+MICRO_BRIGHT_STAIN_SKIP_MIN_SIGNED_DELTA = 4.0
+MICRO_STAIN_SKIP_MIN_CONFIDENCE = 0.85
+MICRO_STAIN_SKIP_MAX_AREA = 96
+MICRO_STAIN_SKIP_MAX_LENGTH = 12
+MICRO_STAIN_SKIP_MAX_ASPECT = 1.35
+MICRO_STAIN_SKIP_MIN_DENSITY = 0.45
+MICRO_STAIN_SKIP_MIN_DARK_DELTA = 30.0
+MICRO_STAIN_SKIP_MIN_RING_DELTA = 12.0
+MICRO_STAIN_SKIP_MAX_SIGNED_DELTA = -3.5
+MICRO_STAIN_SKIP_TINY_MAX_AREA = 36
+MICRO_STAIN_SKIP_TINY_MAX_LENGTH = 8
+MICRO_STAIN_SKIP_TINY_MAX_ASPECT = 1.45
+MICRO_STAIN_SKIP_TINY_MIN_DENSITY = 0.55
+MICRO_STAIN_SKIP_TINY_MIN_DARK_DELTA = 55.0
+MICRO_STAIN_SKIP_TINY_MIN_RING_DELTA = 22.0
+MICRO_STAIN_SKIP_TINY_MAX_SIGNED_DELTA = -2.0
+MICRO_SCRATCH_MIN_RESPONSE = 5.2
+MICRO_SCRATCH_MIN_LENGTH = 9
+MICRO_SCRATCH_MAX_BOX_AREA_RATIO = 0.018
+MICRO_SCRATCH_MIN_ASPECT = 2.45
+MICRO_SCRATCH_MAX_FILL = 0.72
+MICRO_SCRATCH_SINGLE_LINE_MIN_RESPONSE = 28.0
+MICRO_SCRATCH_SINGLE_LINE_MIN_ABS_DELTA = 11.0
+MICRO_SCRATCH_MAX_CANDIDATE_DENSITY = 0.045
+MICRO_SCRATCH_DASHED_MIN_LENGTH = 60
+MICRO_SCRATCH_DASHED_MIN_FRAGMENTS = 3
+MICRO_SCRATCH_DASHED_MIN_ACTIVE_FRACTION = 0.42
+MICRO_SCRATCH_DASHED_MIN_RESPONSE = 26.0
+MICRO_SCRATCH_DASHED_MIN_ABS_DELTA = 12.0
+MICRO_SCRATCH_DASHED_MIN_POLARITY_RATIO = 1.65
+MICRO_SCRATCH_DASHED_MAX_GAP_RATIO = 0.34
+MICRO_SCRATCH_DASHED_MAX_LINE_GAP = 22
+MICRO_SCRATCH_DASHED_MAX_BOX_AREA_RATIO = 0.10
+MICRO_SCRATCH_SIDE_GLARE_MIN_ASPECT = 8.0
+MICRO_SCRATCH_SIDE_GLARE_MIN_BRIGHT_DELTA = 16.0
+MICRO_SCRATCH_SIDE_GLARE_MAX_DARK_DELTA = 5.0
+MICRO_SCRATCH_SIDE_GLARE_MIN_GRAY = 142.0
+MICRO_SCRATCH_SIDE_GLARE_MIN_LOCAL_DELTA = 12.0
+MICRO_SCRATCH_SIDE_GLARE_MIN_FILL = 0.55
+MICRO_SCRATCH_SIDE_GLARE_MIN_POLARITY_RATIO = 1.55
+SIDE_GLARE_PREFLIGHT_SCALE = 0.35
+SIDE_GLARE_PREFLIGHT_MIN_ASPECT = 12.0
+SIDE_GLARE_PREFLIGHT_MIN_LENGTH_RATIO = 0.32
+SIDE_GLARE_PREFLIGHT_MIN_AREA = 40
+SIDE_GLARE_PREFLIGHT_MIN_FILL = 0.45
+SIDE_GLARE_PREFLIGHT_MIN_BRIGHT_DELTA = 24.0
+SIDE_GLARE_PREFLIGHT_MAX_DARK_RATIO = 0.35
+SIDE_GLARE_PREFLIGHT_MIN_LOCAL_DELTA = 28.0
+SIDE_GLARE_PREFLIGHT_MAX_DENSITY = 0.018
+SIDE_GLARE_PREFLIGHT_MIN_DOMINANT_RATIO = 0.55
+MICRO_SCRATCH_PRECHECK_SCALE = 0.50
+MICRO_SCRATCH_PRECHECK_MAX_NOISE_DENSITY = 0.055
+MICRO_SCRATCH_PRECHECK_MIN_ELONGATED_ASPECT = 4.6
+MICRO_SCRATCH_PRECHECK_MIN_FRAGMENT_ASPECT = 2.8
+MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_DENSITY = 0.018
+MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_COMPONENTS = 120
+MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MAX_BEST_LENGTH = 8
+MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MAX_BEST_AREA = 12
+MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_BEST_FILL = 0.82
+FAST_REVIEW_HEAVY_LINE_MIN_EDGE_DENSITY = 0.0040
+FAST_REVIEW_HEAVY_LINE_MIN_LOCAL_P98 = 22.0
+FAST_REVIEW_HEAVY_LINE_INNER_MARGIN_RATIO = 0.050
+FAST_REVIEW_HEAVY_LINE_INNER_MIN_AREA_RATIO = 0.45
+FAST_REVIEW_HEAVY_LINE_PRECHECK_MIN_LENGTH_RATIO = 0.135
+FAST_REVIEW_HEAVY_LINE_PRECHECK_MIN_TOTAL_RATIO = 1.20
+FAST_REVIEW_HEAVY_LINE_NOISE_EDGE_DENSITY = 0.012
+FAST_REVIEW_HEAVY_LINE_NOISE_MAX_LOCAL_P98 = 24.0
+FAST_REVIEW_HEAVY_LINE_NOISE_MIN_LINES = 3
+FAST_REVIEW_HEAVY_LINE_NOISE_MIN_TOTAL_RATIO = 3.0
+FAST_REVIEW_HEAVY_LINE_NOISE_MIN_LONGEST_RATIO = 1.15
+FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MIN_LINES = 36
+FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MIN_GROUPS = 6
+FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MAX_DOMINANCE = 0.09
+FAST_REVIEW_HEAVY_LINE_SPARSE_MIN_TOTAL_RATIO = 2.45
+FAST_REVIEW_HEAVY_LINE_SPARSE_MIN_LONGEST_RATIO = 1.25
+FAST_REVIEW_DARK_X_PREFLIGHT_SCALE = 0.35
+FAST_REVIEW_DARK_X_PREFLIGHT_MIN_DENSITY = 0.006
+FAST_REVIEW_DARK_X_PREFLIGHT_MAX_DENSITY = 0.070
+FAST_REVIEW_DARK_X_PREFLIGHT_MIN_TOTAL_RATIO = 1.35
+FAST_REVIEW_DARK_X_PREFLIGHT_MIN_LONGEST_RATIO = 0.30
+FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MAX_LINES = 24
+FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MAX_GROUPS = 5
+FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MIN_DOMINANT_RATIO = 0.24
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_DARK_P98 = 12.0
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_ABS_P98 = 14.0
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_DENSITY = 0.040
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_LINES = 18
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_GROUPS = 5
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_DOMINANCE = 0.18
+FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_POLARITY_GAP = 4.0
+FAST_REVIEW_DARK_CLUSTER_GATE_MAX_P98 = 6.0
+FAST_REVIEW_DARK_CLUSTER_GATE_MAX_P995 = 10.0
+FAST_REVIEW_DARK_CLUSTER_GATE_MAX_PEAK = 32.0
+FAST_REVIEW_DARK_CLUSTER_GATE_MAX_DENSITY = 0.008
+FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MIN_DENSITY = 0.10
+FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MIN_COMPONENTS = 80
+FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MAX_DOMINANT_RATIO = 0.16
+FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MAX_BEST_LENGTH = 82
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_P98 = 12.0
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_P995 = 14.0
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_PEAK = 24.0
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MIN_DENSITY = 0.040
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MIN_COMPONENTS = 160
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_DOMINANT_RATIO = 0.035
+FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_BEST_LENGTH = 18
+FAST_REVIEW_DARK_LINE_GATE_MIN_P98 = 12.0
+FAST_REVIEW_DARK_LINE_GATE_MIN_P995 = 18.0
+FAST_REVIEW_DARK_LINE_GATE_MIN_PEAK = 38.0
+FAST_REVIEW_DARK_LINE_GATE_MIN_DENSITY = 0.012
+FAST_REVIEW_DARK_FALLBACK_MIN_P98 = 14.0
+FAST_REVIEW_DARK_FALLBACK_MIN_P995 = 26.0
+FAST_REVIEW_DARK_FALLBACK_MIN_MAX = 42.0
+MORPH_STAIN_MAX_NOISE_DENSITY = 0.060
+MORPH_STAIN_DENSE_MIN_MAX_RESPONSE = 72.0
+FAST_REVIEW_DARK_X_CENTER_FALLBACK_MAX_MASK_RATIO = 0.30
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent if APP_DIR.name in ("windows_host", "dist", "release") else APP_DIR
@@ -106,17 +288,13 @@ HISTORY_DIR = APP_DIR / "history"
 HISTORY_JSONL = HISTORY_DIR / "detection_history.jsonl"
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "dataset"
 DEFAULT_MODELS_DIR = PROJECT_ROOT / "models"
-DEFAULT_SLIDE_DATASET_DIR = PROJECT_ROOT / "dataset_slide"
 DEFAULT_STAGE2_MODEL = DEFAULT_MODELS_DIR / "lens_stage2_anomaly.npz"
 DEFAULT_YOLO_MODEL = DEFAULT_MODELS_DIR / "lens_yolo.onnx"
 DEFAULT_YOLO_SEG_MODEL = DEFAULT_MODELS_DIR / "lens_yolo_seg.onnx"
+DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL = DEFAULT_MODELS_DIR / "lens_yolo_new_lens_scratch.onnx"
+DEFAULT_YOLO_NEW_LENS_STAIN_MODEL = DEFAULT_MODELS_DIR / "lens_yolo_new_lens_stain.onnx"
 DEFAULT_YOLO_LABELS = DEFAULT_MODELS_DIR / "lens_yolo_labels.txt"
 DEFAULT_YOLO_META = DEFAULT_MODELS_DIR / "lens_yolo_meta.json"
-DEFAULT_SLIDE_MODEL = DEFAULT_MODELS_DIR / "slide_defect_classifier_int8.tflite"
-DEFAULT_SLIDE_LABELS = DEFAULT_MODELS_DIR / "slide_defect_labels.txt"
-DEFAULT_SLIDE_SUMMARY = DEFAULT_MODELS_DIR / "slide_training_summary.json"
-DEFAULT_SLIDE_YOLO_MODEL = DEFAULT_MODELS_DIR / "slide_yolo.onnx"
-DEFAULT_SLIDE_YOLO_LABELS = DEFAULT_MODELS_DIR / "slide_yolo_labels.txt"
 CORRECTION_METADATA_FILENAME = "corrections.csv"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
 METADATA_FILENAME = "metadata.csv"
@@ -158,6 +336,12 @@ FAST_REVIEW_SCRATCH_MAX_BOX_AREA_RATIO = 0.10
 FAST_REVIEW_SCRATCH_MIN_LINE_ASPECT = 1.75
 FAST_REVIEW_SCRATCH_MIN_BRIGHT_LINE_ASPECT = 1.65
 FAST_REVIEW_SCRATCH_MAX_FILL_RATIO = 0.52
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MIN_LINES = 12
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MIN_FILL = 0.50
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_ASPECT = 2.80
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_LOCAL_DELTA = 18.0
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_SIGNED_DELTA = 3.0
+FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_POLARITY_GAP = 5.5
 FAST_REVIEW_BRIGHT_SCRATCH_MIN_ANGLE_GROUPS = 2
 FAST_REVIEW_BRIGHT_SCRATCH_MIN_LOCAL_DELTA = 6.0
 FAST_REVIEW_BRIGHT_SCRATCH_MIN_LINE_COUNT = 3
@@ -166,6 +350,16 @@ FAST_REVIEW_BRIGHT_SCRATCH_STRONG_MIN_DELTA = 18.0
 FAST_REVIEW_BRIGHT_SCRATCH_STRONG_MIN_LENGTH = 82.0
 FAST_REVIEW_BRIGHT_SCRATCH_MAX_BOX_AREA_RATIO = 0.075
 FAST_REVIEW_BRIGHT_SCRATCH_MAX_FILL_RATIO = 0.36
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_SCALE = 0.35
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_DENSITY = 0.0025
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MAX_DENSITY = 0.050
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_COMPONENT_ASPECT = 4.2
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LENGTH_RATIO = 0.22
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MAX_CENTER_X_RATIO = 0.58
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_BRIGHT_DELTA = 10.0
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LINES = 2
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_TOTAL_RATIO = 2.8
+FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LONGEST_RATIO = 1.35
 FAST_REVIEW_EDGE_FILTER_STAIN_MIN_OVERLAP = 0.72
 FAST_REVIEW_EDGE_FILTER_STAIN_STRONG_MIN_OVERLAP = 0.66
 FAST_REVIEW_EDGE_FILTER_SCRATCH_MIN_OVERLAP = 0.52
@@ -196,13 +390,66 @@ FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY = 182.0
 FAST_REVIEW_REFLECTION_GLARE_MIN_LOCAL_DELTA = 48.0
 FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA = 72.0
 FAST_REVIEW_REFLECTION_SHADOW_MAX_SIGNED_DELTA = -2.0
-FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION = 0.18
+FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION = 0.26
 FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BRIGHT_FRACTION = 0.10
 FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BOX_RATIO = 0.055
 FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_SIGNED_DELTA = -7.0
+FAST_REVIEW_YOLO_STAIN_STRICT_LENS_MIN_OVERLAP = 0.45
+FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_BRIGHT_FRACTION = 0.018
+FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_COMPONENT_RATIO = 0.0035
+FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_SIGNED_DELTA = -18.0
+FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_DARK_FRACTION = 0.56
+FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_DARK_P85 = 48.0
+FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_LINE_LENGTH_RATIO = 0.26
+FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_BORDER_RATIO = 0.16
+FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_BRIGHT_DELTA = 13.0
+FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MAX_FILL_RATIO = 0.32
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_CONTRAST = 18.0
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_LINE_COUNT = 2
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_TOTAL_RATIO = 0.70
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_DOMINANT_RATIO = 0.46
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MAX_EDGE_FILL = 0.18
+FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MAX_BLOB_FILL = 0.58
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_LENGTH = 22.0
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_ASPECT = 1.65
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MAX_FILL = 0.18
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_LOCAL_DELTA = 4.0
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MAX_BLOB_FILL = 0.48
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MAX_ASPECT = 1.35
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_FILL = 0.28
+FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_DOMINANCE = 0.38
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LOCAL_DELTA = 4.8
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_TOTAL_LENGTH = 50.0
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LINE_COUNT = 3
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_ANGLE_GROUPS = 2
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_SECONDARY_RATIO = 0.16
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_FILL = 0.24
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BLOB_FILL = 0.42
+FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BOX_RATIO = 0.11
+FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_EDGE_PIXELS = 18
+FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_CONTACT_PIXELS = 7
+FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_SUPPORT = 0.045
+FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_ANGLE_GROUPS = 2
+FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MAX_FILL = 0.28
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_TOTAL_LENGTH = 900.0
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_SLENDER_RATIO = 0.68
 FAST_REVIEW_CENTER_CROSS_WEAK_MIN_FILL_RATIO = 0.25
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_RESPONSE = 2.0
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_NOISE_P98 = 28.0
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_DENSITY = 0.003
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_DENSITY = 0.035
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_FILL = 0.055
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_LINE_RATIO = 0.12
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_TOTAL_RATIO = 0.55
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_AXIS_RATIO = 0.24
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_AXIS_IMBALANCE = 3.0
+FAST_REVIEW_CENTER_CROSS_WEAK_FAST_INTERSECTION_TOLERANCE = 10
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MAX_DENSITY = 0.16
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_H_RATIO = 0.30
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_V_RATIO = 0.36
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_RESPONSE = 4.5
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_LOCAL_DELTA = 3.0
+FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MAX_FILL = 0.30
 FAST_REVIEW_REFLECTION_SCRATCH_MAX_TOTAL_LENGTH = 860.0
 FAST_REVIEW_REFLECTION_SCRATCH_MAX_LINE_COUNT = 24
 FAST_REVIEW_YOLO_BOX_LOCK_MIN_CONFIDENCE = 0.10
@@ -214,6 +461,21 @@ FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE = 0.88
 FAST_REVIEW_LENS_CONTOUR_MIN_WIDTH_RATIO = 0.28
 FAST_REVIEW_LENS_CONTOUR_MIN_HEIGHT_RATIO = 0.20
 FAST_REVIEW_LENS_CONTOUR_MIN_CENTER_Y_RATIO = 0.30
+LENS_PRESENCE_MIN_AREA_RATIO = 0.025
+LENS_PRESENCE_MAX_AREA_RATIO = 0.76
+LENS_PRESENCE_MIN_WIDTH_RATIO = 0.15
+LENS_PRESENCE_MIN_HEIGHT_RATIO = 0.12
+LENS_PRESENCE_MAX_ASPECT_RATIO = 3.5
+LENS_PRESENCE_MIN_EDGE_DENSITY = 0.0018
+LENS_PRESENCE_MIN_CENTER_BLOB_AREA_RATIO = 0.018
+LENS_PRESENCE_PRECISE_MIN_AREA_RATIO = 0.0045
+LENS_PRESENCE_PRECISE_MAX_AREA_RATIO = 0.34
+LENS_PRESENCE_PRECISE_MAX_WIDTH_RATIO = 0.68
+LENS_PRESENCE_PRECISE_MAX_HEIGHT_RATIO = 0.70
+LENS_PRESENCE_PRECISE_MAX_ASPECT_RATIO = 2.45
+LENS_PRESENCE_ROUND_MIN_RADIUS_RATIO = 0.045
+LENS_PRESENCE_ROUND_MAX_RADIUS_RATIO = 0.28
+LENS_PRESENCE_ROUND_MIN_EDGE_SUPPORT = 0.006
 FAST_REVIEW_AUTO_ROI_MIN_AREA_RATIO = 0.018
 FAST_REVIEW_AUTO_ROI_MIN_WIDTH_RATIO = 0.20
 FAST_REVIEW_AUTO_ROI_MIN_HEIGHT_RATIO = 0.18
@@ -251,6 +513,18 @@ FAST_REVIEW_DARK_STAIN_SAFE_MIN_MASK_OVERLAP = 0.58
 FAST_REVIEW_DARK_STAIN_SAFE_BOX_DISTANCE_RATIO = 0.014
 FAST_REVIEW_WEAK_SCRATCH_MAX_AREA_RATIO = 0.006
 FAST_REVIEW_WEAK_SCRATCH_MAX_BOX_RATIO = 0.025
+FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_LENGTH = 88
+FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_AREA = 170
+FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_ABS_DELTA = 18.0
+FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_SIGNED_DELTA = 8.0
+FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_COMPONENTS = 4
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_FILL = 0.085
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_ASPECT = 2.15
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_AREA_RATIO = 0.006
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_COMPONENTS = 10
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_ABS_DELTA = 26.0
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_SIGNED_DELTA = 3.0
+FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_POLARITY_GAP = 5.0
 FAST_REVIEW_ROI_CONTAINMENT_TOLERANCE_RATIO = 0.025
 FAST_REVIEW_SCRATCH_CROSSHATCH_STAIN_MAX_RATIO = 0.72
 FAST_REVIEW_SCRATCH_CROSSHATCH_MIN_LINE_LENGTH = 74.0
@@ -268,6 +542,12 @@ FAST_REVIEW_BRIGHT_CROSSHATCH_MAX_FILL_RATIO = 0.30
 FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_STRONG_ANGLE_GROUPS = 5
 FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_STRONG_TOTAL_LENGTH = 260.0
 FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_STRONG_SLENDER_LINES = 3
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_LINES = 18
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_LOCAL_DELTA = 18.0
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_RATIO = 0.30
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_LENGTH_RATIO = 0.30
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_BLOB_RATIO = 0.34
+FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_FILL_RATIO = 0.14
 FAST_REVIEW_CENTER_CROSS_MIN_X_RATIO = 0.46
 FAST_REVIEW_CENTER_CROSS_MAX_X_RATIO = 0.66
 FAST_REVIEW_CENTER_CROSS_MIN_Y_RATIO = 0.30
@@ -282,6 +562,12 @@ FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA = 5.0
 FAST_REVIEW_CENTER_CROSS_MAX_BOX_AREA_RATIO = 0.20
 FAST_REVIEW_CENTER_CROSS_MAX_FILL_RATIO = 0.43
 FAST_REVIEW_CENTER_CROSS_MAX_VERTICAL_RATIO = 0.48
+FAST_REVIEW_CENTER_CROSS_NOISE_MAX_LOCAL_DELTA = 20.0
+FAST_REVIEW_CENTER_CROSS_NOISE_STRONG_MAX_LOCAL_DELTA = 34.0
+FAST_REVIEW_CENTER_CROSS_NOISE_MIN_DOMINANT_RATIO = 0.32
+FAST_REVIEW_CENTER_CROSS_NOISE_MIN_LONG_LINE_RATIO = 0.58
+FAST_REVIEW_CENTER_CROSS_NOISE_MAX_CANDIDATE_DENSITY = 0.34
+FAST_REVIEW_CENTER_CROSS_NOISE_MAX_EDGE_DENSITY = 0.008
 FAST_REVIEW_DARK_STAR_STAIN_MAX_BRIGHT_DELTA = 13.0
 FAST_REVIEW_DARK_STAR_STAIN_MIN_DARK_FRACTION = 0.34
 FAST_REVIEW_BLACK_STAIN_MIN_DARK_FRACTION = 0.22
@@ -353,13 +639,14 @@ YOLO_MISSING_MODEL_RECHECK_SECONDS = 2.0
 YOLO_FALLBACK_INPUT_SIZES = (416, 512, 320, 640)
 YOLO_ROI_INFERENCE_ENABLED = True
 YOLO_ROI_PADDING_RATIO = 0.18
-YOLO_ROI_MIN_SIZE_RATIO = 0.28
+YOLO_ROI_MIN_SIZE_RATIO = 0.08
 YOLO_ROI_MAX_AREA_RATIO = 0.70
 YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES = 8
 YOLO_AUTO_ROI_SIDE_CLIP_MARGIN_RATIO = 0.025
 YOLO_AUTO_ROI_EDGE_PARTIAL_SIZE_RATIO = 0.92
 YOLO_AUTO_ROI_MAX_CENTER_X_DRIFT_RATIO = 0.27
 YOLO_ROI_HIGH_RES_INPUT_SIZE = 640
+YOLO_SCRATCH_STRICT_LENS_MIN_OVERLAP = 0.28
 YOLO_LOW_CONFIDENCE_TILE_THRESHOLD = 0.34
 YOLO_TILE_OVERLAP_RATIO = 0.22
 YOLO_TILE_MIN_ROI_SIZE = 180
@@ -367,6 +654,8 @@ YOLO_TILE_MAX_TILES = 4
 YOLO_TILE_MERGE_IOU_THRESHOLD = 0.18
 YOLO_TILE_MERGE_CENTER_DISTANCE_RATIO = 0.32
 YOLO_TILE_MERGE_CONTAINMENT_THRESHOLD = 0.58
+YOLO_NEW_LENS_SCRATCH_MIN_CONFIDENCE = 0.50
+YOLO_NEW_LENS_STAIN_MIN_CONFIDENCE = 0.70
 
 SUPPORTED_DEFECT_TYPES = (
     "scratch",
@@ -457,27 +746,9 @@ DETECTION_MODE_CONFIGS = {
         yolo_model=DEFAULT_YOLO_SEG_MODEL if DEFAULT_YOLO_SEG_MODEL.exists() else DEFAULT_YOLO_MODEL,
         yolo_enabled_default=True,
     ),
-    "slide": DetectionModeConfig(
-        key="slide",
-        display_name="载玻片检测",
-        dataset_dir=DEFAULT_SLIDE_DATASET_DIR,
-        model_file=DEFAULT_SLIDE_MODEL,
-        labels_file=DEFAULT_SLIDE_LABELS,
-        training_summary=DEFAULT_SLIDE_SUMMARY,
-        deploy_model_name="slide_defect_classifier_int8.tflite",
-        deploy_labels_name="slide_defect_labels.txt",
-        capture_script="openmv/n6_usb_slide_capture.py",
-        classifier_script="openmv/n6_slide_classifier_main.py",
-        normal_result_text="合格",
-        track_status_name="载玻片定位",
-        stage2_model=DEFAULT_MODELS_DIR / "slide_stage2_anomaly.npz",
-        yolo_model=DEFAULT_SLIDE_YOLO_MODEL,
-        yolo_enabled_default=False,
-    ),
 }
 
-DETECTION_MODE_ORDER = ["lens", "slide"]
-DETECTION_MODE_DISPLAY_ORDER = [DETECTION_MODE_CONFIGS[key].display_name for key in DETECTION_MODE_ORDER]
+DETECTION_MODE_ORDER = ["lens"]
 DETECTION_MODE_BY_LABEL = {
     DETECTION_MODE_CONFIGS[key].display_name: key
     for key in DETECTION_MODE_ORDER
@@ -488,6 +759,17 @@ DETECTION_MODE_BY_LABEL = {
 class UiMessage:
     kind: str
     payload: object
+
+
+@dataclass
+class BluetoothDeviceCandidate:
+    name: str
+    address: str
+    port: str = ""
+    port_description: str = ""
+    connected: bool = False
+    remembered: bool = False
+    authenticated: bool = False
 
 
 def defect_type_name(value):
@@ -519,6 +801,223 @@ def detection_mode_label(value):
 
 def detection_mode_config(value):
     return DETECTION_MODE_CONFIGS[detection_mode_key(value)]
+
+
+def normalize_bluetooth_address(value):
+    text = (value or "").upper().replace(":", "").replace("-", "")
+    match = re.search(r"[0-9A-F]{12}", text)
+    return match.group(0) if match else ""
+
+
+def bluetooth_address_from_text(text):
+    text = (text or "").upper()
+    patterns = (
+        r"DEV_([0-9A-F]{12})",
+        r"BLUETOOTHDEVICE_([0-9A-F]{12})",
+        r"&([0-9A-F]{12})(?:_|&|\\|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return normalize_bluetooth_address(match.group(1))
+    return ""
+
+
+def bluetooth_serial_port_score(description):
+    text = (description or "").lower()
+    score = 0
+    if "标准串行" in description or "standard serial" in text:
+        score += 3
+    if "bluetooth" in text or "蓝牙" in description:
+        score += 2
+    if "serial" in text or "串行" in description:
+        score += 1
+    return score
+
+
+def bluetooth_serial_ports_by_address():
+    ports = {}
+    if list_ports is None:
+        return ports
+
+    for port in list_ports.comports():
+        parts = [
+            getattr(port, "device", "") or "",
+            getattr(port, "description", "") or "",
+            getattr(port, "hwid", "") or "",
+            getattr(port, "manufacturer", "") or "",
+        ]
+        combined = " ".join(parts)
+        combined_upper = combined.upper()
+        if "BTH" not in combined_upper and "BLUETOOTH" not in combined_upper and "蓝牙" not in combined:
+            continue
+
+        address = bluetooth_address_from_text(combined)
+        if not address or address == "000000000000":
+            continue
+
+        description = getattr(port, "description", "") or getattr(port, "device", "")
+        candidate = {
+            "port": getattr(port, "device", ""),
+            "description": description,
+        }
+        current = ports.get(address)
+        if current is None:
+            ports[address] = candidate
+            continue
+
+        current_score = bluetooth_serial_port_score(current.get("description", ""))
+        candidate_score = bluetooth_serial_port_score(description)
+        if candidate_score > current_score:
+            ports[address] = candidate
+
+    return ports
+
+
+def scan_bluetooth_device_candidates(issue_inquiry=True):
+    port_by_address = bluetooth_serial_ports_by_address()
+    devices = scan_windows_bluetooth_devices(issue_inquiry=issue_inquiry)
+    merged = {}
+
+    for device in devices:
+        key = device.address or device.name
+        if not key:
+            continue
+        port_info = port_by_address.get(device.address)
+        if port_info:
+            device.port = port_info.get("port", "")
+            device.port_description = port_info.get("description", "")
+        merged[key] = device
+
+    for address, port_info in port_by_address.items():
+        if address in merged:
+            continue
+        port_name = port_info.get("port", "")
+        merged[address] = BluetoothDeviceCandidate(
+            name="蓝牙串口设备 %s" % port_name if port_name else "蓝牙串口设备",
+            address=address,
+            port=port_name,
+            port_description=port_info.get("description", ""),
+            remembered=True,
+            authenticated=True,
+        )
+
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            0 if item.port else 1,
+            0 if item.authenticated or item.remembered else 1,
+            item.name.lower(),
+            item.address,
+        ),
+    )
+
+
+def scan_windows_bluetooth_devices(issue_inquiry=True):
+    if sys.platform != "win32" or not hasattr(ctypes, "WinDLL"):
+        return []
+
+    try:
+        from ctypes import wintypes
+    except Exception:
+        return []
+
+    bluetooth_max_name_size = 248
+
+    class SystemTime(ctypes.Structure):
+        _fields_ = [
+            ("wYear", wintypes.WORD),
+            ("wMonth", wintypes.WORD),
+            ("wDayOfWeek", wintypes.WORD),
+            ("wDay", wintypes.WORD),
+            ("wHour", wintypes.WORD),
+            ("wMinute", wintypes.WORD),
+            ("wSecond", wintypes.WORD),
+            ("wMilliseconds", wintypes.WORD),
+        ]
+
+    class BluetoothDeviceSearchParams(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("fReturnAuthenticated", wintypes.BOOL),
+            ("fReturnRemembered", wintypes.BOOL),
+            ("fReturnUnknown", wintypes.BOOL),
+            ("fReturnConnected", wintypes.BOOL),
+            ("fIssueInquiry", wintypes.BOOL),
+            ("cTimeoutMultiplier", ctypes.c_ubyte),
+            ("hRadio", wintypes.HANDLE),
+        ]
+
+    class BluetoothDeviceInfo(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("Address", ctypes.c_ulonglong),
+            ("ulClassofDevice", wintypes.ULONG),
+            ("fConnected", wintypes.BOOL),
+            ("fRemembered", wintypes.BOOL),
+            ("fAuthenticated", wintypes.BOOL),
+            ("stLastSeen", SystemTime),
+            ("stLastUsed", SystemTime),
+            ("szName", wintypes.WCHAR * bluetooth_max_name_size),
+        ]
+
+    try:
+        bluetooth_api = ctypes.WinDLL("BluetoothApis.dll")
+        find_first = bluetooth_api.BluetoothFindFirstDevice
+        find_first.argtypes = [
+            ctypes.POINTER(BluetoothDeviceSearchParams),
+            ctypes.POINTER(BluetoothDeviceInfo),
+        ]
+        find_first.restype = wintypes.HANDLE
+
+        find_next = bluetooth_api.BluetoothFindNextDevice
+        find_next.argtypes = [wintypes.HANDLE, ctypes.POINTER(BluetoothDeviceInfo)]
+        find_next.restype = wintypes.BOOL
+
+        close_find = bluetooth_api.BluetoothFindDeviceClose
+        close_find.argtypes = [wintypes.HANDLE]
+        close_find.restype = wintypes.BOOL
+    except Exception:
+        return []
+
+    params = BluetoothDeviceSearchParams()
+    params.dwSize = ctypes.sizeof(params)
+    params.fReturnAuthenticated = True
+    params.fReturnRemembered = True
+    params.fReturnUnknown = True
+    params.fReturnConnected = True
+    params.fIssueInquiry = bool(issue_inquiry)
+    params.cTimeoutMultiplier = 4 if issue_inquiry else 1
+    params.hRadio = None
+
+    devices = []
+    info = BluetoothDeviceInfo()
+    info.dwSize = ctypes.sizeof(info)
+    handle = find_first(ctypes.byref(params), ctypes.byref(info))
+    if not handle:
+        return devices
+
+    try:
+        while True:
+            address = "%012X" % int(info.Address)
+            name = (info.szName or "").strip()
+            if not name:
+                name = "未知蓝牙设备 %s" % address[-6:]
+            devices.append(BluetoothDeviceCandidate(
+                name=name,
+                address=address,
+                connected=bool(info.fConnected),
+                remembered=bool(info.fRemembered),
+                authenticated=bool(info.fAuthenticated),
+            ))
+            info = BluetoothDeviceInfo()
+            info.dwSize = ctypes.sizeof(info)
+            if not find_next(handle, ctypes.byref(info)):
+                break
+    finally:
+        close_find(handle)
+
+    return devices
 
 
 def now_text():
@@ -1490,7 +1989,7 @@ class SerialLineReader:
             self.ui_queue.put(UiMessage("status", line))
 
 
-class MicrocontrollerSerialClient:
+class BluetoothSerialClient:
     def __init__(self):
         self.serial_port = None
         self.port_name = ""
@@ -1523,7 +2022,7 @@ class MicrocontrollerSerialClient:
 
     def send_line(self, line):
         if not self.connected:
-            raise RuntimeError("单片机串口未连接。")
+            raise RuntimeError("蓝牙模块未连接。")
         payload = (line.strip() + "\n").encode("utf-8")
         self.serial_port.write(payload)
         self.serial_port.flush()
@@ -1591,7 +2090,7 @@ class LensDefectHostApp:
 
         self.ui_queue = queue.Queue()
         self.reader = SerialLineReader(self.ui_queue)
-        self.mcu_client = MicrocontrollerSerialClient()
+        self.bluetooth_client = BluetoothSerialClient()
         self.history_records = []
         self.auto_capture_running = False
         self.latest_detection_result = None
@@ -1601,16 +2100,26 @@ class LensDefectHostApp:
         self.stage2_model_mtime = None
         self.yolo_detector = None
         self.yolo_model_path = None
+        self.yolo_new_lens_scratch_detector = None
+        self.yolo_new_lens_scratch_model_path = None
+        self.yolo_new_lens_stain_detector = None
+        self.yolo_new_lens_stain_model_path = None
         self.yolo_missing_checked_at = 0.0
         self.yolo_missing_signature = None
         self.last_yolo_infer_time = 0.0
         self.last_yolo_payload_key = None
         self.yolo_roi_miss_count = 0
+        self.lens_presence_payload_key = None
+        self.lens_presence_result = None
         self.last_stage2_infer_time = 0.0
         self.last_fast_review_time = 0.0
         self.last_fast_review_key = None
         self.fast_review_candidate = None
         self.fast_review_candidate_count = 0
+        self.micro_bright_stain_candidate = None
+        self.micro_bright_stain_candidate_count = 0
+        self.micro_dark_stain_candidate = None
+        self.micro_dark_stain_candidate_count = 0
         self.last_pc_defect_result = None
         self.last_pc_defect_time = 0.0
         self.last_black_stain_result = None
@@ -1636,12 +2145,15 @@ class LensDefectHostApp:
         self.port_var = tk.StringVar()
         self.object_mode_var = tk.StringVar(value=active_mode.display_name)
         self.baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
-        self.mcu_port_var = tk.StringVar()
-        self.mcu_baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
-        self.mcu_auto_send_var = tk.BooleanVar(value=True)
-        self.mcu_status_var = tk.StringVar(value="单片机：未连接")
-        self.last_mcu_send_key = None
-        self.last_mcu_send_time = 0.0
+        self.bluetooth_device_var = tk.StringVar()
+        self.bluetooth_baud_var = tk.StringVar(value=DEFAULT_BAUDRATE)
+        self.bluetooth_auto_send_var = tk.BooleanVar(value=True)
+        self.bluetooth_status_var = tk.StringVar(value="蓝牙模块：未连接")
+        self.bluetooth_device_by_label = {}
+        self.bluetooth_scan_running = False
+        self.connected_bluetooth_name = ""
+        self.last_bluetooth_send_key = None
+        self.last_bluetooth_send_time = 0.0
         self.status_var = tk.StringVar(value="状态：未连接")
         self.stage2_enabled_var = tk.BooleanVar(value=False)
         self.stage2_model_var = tk.StringVar(value=str(active_mode.stage2_model))
@@ -1651,7 +2163,7 @@ class LensDefectHostApp:
         self.yolo_status_var = tk.StringVar(value="YOLO：未加载；无模型时用电脑快速复核兜底")
         self.yolo_high_res_roi_var = tk.BooleanVar(value=True)
         self.yolo_low_conf_tile_var = tk.BooleanVar(value=True)
-        self.conveyor_center_gate_var = tk.BooleanVar(value=True)
+        self.conveyor_center_gate_var = tk.BooleanVar(value=False)
         self.low_latency_mode_var = tk.BooleanVar(value=True)
         self.conveyor_centered_count = 0
         self.conveyor_fusion_results = []
@@ -1731,14 +2243,10 @@ class LensDefectHostApp:
         self.model_file_var.set(state["model_file"] or str(config.model_file))
         self.labels_file_var.set(state["labels_file"] or str(config.labels_file))
 
-        if self.mode_uses_lens_postprocess():
-            self.stage2_status_var.set("高速复核：镜片模式可用，按需加载二级模型")
-            self.yolo_status_var.set("YOLO：镜片模式可用，按需加载 ONNX 或使用快速复核")
-            self.root.after(80, self.preload_yolo_model)
-            self.root.after(160, self.preload_stage2_model)
-        else:
-            self.stage2_status_var.set("载玻片模式：保留 OpenMV 原始 JSON 显示，不启用镜片二级复核")
-            self.yolo_status_var.set("载玻片模式：保留 OpenMV 原始 JSON 显示，不启用镜片 YOLO 复核")
+        self.stage2_status_var.set("高速复核：镜片模式可用，按需加载二级模型")
+        self.yolo_status_var.set("YOLO：镜片模式可用，按需加载 ONNX 或使用快速复核")
+        self.root.after(80, self.preload_yolo_model)
+        self.root.after(160, self.preload_stage2_model)
 
         if reset_runtime:
             self.reset_mode_runtime_state()
@@ -1751,6 +2259,10 @@ class LensDefectHostApp:
         self.last_fast_review_key = None
         self.fast_review_candidate = None
         self.fast_review_candidate_count = 0
+        self.micro_bright_stain_candidate = None
+        self.micro_bright_stain_candidate_count = 0
+        self.micro_dark_stain_candidate = None
+        self.micro_dark_stain_candidate_count = 0
         self.last_pc_defect_result = None
         self.last_pc_defect_time = 0.0
         self.last_black_stain_result = None
@@ -1758,6 +2270,8 @@ class LensDefectHostApp:
         self.stable_detection_result = None
         self.pending_detection_class = None
         self.pending_detection_count = 0
+        self.lens_presence_payload_key = None
+        self.lens_presence_result = None
         self.conveyor_centered_count = 0
         self.conveyor_fusion_results = []
         self.conveyor_workpiece_payload_key = None
@@ -1810,17 +2324,6 @@ class LensDefectHostApp:
             values=("9600", "19200", "38400", "57600", "115200", "921600"),
         )
         self.baud_combo.pack(side=tk.LEFT, padx=(8, 12))
-
-        ttk.Label(serial_frame, text="检测对象").pack(side=tk.LEFT)
-        self.object_mode_combo = ttk.Combobox(
-            serial_frame,
-            textvariable=self.object_mode_var,
-            width=14,
-            values=DETECTION_MODE_DISPLAY_ORDER,
-            state="readonly",
-        )
-        self.object_mode_combo.pack(side=tk.LEFT, padx=(8, 12))
-        self.object_mode_combo.bind("<<ComboboxSelected>>", self.on_mode_changed)
 
         ttk.Button(serial_frame, text="刷新串口", command=self.refresh_ports).pack(side=tk.LEFT, padx=4)
         ttk.Label(serial_frame, text="提示：OpenMV N6 USB 连接电脑后会出现一个 COM 口").pack(side=tk.LEFT, padx=12)
@@ -1911,6 +2414,7 @@ class LensDefectHostApp:
             yolo_opt_frame,
             text="传送带中心触发",
             variable=self.conveyor_center_gate_var,
+            state=tk.DISABLED,
         ).pack(side=tk.LEFT, padx=(18, 4))
         ttk.Checkbutton(
             yolo_opt_frame,
@@ -1933,31 +2437,32 @@ class LensDefectHostApp:
             command=lambda: self.save_live_correction("normal"),
         ).pack(side=tk.LEFT, padx=4)
 
-        mcu_frame = ttk.LabelFrame(self.detect_tab, text="单片机输出", padding=6)
-        mcu_frame.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(mcu_frame, text="COM 口").pack(side=tk.LEFT)
-        self.mcu_port_combo = ttk.Combobox(
-            mcu_frame,
-            textvariable=self.mcu_port_var,
-            width=28,
+        bluetooth_frame = ttk.LabelFrame(self.detect_tab, text="蓝牙模块通讯", padding=6)
+        bluetooth_frame.pack(fill=tk.X, pady=(6, 0))
+        bluetooth_top_frame = ttk.Frame(bluetooth_frame)
+        bluetooth_top_frame.pack(fill=tk.X)
+        ttk.Label(bluetooth_top_frame, text="蓝牙设备").pack(side=tk.LEFT)
+        self.bluetooth_device_combo = ttk.Combobox(
+            bluetooth_top_frame,
+            textvariable=self.bluetooth_device_var,
+            width=32,
             state="readonly",
         )
-        self.mcu_port_combo.pack(side=tk.LEFT, padx=(8, 10))
-        ttk.Label(mcu_frame, text="波特率").pack(side=tk.LEFT)
-        ttk.Combobox(
-            mcu_frame,
-            textvariable=self.mcu_baud_var,
-            width=10,
-            values=("9600", "19200", "38400", "57600", "115200", "921600"),
-        ).pack(side=tk.LEFT, padx=(8, 10))
-        ttk.Button(mcu_frame, text="连接单片机", command=self.connect_mcu).pack(side=tk.LEFT, padx=4)
-        ttk.Button(mcu_frame, text="断开", command=self.disconnect_mcu).pack(side=tk.LEFT, padx=4)
+        self.bluetooth_device_combo.pack(side=tk.LEFT, padx=(8, 8))
+        self.bluetooth_scan_button = ttk.Button(
+            bluetooth_top_frame,
+            text="扫描蓝牙",
+            command=self.start_bluetooth_scan,
+        )
+        self.bluetooth_scan_button.pack(side=tk.LEFT, padx=4)
+        ttk.Button(bluetooth_top_frame, text="连接蓝牙模块", command=self.connect_bluetooth).pack(side=tk.LEFT, padx=4)
+        ttk.Button(bluetooth_top_frame, text="断开", command=self.disconnect_bluetooth).pack(side=tk.LEFT, padx=4)
         ttk.Checkbutton(
-            mcu_frame,
+            bluetooth_top_frame,
             text="自动发送结果",
-            variable=self.mcu_auto_send_var,
+            variable=self.bluetooth_auto_send_var,
         ).pack(side=tk.LEFT, padx=(12, 4))
-        ttk.Label(mcu_frame, textvariable=self.mcu_status_var, style="Status.TLabel").pack(side=tk.LEFT, padx=8)
+        ttk.Label(bluetooth_frame, textvariable=self.bluetooth_status_var, style="Status.TLabel").pack(fill=tk.X, pady=(6, 0))
 
         live_frame = ttk.LabelFrame(self.detect_tab, text="OpenMV 实时画面", padding=6)
         live_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
@@ -2187,9 +2692,9 @@ class LensDefectHostApp:
         self._set_text(
             self.capture_log_text,
             "操作步骤：\n"
-            "1. 眼镜片采集运行 openmv/n6_usb_image_capture.py；载玻片采集运行 openmv/n6_usb_slide_capture.py。\n"
+            "1. 眼镜片采集运行 openmv/n6_usb_image_capture.py。\n"
             "2. 关闭 OpenMV IDE 串口占用，或确保上位机能打开 N6 的 COM 口。\n"
-            "3. 在上方切换检测对象后，再开始采集并保存到对应数据集目录。",
+            "3. 开始采集并保存到眼镜片数据集目录。",
         )
 
     def _create_train_tab(self):
@@ -2237,9 +2742,8 @@ class LensDefectHostApp:
         script_frame = ttk.LabelFrame(self.train_tab, text="N6 端脚本提示", padding=10)
         script_frame.pack(fill=tk.X)
         text = (
-            "眼镜片采集：openmv/n6_usb_image_capture.py；载玻片采集：openmv/n6_usb_slide_capture.py。\n"
+            "眼镜片采集：openmv/n6_usb_image_capture.py。\n"
             "眼镜片模型检测：openmv/n6_classifier_main.py，会加载 /lens_defect_classifier_int8.tflite 和 /lens_defect_labels.txt。\n"
-            "载玻片模型检测：openmv/n6_slide_classifier_main.py，会加载 /slide_defect_classifier_int8.tflite 和 /slide_defect_labels.txt。\n"
             "如果模型较大，建议之后加一张 32GB microSD，把模型放 /sd/ 目录。"
         )
         ttk.Label(script_frame, text=text, wraplength=1000).pack(anchor="w")
@@ -2267,8 +2771,6 @@ class LensDefectHostApp:
             ports.append("%s - %s" % (port.device, port.description))
 
         self.port_combo["values"] = ports
-        if hasattr(self, "mcu_port_combo"):
-            self.mcu_port_combo["values"] = ports
         if ports and not self.port_var.get():
             preferred = [
                 item for item in ports
@@ -2278,18 +2780,88 @@ class LensDefectHostApp:
             self.status_var.set("状态：找到 %d 个串口，请选择 OpenMV N6 对应 COM 口" % len(ports))
         elif not ports:
             self.port_var.set("")
-            if hasattr(self, "mcu_port_var"):
-                self.mcu_port_var.set("")
             self.status_var.set("状态：未找到串口。请用 USB 连接 OpenMV N6")
             self.live_image_var.set("OpenMV 画面：未找到串口，请连接 N6 后点击“刷新串口”")
-        if ports and hasattr(self, "mcu_port_var") and not self.mcu_port_var.get():
-            openmv_port = self.port_var.get().split(" - ", 1)[0].strip()
-            mcu_candidates = [
-                item for item in ports
-                if item.split(" - ", 1)[0].strip() != openmv_port
+
+    def start_bluetooth_scan(self):
+        if self.bluetooth_scan_running:
+            return
+        self.bluetooth_scan_running = True
+        self.bluetooth_status_var.set("蓝牙模块：正在扫描附近蓝牙设备...")
+        if hasattr(self, "bluetooth_scan_button"):
+            self.bluetooth_scan_button.configure(state=tk.DISABLED)
+        thread = threading.Thread(target=self._bluetooth_scan_worker, daemon=True)
+        thread.start()
+
+    def _bluetooth_scan_worker(self):
+        try:
+            devices = scan_bluetooth_device_candidates(issue_inquiry=True)
+        except Exception as exc:
+            self.ui_queue.put(UiMessage("bluetooth_scan_error", str(exc)))
+            return
+        self.ui_queue.put(UiMessage("bluetooth_scan_done", devices))
+
+    def format_bluetooth_device_label(self, device):
+        status_parts = []
+        if device.port:
+            status_parts.append("可连接")
+        elif device.authenticated or device.remembered:
+            status_parts.append("已配对，未发现串口")
+        else:
+            status_parts.append("未配对")
+        if device.connected:
+            status_parts.append("已连接")
+        return "%s（%s）" % (device.name, "，".join(status_parts))
+
+    def apply_bluetooth_scan_results(self, devices):
+        self.bluetooth_scan_running = False
+        if hasattr(self, "bluetooth_scan_button"):
+            self.bluetooth_scan_button.configure(state=tk.NORMAL)
+
+        previous = self.bluetooth_device_var.get().strip()
+        self.bluetooth_device_by_label = {}
+        labels = []
+        for device in devices:
+            label = self.format_bluetooth_device_label(device)
+            if label in self.bluetooth_device_by_label and device.address:
+                label = "%s 地址%s" % (label, device.address[-4:])
+            self.bluetooth_device_by_label[label] = device
+            labels.append(label)
+
+        if hasattr(self, "bluetooth_device_combo"):
+            self.bluetooth_device_combo["values"] = labels
+
+        if not labels:
+            self.bluetooth_device_var.set("")
+            self.bluetooth_status_var.set("蓝牙模块：未扫描到设备，请确认蓝牙模块已上电并处于可发现状态")
+            return
+
+        if previous in self.bluetooth_device_by_label:
+            self.bluetooth_device_var.set(previous)
+        else:
+            ready_labels = [
+                label for label, device in self.bluetooth_device_by_label.items()
+                if device.port
             ]
-            if len(mcu_candidates) == 1:
-                self.mcu_port_var.set(mcu_candidates[0])
+            self.bluetooth_device_var.set(ready_labels[0] if ready_labels else labels[0])
+
+        ready_count = sum(1 for device in devices if device.port)
+        if ready_count:
+            self.bluetooth_status_var.set(
+                "蓝牙模块：扫描到 %d 个设备，%d 个可直接连接，请选择模块后点击连接"
+                % (len(devices), ready_count)
+            )
+        else:
+            self.bluetooth_status_var.set(
+                "蓝牙模块：扫描到 %d 个设备，但未发现蓝牙串口；请先在 Windows 蓝牙设置中配对模块"
+                % len(devices)
+            )
+
+    def apply_bluetooth_scan_error(self, message):
+        self.bluetooth_scan_running = False
+        if hasattr(self, "bluetooth_scan_button"):
+            self.bluetooth_scan_button.configure(state=tk.NORMAL)
+        self.bluetooth_status_var.set("蓝牙模块：扫描失败：%s" % message)
 
     def selected_port(self):
         selected = self.port_var.get().strip()
@@ -2302,82 +2874,90 @@ class LensDefectHostApp:
         int(baudrate)
         return baudrate
 
-    def selected_mcu_port(self):
-        selected = self.mcu_port_var.get().strip()
+    def selected_bluetooth_device(self):
+        selected = self.bluetooth_device_var.get().strip()
         if not selected:
-            raise RuntimeError("请先选择单片机 COM 口。")
-        port = selected.split(" - ", 1)[0].strip()
+            raise RuntimeError("请先点击“扫描蓝牙”，选择要连接的蓝牙模块。")
+        device = self.bluetooth_device_by_label.get(selected)
+        if device is None:
+            raise RuntimeError("蓝牙设备列表已过期，请重新点击“扫描蓝牙”。")
+        if not device.port:
+            raise RuntimeError(
+                "已扫描到 %s，但 Windows 还没有为它创建蓝牙串口。\n\n"
+                "请先在 Windows 蓝牙设置里配对该模块，配对完成后回到上位机重新扫描。"
+                % device.name
+            )
+        return device
+
+    def selected_bluetooth_port(self):
+        device = self.selected_bluetooth_device()
+        port = device.port
         openmv_port = self.port_var.get().split(" - ", 1)[0].strip()
         if openmv_port and port == openmv_port:
-            raise RuntimeError("单片机 COM 口不能和 OpenMV 接收口相同，请选择另一个串口。")
+            raise RuntimeError("蓝牙模块端口不能和 OpenMV N6 接收口相同，请重新扫描并选择蓝牙模块。")
         return port
 
-    def selected_mcu_baudrate(self):
-        baudrate = self.mcu_baud_var.get().strip()
+    def selected_bluetooth_baudrate(self):
+        baudrate = self.bluetooth_baud_var.get().strip()
         int(baudrate)
         return baudrate
 
-    def connect_mcu(self):
+    def connect_bluetooth(self):
         try:
-            port = self.selected_mcu_port()
-            baudrate = self.selected_mcu_baudrate()
-            self.mcu_client.connect(port, baudrate)
+            device = self.selected_bluetooth_device()
+            port = self.selected_bluetooth_port()
+            baudrate = self.selected_bluetooth_baudrate()
+            self.bluetooth_client.connect(port, baudrate)
         except Exception as exc:
-            messagebox.showerror("单片机连接失败", str(exc))
-            self.mcu_status_var.set("单片机：连接失败")
+            messagebox.showerror("蓝牙模块连接失败", str(exc))
+            self.bluetooth_status_var.set("蓝牙模块：连接失败")
             return
-        self.last_mcu_send_key = None
-        self.last_mcu_send_time = 0.0
-        self.mcu_status_var.set("单片机：已连接 %s，等待识别结果" % port)
+        self.connected_bluetooth_name = device.name
+        self.last_bluetooth_send_key = None
+        self.last_bluetooth_send_time = 0.0
+        self.bluetooth_status_var.set("蓝牙模块：已连接 %s，等待识别结果" % device.name)
 
-    def disconnect_mcu(self):
-        self.mcu_client.disconnect()
-        self.last_mcu_send_key = None
-        self.last_mcu_send_time = 0.0
-        self.mcu_status_var.set("单片机：已断开")
+    def disconnect_bluetooth(self):
+        self.bluetooth_client.disconnect()
+        self.connected_bluetooth_name = ""
+        self.last_bluetooth_send_key = None
+        self.last_bluetooth_send_time = 0.0
+        self.bluetooth_status_var.set("蓝牙模块：已断开")
 
-    def format_mcu_result_line(self, class_key, confidence):
-        code = {
-            "normal": "NORMAL",
-            "scratch": "SCRATCH",
-            "stain": "STAIN",
-            "error": "ERROR",
-        }.get(class_key, "UNKNOWN")
-        ok_flag = 1 if class_key == "normal" else 0
-        confidence_percent = 0
-        if confidence is not None:
-            try:
-                confidence_value = float(confidence)
-                if confidence_value <= 1.0:
-                    confidence_value *= 100.0
-                confidence_percent = max(0, min(100, int(round(confidence_value))))
-            except (TypeError, ValueError):
-                confidence_percent = 0
-        return "RESULT,%s,%d,%d" % (code, ok_flag, confidence_percent)
+    def format_bluetooth_result_line(self, class_key):
+        return {
+            "normal": "正常",
+            "scratch": "划痕",
+            "stain": "污渍",
+        }.get(class_key, "")
 
-    def maybe_send_mcu_result(self, result):
-        if not self.mcu_auto_send_var.get() or not self.mcu_client.connected:
+    def maybe_send_bluetooth_result(self, result):
+        if not self.bluetooth_auto_send_var.get() or not self.bluetooth_client.connected:
             return
         if isinstance(result, dict) and result.get("conveyor_waiting"):
             return
-        class_key, _class_text, confidence = self.display_class_result(result)
-        line = self.format_mcu_result_line(class_key, confidence)
+        if isinstance(result, dict) and result.get("no_lens"):
+            return
+        class_key, _class_text, _confidence = self.display_class_result(result)
+        line = self.format_bluetooth_result_line(class_key)
+        if not line:
+            return
         now = time.monotonic()
         send_key = line
         if (
-            send_key == self.last_mcu_send_key
-            and now - self.last_mcu_send_time < MCU_SEND_MIN_INTERVAL_SECONDS
+            send_key == self.last_bluetooth_send_key
+            and now - self.last_bluetooth_send_time < BLUETOOTH_SEND_MIN_INTERVAL_SECONDS
         ):
             return
         try:
-            self.mcu_client.send_line(line)
+            self.bluetooth_client.send_line(line)
         except Exception as exc:
-            self.mcu_client.disconnect()
-            self.mcu_status_var.set("单片机：发送失败，已断开：%s" % exc)
+            self.bluetooth_client.disconnect()
+            self.bluetooth_status_var.set("蓝牙模块：发送失败，已断开：%s" % exc)
             return
-        self.last_mcu_send_key = send_key
-        self.last_mcu_send_time = now
-        self.mcu_status_var.set("单片机：已发送 %s" % line)
+        self.last_bluetooth_send_key = send_key
+        self.last_bluetooth_send_time = now
+        self.bluetooth_status_var.set("蓝牙模块：已发送 %s" % line)
 
     def start_receive(self):
         if self.reader.running:
@@ -2951,7 +3531,7 @@ class LensDefectHostApp:
                 script,
                 dataset_dir,
                 DEFAULT_MODELS_DIR,
-                "lens_defect" if mode_config.key == "lens" else "slide_defect",
+                "lens_defect",
                 mode_config.training_summary.name,
             )
         )
@@ -2959,9 +3539,6 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开%s训练命令窗口" % mode_config.display_name)
 
     def run_yolo_seed_export_script(self):
-        if not self.mode_uses_lens_postprocess():
-            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 种子导出。")
-            return
         script = find_yolo_seed_export_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/export_yolo_seed_labels.py")
@@ -2978,9 +3555,6 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO 初始标注生成窗口")
 
     def run_yolo_training_script(self):
-        if not self.mode_uses_lens_postprocess():
-            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 训练。")
-            return
         script = find_yolo_training_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/train_yolo_from_seed.py")
@@ -2997,9 +3571,6 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO ONNX 训练窗口")
 
     def run_yolo_seg_training_script(self):
-        if not self.mode_uses_lens_postprocess():
-            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO-seg 训练。")
-            return
         script = find_yolo_training_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/train_yolo_from_seed.py")
@@ -3016,9 +3587,6 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO-seg ONNX 训练窗口")
 
     def run_yolo_preview_script(self):
-        if not self.mode_uses_lens_postprocess():
-            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO 标注预览。")
-            return
         script = find_yolo_preview_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/preview_yolo_seed_labels.py")
@@ -3036,9 +3604,6 @@ class LensDefectHostApp:
         self.status_var.set("状态：已打开 YOLO 标注预览生成窗口")
 
     def run_yolo_seg_seed_export_script(self):
-        if not self.mode_uses_lens_postprocess():
-            messagebox.showinfo("提示", "载玻片模式当前复用分类训练流程，不启用镜片 YOLO-seg 标注导出。")
-            return
         script = find_yolo_seed_export_script()
         if script is None:
             messagebox.showerror("找不到脚本", "未找到 training/export_yolo_seed_labels.py")
@@ -3192,6 +3757,40 @@ class LensDefectHostApp:
         self.yolo_status_var.set("YOLO：已加载 %s（%s）" % (path.name, self.yolo_detector.task))
         return self.yolo_detector
 
+    def get_yolo_new_lens_scratch_detector(self, force_reload=False):
+        if not self.yolo_enabled_var.get():
+            return None
+        path = DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL
+        if not path.exists():
+            self.yolo_new_lens_scratch_detector = None
+            self.yolo_new_lens_scratch_model_path = None
+            return None
+        if (
+            force_reload
+            or self.yolo_new_lens_scratch_detector is None
+            or self.yolo_new_lens_scratch_model_path != path
+        ):
+            self.yolo_new_lens_scratch_detector = YoloOnnxDetector(path, DEFAULT_YOLO_LABELS)
+            self.yolo_new_lens_scratch_model_path = path
+        return self.yolo_new_lens_scratch_detector
+
+    def get_yolo_new_lens_stain_detector(self, force_reload=False):
+        if not self.yolo_enabled_var.get():
+            return None
+        path = DEFAULT_YOLO_NEW_LENS_STAIN_MODEL
+        if not path.exists():
+            self.yolo_new_lens_stain_detector = None
+            self.yolo_new_lens_stain_model_path = None
+            return None
+        if (
+            force_reload
+            or self.yolo_new_lens_stain_detector is None
+            or self.yolo_new_lens_stain_model_path != path
+        ):
+            self.yolo_new_lens_stain_detector = YoloOnnxDetector(path, DEFAULT_YOLO_LABELS)
+            self.yolo_new_lens_stain_model_path = path
+        return self.yolo_new_lens_stain_detector
+
     def load_stage2_model_from_ui(self):
         try:
             model = self.get_stage2_model(force_reload=True)
@@ -3303,6 +3902,10 @@ class LensDefectHostApp:
                 self.apply_capture_result(message.payload)
             elif message.kind == "live_image":
                 latest_live_payload = message.payload
+            elif message.kind == "bluetooth_scan_done":
+                self.apply_bluetooth_scan_results(message.payload)
+            elif message.kind == "bluetooth_scan_error":
+                self.apply_bluetooth_scan_error(str(message.payload))
 
         if latest_live_payload is not None:
             self.update_live_image(latest_live_payload)
@@ -3321,18 +3924,22 @@ class LensDefectHostApp:
 
         result = self.normalize_detection_result(result)
         if self.mode_uses_lens_postprocess():
-            result = self.final_filter_result_for_current_image(
-                result,
-                self.latest_live_image_payload,
-                clear_recent=False,
-            )
-            result = self.merge_recent_pc_defect_result(result)
-            result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
+            result = self.apply_no_lens_guard_to_result(result, self.latest_live_image_payload)
+            if not result.get("no_lens"):
+                result = self.final_filter_result_for_current_image(
+                    result,
+                    self.latest_live_image_payload,
+                    clear_recent=False,
+                )
+                result = self.merge_recent_pc_defect_result(result)
+                result = self.final_filter_result_for_current_image(result, self.latest_live_image_payload)
         result = self.stabilize_detection_result(result)
         self.update_result_ui(result)
         final_result = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else result
         if final_result.get("conveyor_waiting"):
             self.status_var.set("状态：等待工件进入中心检测区")
+        elif final_result.get("no_lens"):
+            self.status_var.set("状态：未检测到镜片")
         elif final_result.get("error"):
             self.add_history(final_result, raw_line)
             self.status_var.set("状态：OpenMV 错误：%s" % final_result.get("error"))
@@ -3354,6 +3961,14 @@ class LensDefectHostApp:
             clean_result["defect_count"] = 0
             clean_result["has_defect"] = False
             clean_result["overall_level"] = "error"
+            return clean_result
+        if result.get("no_lens"):
+            clean_result["defects"] = []
+            clean_result["summary"] = {defect_type: 0 for defect_type in SUMMARY_TYPES}
+            clean_result["defect_count"] = 0
+            clean_result["has_defect"] = False
+            clean_result["overall_level"] = "normal"
+            clean_result["no_lens"] = True
             return clean_result
 
         source_defects = result.get("defects") or []
@@ -3391,10 +4006,459 @@ class LensDefectHostApp:
         clean_result["overall_level"] = overall_level
         return clean_result
 
+    def apply_no_lens_guard_to_result(self, result, payload):
+        if not isinstance(result, dict) or result.get("error"):
+            return result
+        if result.get("no_lens"):
+            self.clear_detection_memory_for_no_lens()
+            return self.normalize_detection_result(result)
+
+        image = self.image_from_live_payload(payload)
+        if image is not None:
+            presence = self.live_lens_presence_for_image(image, payload)
+            if not presence.get("found", True):
+                no_lens = self.no_lens_result_for_image(
+                    image,
+                    payload,
+                    result,
+                    reason=str(presence.get("reason", "no_lens_presence_guard")),
+                    presence=presence,
+                )
+                self.clear_detection_memory_for_no_lens()
+                return no_lens
+            return result
+
+        lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
+        if isinstance(lens, dict) and lens.get("found") is False:
+            no_lens = self.no_lens_result_for_image(
+                None,
+                payload,
+                result,
+                reason="lens_reported_missing",
+                presence={"found": False, "reason": "lens_reported_missing"},
+            )
+            self.clear_detection_memory_for_no_lens()
+            return no_lens
+        return result
+
+    def image_from_live_payload(self, payload):
+        if Image is None or not isinstance(payload, dict):
+            return None
+        image_bytes = payload.get("image_bytes")
+        if not image_bytes:
+            return None
+        try:
+            with Image.open(BytesIO(image_bytes)) as image:
+                return image.convert("RGB")
+        except Exception:
+            return None
+
+    def lens_presence_payload_key_for_image(self, image, payload):
+        if isinstance(payload, dict):
+            receive_time = payload.get("receive_time", "")
+            byte_count = payload.get("byte_count", "")
+            if receive_time or byte_count:
+                return "%s:%s" % (receive_time, byte_count)
+        if image is None:
+            return None
+        return "image:%s:%s:%s" % (image.width, image.height, id(image))
+
+    def live_lens_presence_for_image(self, image, payload=None):
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        if (
+            payload_key is not None
+            and payload_key == self.lens_presence_payload_key
+            and isinstance(self.lens_presence_result, dict)
+        ):
+            return dict(self.lens_presence_result)
+
+        presence = self.detect_lens_presence_from_image(image)
+        if payload_key is not None:
+            self.lens_presence_payload_key = payload_key
+            self.lens_presence_result = dict(presence)
+        return presence
+
+    def detect_lens_presence_from_image(self, image):
+        if cv2 is None or np is None or image is None:
+            return {"found": True, "reason": "vision_unavailable"}
+        image_w, image_h = image.size
+        if image_w <= 0 or image_h <= 0:
+            return {"found": True, "reason": "invalid_image_size"}
+
+        precise_roi = self.detect_precise_lens_roi_from_image(image)
+        if precise_roi is not None:
+            return {
+                "found": True,
+                "reason": str(precise_roi.get("source", "precise_lens_presence")),
+                "roi": precise_roi,
+            }
+
+        return {"found": False, "reason": "no_lens_like_region"}
+
+    def detect_precise_lens_roi_from_image(self, image):
+        round_roi = self.detect_round_lens_roi_from_image(image)
+        if round_roi is not None and self.lens_presence_roi_is_precise(image, round_roi):
+            return round_roi
+
+        contour_roi = self.detect_lens_roi_from_image(image)
+        if self.lens_presence_roi_is_precise(image, contour_roi):
+            contour_roi["source"] = "pc_lens_contour_presence"
+            return contour_roi
+
+        return None
+
+    def lens_presence_roi_is_precise(self, image, roi):
+        if image is None:
+            return False
+        image_w, image_h = image.size
+        roi = self.valid_roi_or_none(roi, image_w, image_h)
+        if roi is None or self.roi_is_full_frame(roi, image_w, image_h):
+            return False
+
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        frame_area = float(max(1, image_w * image_h))
+        area_ratio = float(w * h) / frame_area
+        if (
+            area_ratio < LENS_PRESENCE_PRECISE_MIN_AREA_RATIO
+            or area_ratio > LENS_PRESENCE_PRECISE_MAX_AREA_RATIO
+        ):
+            return False
+        if w > int(image_w * LENS_PRESENCE_PRECISE_MAX_WIDTH_RATIO):
+            return False
+        if h > int(image_h * LENS_PRESENCE_PRECISE_MAX_HEIGHT_RATIO):
+            return False
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if aspect_ratio > LENS_PRESENCE_PRECISE_MAX_ASPECT_RATIO:
+            return False
+
+        center_x = (x + w / 2.0) / float(max(1, image_w))
+        center_y = (y + h / 2.0) / float(max(1, image_h))
+        if center_x < 0.08 or center_x > 0.92 or center_y < 0.06 or center_y > 0.94:
+            return False
+
+        metrics = self.lens_presence_edge_metrics(image, roi)
+        if (
+            metrics["edge_density"] < LENS_PRESENCE_MIN_EDGE_DENSITY * 1.15
+            and metrics["contrast_ratio"] < 0.010
+        ):
+            return False
+        if (
+            metrics["side_edge_fraction"] > 0.88
+            and metrics["center_edge_density"] < LENS_PRESENCE_MIN_EDGE_DENSITY * 1.25
+        ):
+            return False
+        return True
+
+    def lens_presence_roi_is_valid(self, image, roi):
+        if image is None:
+            return False
+        image_w, image_h = image.size
+        roi = self.valid_roi_or_none(roi, image_w, image_h)
+        if roi is None or self.roi_is_full_frame(roi, image_w, image_h):
+            return False
+
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        frame_area = float(max(1, image_w * image_h))
+        area_ratio = float(w * h) / frame_area
+        if area_ratio < LENS_PRESENCE_MIN_AREA_RATIO or area_ratio > LENS_PRESENCE_MAX_AREA_RATIO:
+            return False
+        if w < int(image_w * LENS_PRESENCE_MIN_WIDTH_RATIO):
+            return False
+        if h < int(image_h * LENS_PRESENCE_MIN_HEIGHT_RATIO):
+            return False
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if aspect_ratio > LENS_PRESENCE_MAX_ASPECT_RATIO:
+            return False
+
+        center_x = (x + w / 2.0) / float(max(1, image_w))
+        center_y = (y + h / 2.0) / float(max(1, image_h))
+        if center_x < 0.08 or center_x > 0.92 or center_y < 0.12 or center_y > 0.97:
+            return False
+
+        metrics = self.lens_presence_edge_metrics(image, roi)
+        if metrics["edge_density"] < LENS_PRESENCE_MIN_EDGE_DENSITY and metrics["contrast_ratio"] < 0.012:
+            return False
+        if metrics["side_edge_fraction"] > 0.86 and metrics["center_edge_density"] < LENS_PRESENCE_MIN_EDGE_DENSITY:
+            return False
+        return True
+
+    def lens_presence_edge_metrics(self, image, roi):
+        default = {
+            "edge_density": 0.0,
+            "center_edge_density": 0.0,
+            "side_edge_fraction": 1.0,
+            "contrast_ratio": 0.0,
+        }
+        if cv2 is None or np is None or image is None or not isinstance(roi, dict):
+            return default
+
+        image_w, image_h = image.size
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        if w <= 8 or h <= 8:
+            return default
+
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        gray = self.enhance_gray_for_inspection(gray)
+        crop = gray[y:min(image_h, y + h), x:min(image_w, x + w)]
+        if crop.size <= 0:
+            return default
+
+        blur = cv2.GaussianBlur(crop, (5, 5), 0)
+        edges = cv2.Canny(blur, 28, 88)
+        edge_count = int(np.count_nonzero(edges))
+        area = float(max(1, edges.size))
+        edge_density = float(edge_count) / area
+
+        left = int(w * 0.16)
+        right = int(w * 0.84)
+        if right <= left:
+            left, right = 0, w
+        center_edges = edges[:, left:right]
+        center_edge_density = float(np.count_nonzero(center_edges)) / float(max(1, center_edges.size))
+
+        side_edge_count = edge_count - int(np.count_nonzero(center_edges))
+        side_edge_fraction = float(side_edge_count) / float(max(1, edge_count))
+
+        background = cv2.GaussianBlur(crop, (0, 0), sigmaX=11, sigmaY=11)
+        response = cv2.absdiff(crop, background)
+        contrast_ratio = float(np.mean(response >= 14))
+        return {
+            "edge_density": edge_density,
+            "center_edge_density": center_edge_density,
+            "side_edge_fraction": side_edge_fraction,
+            "contrast_ratio": contrast_ratio,
+        }
+
+    def detect_round_lens_roi_from_image(self, image):
+        if cv2 is None or np is None or image is None:
+            return None
+        image_w, image_h = image.size
+        min_dim = min(image_w, image_h)
+        if min_dim <= 0:
+            return None
+
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        gray = self.enhance_gray_for_inspection(gray)
+        blur = cv2.GaussianBlur(gray, (7, 7), 1.4)
+        min_radius = max(10, int(min_dim * LENS_PRESENCE_ROUND_MIN_RADIUS_RATIO))
+        max_radius = max(min_radius + 2, int(min_dim * LENS_PRESENCE_ROUND_MAX_RADIUS_RATIO))
+        circles = cv2.HoughCircles(
+            blur,
+            cv2.HOUGH_GRADIENT,
+            dp=1.2,
+            minDist=max(32, int(min_dim * 0.35)),
+            param1=78,
+            param2=17,
+            minRadius=min_radius,
+            maxRadius=max_radius,
+        )
+        if circles is None:
+            return None
+
+        best = None
+        best_score = 0.0
+        for circle in np.round(circles[0, :]).astype(int):
+            cx, cy, radius = [int(value) for value in circle[:3]]
+            center_x = cx / float(max(1, image_w))
+            center_y = cy / float(max(1, image_h))
+            radius_ratio = radius / float(max(1, min_dim))
+            if center_x < 0.08 or center_x > 0.92 or center_y < 0.06 or center_y > 0.96:
+                continue
+            if (
+                radius_ratio < LENS_PRESENCE_ROUND_MIN_RADIUS_RATIO
+                or radius_ratio > LENS_PRESENCE_ROUND_MAX_RADIUS_RATIO
+            ):
+                continue
+            left = max(0, cx - radius)
+            top = max(0, cy - radius)
+            right = min(image_w, cx + radius)
+            bottom = min(image_h, cy + radius)
+            roi = {
+                "x": int(left),
+                "y": int(top),
+                "w": int(max(1, right - left)),
+                "h": int(max(1, bottom - top)),
+                "source": "pc_round_lens_presence",
+            }
+            if not self.round_lens_roi_has_edge_support(gray, roi):
+                continue
+            visible_area = float(roi["w"] * roi["h"]) / float(max(1, (radius * 2) ** 2))
+            score = radius_ratio + visible_area * 0.25
+            if score > best_score:
+                best_score = score
+                best = roi
+        return best
+
+    def round_lens_roi_has_edge_support(self, gray, roi):
+        if cv2 is None or np is None or gray is None or not isinstance(roi, dict):
+            return True
+        image_h, image_w = gray.shape[:2]
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        if w <= 8 or h <= 8:
+            return False
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        crop = gray[y:y + h, x:x + w]
+        if crop.size <= 0:
+            return False
+
+        blur = cv2.GaussianBlur(crop, (5, 5), 0)
+        edges = cv2.Canny(blur, 32, 92)
+        ring = np.zeros((h, w), dtype=np.uint8)
+        center = (w // 2, h // 2)
+        outer_axes = (max(2, int(w * 0.48)), max(2, int(h * 0.48)))
+        inner_axes = (max(1, int(w * 0.35)), max(1, int(h * 0.35)))
+        cv2.ellipse(ring, center, outer_axes, 0, 0, 360, 255, -1)
+        cv2.ellipse(ring, center, inner_axes, 0, 0, 360, 0, -1)
+        ring_area = int(cv2.countNonZero(ring))
+        if ring_area <= 0:
+            return False
+        support = float(cv2.countNonZero(cv2.bitwise_and(edges, ring))) / float(ring_area)
+        if support >= LENS_PRESENCE_ROUND_MIN_EDGE_SUPPORT:
+            return True
+
+        background = cv2.GaussianBlur(crop, (0, 0), sigmaX=9, sigmaY=9)
+        response = cv2.absdiff(crop, background)
+        ring_response = response[ring > 0]
+        return bool(ring_response.size and float(np.percentile(ring_response, 90.0)) >= 10.0)
+
+    def detect_center_lens_presence_blob(self, image):
+        if cv2 is None or np is None or image is None:
+            return None
+        image_w, image_h = image.size
+        if image_w <= 0 or image_h <= 0:
+            return None
+
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        gray = self.enhance_gray_for_inspection(gray)
+        background = cv2.GaussianBlur(gray, (0, 0), sigmaX=17, sigmaY=17)
+        response = cv2.absdiff(gray, background)
+
+        mask = np.zeros((image_h, image_w), dtype=np.uint8)
+        left = int(image_w * 0.12)
+        right = int(image_w * 0.90)
+        top = int(image_h * 0.16)
+        bottom = int(image_h * 0.98)
+        mask[top:bottom, left:right] = 255
+        active_response = response[mask > 0]
+        if active_response.size <= 0:
+            return None
+
+        threshold = max(13.0, float(np.percentile(active_response, 91.0)))
+        binary = np.where((response >= threshold) & (mask > 0), 255, 0).astype(np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((9, 9), dtype=np.uint8), iterations=1)
+        binary = cv2.dilate(binary, np.ones((5, 5), dtype=np.uint8), iterations=1)
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(binary, 8)
+        if component_count <= 1:
+            return None
+
+        frame_area = float(max(1, image_w * image_h))
+        best = None
+        best_score = 0.0
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            box_area = float(max(1, w * h))
+            box_ratio = box_area / frame_area
+            if box_ratio < LENS_PRESENCE_MIN_CENTER_BLOB_AREA_RATIO:
+                continue
+            if w < int(image_w * 0.10) or h < int(image_h * 0.08):
+                continue
+            aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+            if aspect_ratio > 3.8:
+                continue
+            center_x = (x + w / 2.0) / float(max(1, image_w))
+            center_y = (y + h / 2.0) / float(max(1, image_h))
+            if center_x < 0.12 or center_x > 0.88 or center_y < 0.16 or center_y > 0.98:
+                continue
+            fill_ratio = float(area) / box_area
+            if fill_ratio < 0.008:
+                continue
+            score = min(0.50, box_ratio) + min(0.30, fill_ratio * 1.2)
+            if score > best_score:
+                best_score = score
+                best = {
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "source": "pc_center_lens_blob",
+                }
+        return best
+
+    def no_lens_result_for_image(self, image, payload=None, base_result=None, reason="no_lens", presence=None):
+        base_result = base_result if isinstance(base_result, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        frame = base_result.get("frame") if isinstance(base_result.get("frame"), dict) else {}
+        image_w = image.width if image is not None else 0
+        image_h = image.height if image is not None else 0
+        source_w = image_w or self._positive_int(frame.get("w")) or self._positive_int(payload.get("width"))
+        source_h = image_h or self._positive_int(frame.get("h")) or self._positive_int(payload.get("height"))
+        result = {
+            "frame": {"w": int(source_w), "h": int(source_h)},
+            "lens": {
+                "found": False,
+                "source": "pc_lens_presence",
+                "confidence": 0.0,
+            },
+            "defects": [],
+            "summary": {defect_type: 0 for defect_type in SUMMARY_TYPES},
+            "defect_count": 0,
+            "has_defect": False,
+            "overall_level": "normal",
+            "no_lens": True,
+            "no_lens_reason": reason,
+            "model": "pc_lens_presence",
+        }
+        if isinstance(presence, dict):
+            result["lens_presence"] = presence
+        return self.normalize_detection_result(result)
+
+    def clear_detection_memory_for_no_lens(self):
+        self.last_pc_defect_result = None
+        self.last_pc_defect_time = 0.0
+        self.last_black_stain_result = None
+        self.last_black_stain_time = 0.0
+        self.fast_review_candidate = None
+        self.fast_review_candidate_count = 0
+        self.micro_bright_stain_candidate = None
+        self.micro_bright_stain_candidate_count = 0
+        self.micro_dark_stain_candidate = None
+        self.micro_dark_stain_candidate_count = 0
+        self.pending_detection_class = None
+        self.pending_detection_count = 0
+        self.conveyor_centered_count = 0
+        self.conveyor_fusion_results = []
+        self.yolo_roi_miss_count = 0
+        self.stable_detection_result = None
+
+    def show_no_lens_result_for_image(self, image, payload=None, reason="no_lens", presence=None):
+        result = self.no_lens_result_for_image(image, payload, None, reason=reason, presence=presence)
+        self.clear_detection_memory_for_no_lens()
+        self.stable_detection_result = result
+        self.update_result_ui(result, render_live_image=False)
+        self.status_var.set("状态：未检测到镜片")
+        return result
+
     def merge_recent_pc_defect_result(self, result):
         if not isinstance(result, dict):
             return result
-        if result.get("error") or result.get("has_defect"):
+        if result.get("error") or result.get("has_defect") or result.get("no_lens"):
             return result
 
         recent = self.last_pc_defect_result
@@ -3465,10 +4529,23 @@ class LensDefectHostApp:
             return self.normalize_detection_result(refined)
         edge_distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
         display_gray = cv2.cvtColor(np.array(display_image), cv2.COLOR_RGB2GRAY)
+        strict_lens_mask = self.build_strict_lens_mask_for_filter(display_image, roi, source_w, source_h)
 
         filtered = []
         removed = 0
-        for defect in defects:
+        changed = False
+        for original_defect in defects:
+            defect = self.refine_yolo_stain_class_for_live_image(
+                original_defect,
+                mask,
+                source_w,
+                source_h,
+                display_image.width,
+                display_image.height,
+                display_gray,
+            )
+            if defect != original_defect:
+                changed = True
             if self.should_keep_defect_inside_lens(
                 defect,
                 mask,
@@ -3479,18 +4556,1176 @@ class LensDefectHostApp:
                 roi,
                 edge_distance,
                 display_gray,
+                strict_lens_mask,
             ):
                 filtered.append(defect)
             else:
                 removed += 1
 
-        if removed <= 0:
+        if removed <= 0 and not changed:
             return result
 
         refined = dict(result)
         refined["defects"] = filtered
-        refined["edge_filter"] = {"removed": removed}
+        if removed > 0:
+            refined["edge_filter"] = {"removed": removed}
         return self.normalize_detection_result(refined)
+
+    def refine_yolo_stain_class_for_live_image(
+        self,
+        defect,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+        display_gray,
+    ):
+        if not isinstance(defect, dict):
+            return defect
+        source = str(defect.get("source", ""))
+        if defect.get("type") != "stain" or not self.is_yolo_source(source):
+            return defect
+        scratch_info = self.yolo_stain_looks_like_thin_scratch_line(
+            defect,
+            display_gray,
+            mask,
+            source_w,
+            source_h,
+            image_w,
+            image_h,
+        )
+        refined_reason = "thin_line_in_yolo_stain_box"
+        if scratch_info is None:
+            scratch_info = self.yolo_stain_looks_like_curved_scratch_edge(
+                defect,
+                display_gray,
+                mask,
+                source_w,
+                source_h,
+                image_w,
+                image_h,
+            )
+            refined_reason = "curved_edge_in_yolo_stain_box"
+        if scratch_info is None:
+            scratch_info = self.yolo_stain_looks_like_ring_scratch_edge(
+                defect,
+                display_gray,
+                mask,
+                source_w,
+                source_h,
+                image_w,
+                image_h,
+            )
+            refined_reason = "ring_edge_in_yolo_stain_box"
+            if scratch_info is None and defect.get("new_lens_stain_aux"):
+                return defect
+        if scratch_info is None:
+            scratch_info = self.yolo_stain_looks_like_bright_scratch(
+                defect,
+                display_gray,
+                mask,
+                source_w,
+                source_h,
+                image_w,
+                image_h,
+            )
+            refined_reason = "bright_line_in_yolo_stain_box"
+        if scratch_info is None:
+            scratch_info = self.yolo_stain_looks_like_dark_scratch_texture(
+                defect,
+                display_gray,
+                mask,
+                source_w,
+                source_h,
+                image_w,
+                image_h,
+            )
+            refined_reason = "oriented_dark_texture_in_yolo_stain_box"
+        if scratch_info is None:
+            return defect
+
+        refined = dict(defect)
+        refined["type"] = "scratch"
+        refined["source"] = f"{source}_scratch_refined" if source else "yolo_onnx_scratch_refined"
+        refined["class_refined_from"] = "stain"
+        refined["class_refined_reason"] = refined_reason
+        refined["confidence"] = max(
+            0.88,
+            min(0.97, float(defect.get("confidence", 0.88) or 0.88)),
+        )
+        refined["level"] = "medium" if scratch_info.get("length", 0) >= 55 else "light"
+        refined.update(scratch_info)
+        return refined
+
+    def yolo_stain_looks_like_thin_scratch_line(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 16 or h < 14:
+            return None
+
+        pad_x = max(8, int(w * 0.35))
+        pad_y = max(8, int(h * 0.35))
+        left = max(0, x - pad_x)
+        top = max(0, y - pad_y)
+        right = min(image_w, x + w + pad_x)
+        bottom = min(image_h, y + h + pad_y)
+        crop = display_gray[top:bottom, left:right]
+        crop_mask = mask[top:bottom, left:right]
+        if crop.size <= 0 or crop_mask.size <= 0:
+            return None
+
+        active = crop_mask > 0
+        if np.count_nonzero(active) < max(32, int(crop.size * 0.08)):
+            active = np.ones_like(crop, dtype=bool)
+        active_gray = crop[active]
+        if active_gray.size <= 0:
+            return None
+
+        local_delta = float(np.percentile(active_gray, 95.0) - np.percentile(active_gray, 5.0))
+
+        analysis = self.enhance_gray_for_inspection(crop)
+        background = cv2.GaussianBlur(analysis, (0, 0), sigmaX=5, sigmaY=5)
+        dark = np.maximum(background.astype(np.int16) - analysis.astype(np.int16), 0).astype(np.uint8)
+        bright = np.maximum(analysis.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+        response = cv2.addWeighted(dark, 0.72, bright, 0.28, 0.0)
+        active_response = response[active]
+        if active_response.size <= 0:
+            return None
+        response_peak = float(np.percentile(active_response, 90.0))
+        if local_delta < FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_LOCAL_DELTA and response_peak < 8.0:
+            return None
+
+        response_threshold = max(5.0, float(np.percentile(active_response, 86.0)))
+        candidate = np.where((response >= response_threshold) & active, 255, 0).astype(np.uint8)
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+        candidate_pixels = int(cv2.countNonZero(candidate))
+        active_pixels = max(1, int(np.count_nonzero(active)))
+        fill_ratio = float(candidate_pixels) / float(active_pixels)
+        if candidate_pixels < 8 or fill_ratio > FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MAX_FILL:
+            return None
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate, 8)
+        for index in range(1, component_count):
+            comp_x, comp_y, comp_w, comp_h, comp_area = [int(value) for value in stats[index]]
+            if comp_w <= 0 or comp_h <= 0 or comp_area <= 0:
+                continue
+            comp_aspect = float(max(comp_w, comp_h)) / float(max(1, min(comp_w, comp_h)))
+            comp_fill = float(comp_area) / float(max(1, comp_w * comp_h))
+            comp_dominance = float(comp_area) / float(max(1, candidate_pixels))
+            if (
+                comp_aspect <= FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MAX_ASPECT
+                and comp_fill >= FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_FILL
+                and comp_dominance >= FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_COMPACT_MIN_DOMINANCE
+            ):
+                return None
+
+        edges = cv2.Canny(analysis, 20, 72)
+        edges = cv2.bitwise_or(edges, candidate)
+        edges = cv2.bitwise_and(edges, np.where(active, 255, 0).astype(np.uint8))
+        min_line_length = max(
+            int(FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_LENGTH),
+            int(max(right - left, bottom - top) * 0.18),
+        )
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=7,
+            minLineLength=min_line_length,
+            maxLineGap=max(5, int(min(w, h) * 0.18)),
+        )
+        if lines is None:
+            return None
+
+        crop_h, crop_w = crop.shape[:2]
+        inner_left = x - left
+        inner_top = y - top
+        inner_right = inner_left + w
+        inner_bottom = inner_top + h
+        near_margin = max(4, int(min(w, h) * 0.18))
+        segments = []
+        angle_totals = {}
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            line_left = min(x1, x2)
+            line_right = max(x1, x2)
+            line_top = min(y1, y2)
+            line_bottom = max(y1, y2)
+            if (
+                line_right < inner_left - near_margin
+                or line_left > inner_right + near_margin
+                or line_bottom < inner_top - near_margin
+                or line_top > inner_bottom + near_margin
+            ):
+                continue
+            line_mask = np.zeros_like(crop, dtype=np.uint8)
+            cv2.line(line_mask, (x1, y1), (x2, y2), 255, 2)
+            line_active = (line_mask > 0) & active
+            if np.count_nonzero(line_active) < max(5, int(length * 0.30)):
+                continue
+            line_response = response[line_active]
+            if line_response.size and float(np.percentile(line_response, 65.0)) < response_threshold * 0.55:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_group = int(angle // 18.0)
+            angle_totals[angle_group] = angle_totals.get(angle_group, 0.0) + length
+            segments.append((x1, y1, x2, y2, length, angle_group))
+
+        if not segments:
+            return None
+        total_length = float(sum(item[4] for item in segments))
+        dominant_group, dominant_total = max(angle_totals.items(), key=lambda item: item[1])
+        dominant_segments = [item for item in segments if item[5] == dominant_group]
+        longest = max(dominant_segments, key=lambda item: item[4])
+        dominant_ratio = dominant_total / float(max(1.0, total_length))
+        if dominant_total < FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_LENGTH:
+            return None
+        if dominant_ratio < 0.44 and len(dominant_segments) < 2:
+            return None
+
+        xs = []
+        ys = []
+        for x1, y1, x2, y2, _length, _group in dominant_segments:
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+        box_left = max(0, min(xs) - 3)
+        box_top = max(0, min(ys) - 3)
+        box_right = min(crop_w - 1, max(xs) + 4)
+        box_bottom = min(crop_h - 1, max(ys) + 4)
+        refined_w = max(1, box_right - box_left)
+        refined_h = max(1, box_bottom - box_top)
+        aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        line_strength = max(longest[4], dominant_total)
+        if aspect_ratio < FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MIN_ASPECT:
+            return None
+        refined_area_ratio = float(refined_w * refined_h) / float(max(1, source_w * source_h))
+        if refined_area_ratio > FAST_REVIEW_CURVILINEAR_SCRATCH_MAX_BOX_RATIO:
+            return None
+
+        refined_crop = candidate[box_top:box_bottom + 1, box_left:box_right + 1]
+        blob_fill = float(cv2.countNonZero(refined_crop)) / float(max(1, refined_crop.size))
+        if blob_fill > FAST_REVIEW_YOLO_STAIN_THIN_SCRATCH_MAX_BLOB_FILL:
+            return None
+
+        return {
+            "x": int(round((left + box_left) / x_scale)),
+            "y": int(round((top + box_top) / y_scale)),
+            "w": int(round(refined_w / x_scale)),
+            "h": int(round(refined_h / y_scale)),
+            "area": int(candidate_pixels),
+            "length": int(round(line_strength)),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "line_count": int(len(segments)),
+            "angle_groups": int(len(angle_totals)),
+            "dominant_line_ratio": round(dominant_ratio, 2),
+            "total_line_length": round(total_length, 1),
+            "local_contrast": round(local_delta, 1),
+            "local_response": round(response_peak, 1),
+            "fill_ratio": round(fill_ratio, 3),
+            "thin_internal_scratch": True,
+            "strong_internal_scratch": True,
+        }
+
+    def yolo_stain_looks_like_curved_scratch_edge(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 16 or h < 14:
+            return None
+
+        pad_x = max(10, int(w * 0.70), int(image_w * 0.012))
+        pad_y = max(10, int(h * 0.70), int(image_h * 0.012))
+        crop_left = max(0, x - pad_x)
+        crop_top = max(0, y - pad_y)
+        crop_right = min(image_w, x + w + pad_x)
+        crop_bottom = min(image_h, y + h + pad_y)
+        crop_w = max(1, crop_right - crop_left)
+        crop_h = max(1, crop_bottom - crop_top)
+        if crop_w < 28 or crop_h < 24:
+            return None
+
+        crop_gray = display_gray[crop_top:crop_bottom, crop_left:crop_right]
+        crop_mask = mask[crop_top:crop_bottom, crop_left:crop_right]
+        if crop_gray.size <= 0 or crop_mask.size <= 0:
+            return None
+
+        active = crop_mask > 0
+        if np.count_nonzero(active) < max(32, int(crop_w * crop_h * 0.10)):
+            active = np.ones_like(crop_gray, dtype=bool)
+        active_gray = crop_gray[active]
+        if active_gray.size <= 0:
+            return None
+
+        local_delta = float(np.percentile(active_gray, 96.0) - np.percentile(active_gray, 4.0))
+        analysis_crop = self.enhance_gray_for_inspection(crop_gray)
+        local_background = cv2.GaussianBlur(analysis_crop, (0, 0), sigmaX=7, sigmaY=7)
+        signed_diff = analysis_crop.astype(np.int16) - local_background.astype(np.int16)
+        line_response = np.abs(signed_diff).astype(np.uint8)
+        active_response = line_response[active]
+        if active_response.size <= 0:
+            return None
+
+        response_peak = float(np.percentile(active_response, 98.2))
+        if (
+            local_delta < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LOCAL_DELTA
+            and response_peak < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LOCAL_DELTA * 2.0
+        ):
+            return None
+
+        response_threshold = max(
+            FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LOCAL_DELTA,
+            float(np.percentile(active_response, 91.0)),
+        )
+        response_mask = np.where((line_response >= response_threshold) & active, 255, 0).astype(np.uint8)
+        response_mask = cv2.morphologyEx(response_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        active_pixels = max(1, int(np.count_nonzero(active)))
+        response_pixels = int(cv2.countNonZero(response_mask))
+        fill_ratio = float(response_pixels) / float(active_pixels)
+        if response_pixels < 12 or fill_ratio > FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_FILL:
+            return None
+
+        low_threshold = max(16, int(max(8.0, local_delta * 0.55)))
+        high_threshold = max(48, int(max(24.0, local_delta * 1.75)))
+        edges = cv2.Canny(analysis_crop, low_threshold, high_threshold)
+        edges = cv2.bitwise_and(edges, np.where(active, 255, 0).astype(np.uint8))
+        edges = cv2.bitwise_or(edges, response_mask)
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+
+        min_line_length = max(12, int(max(crop_w, crop_h) * 0.15), int(min(crop_w, crop_h) * 0.20))
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=7,
+            minLineLength=min_line_length,
+            maxLineGap=max(5, int(min(crop_w, crop_h) * 0.13)),
+        )
+        if lines is None:
+            return None
+
+        inner_left = x - crop_left
+        inner_top = y - crop_top
+        inner_right = inner_left + w
+        inner_bottom = inner_top + h
+        near_margin = max(6, int(min(w, h) * 0.48))
+        segments = []
+        angle_totals = {}
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            line_left = min(x1, x2)
+            line_right = max(x1, x2)
+            line_top = min(y1, y2)
+            line_bottom = max(y1, y2)
+            near_original_box = (
+                line_right >= inner_left - near_margin
+                and line_left <= inner_right + near_margin
+                and line_bottom >= inner_top - near_margin
+                and line_top <= inner_bottom + near_margin
+            )
+            if not near_original_box:
+                continue
+            line_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+            cv2.line(line_mask, (x1, y1), (x2, y2), 255, 2)
+            line_active = (line_mask > 0) & active
+            if np.count_nonzero(line_active) < max(5, int(length * 0.28)):
+                continue
+            line_values = line_response[line_active]
+            if line_values.size and float(np.percentile(line_values, 58.0)) < response_threshold * 0.46:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_group = int(angle // 15.0)
+            angle_totals[angle_group] = angle_totals.get(angle_group, 0.0) + length
+            segments.append((x1, y1, x2, y2, length, angle_group, angle))
+
+        if len(segments) < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_LINE_COUNT:
+            return None
+        if len(angle_totals) < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_ANGLE_GROUPS:
+            return None
+
+        total_length = float(sum(item[4] for item in segments))
+        angle_lengths = sorted(angle_totals.values(), reverse=True)
+        dominant_total = angle_lengths[0] if angle_lengths else 0.0
+        secondary_total = angle_lengths[1] if len(angle_lengths) > 1 else 0.0
+        secondary_ratio = secondary_total / float(max(1.0, total_length))
+        if total_length < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_TOTAL_LENGTH:
+            return None
+        if secondary_ratio < FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MIN_SECONDARY_RATIO:
+            return None
+
+        xs = []
+        ys = []
+        for x1, y1, x2, y2, _length, _angle_group, _angle in segments:
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+        left = max(0, min(xs) - 4)
+        top = max(0, min(ys) - 4)
+        right = min(crop_w - 1, max(xs) + 5)
+        bottom = min(crop_h - 1, max(ys) + 5)
+        refined_w = max(1, right - left)
+        refined_h = max(1, bottom - top)
+        box_area = max(1, refined_w * refined_h)
+        refined_area_ratio = float(box_area) / float(max(1, image_w * image_h))
+        if refined_area_ratio > FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BOX_RATIO:
+            return None
+
+        edge_roi = edges[top:bottom + 1, left:right + 1]
+        response_roi = response_mask[top:bottom + 1, left:right + 1]
+        if edge_roi.size <= 0 or response_roi.size <= 0:
+            return None
+        blob_fill = float(cv2.countNonZero(response_roi)) / float(max(1, response_roi.size))
+        edge_fill = float(cv2.countNonZero(edge_roi)) / float(max(1, edge_roi.size))
+        if blob_fill > FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BLOB_FILL:
+            return None
+        if edge_fill > FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BLOB_FILL * 1.25:
+            return None
+
+        aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        return {
+            "x": int(round((crop_left + left) / x_scale)),
+            "y": int(round((crop_top + top) / y_scale)),
+            "w": int(round(refined_w / x_scale)),
+            "h": int(round(refined_h / y_scale)),
+            "area": int(response_pixels),
+            "length": int(round(max(total_length, dominant_total))),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "line_count": int(len(segments)),
+            "angle_groups": int(len(angle_totals)),
+            "dominant_line_ratio": round(dominant_total / float(max(1.0, total_length)), 2),
+            "secondary_line_ratio": round(secondary_ratio, 2),
+            "total_line_length": round(total_length, 1),
+            "local_contrast": round(local_delta, 1),
+            "local_response": round(response_peak, 1),
+            "fill_ratio": round(fill_ratio, 3),
+            "edge_fill_ratio": round(edge_fill, 3),
+            "blob_fill": round(blob_fill, 3),
+            "curved_internal_scratch": True,
+            "strong_internal_scratch": True,
+        }
+
+    def yolo_stain_looks_like_ring_scratch_edge(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 14 or h < 12:
+            return None
+
+        pad_x = max(18, int(w * 1.45), int(image_w * 0.025))
+        pad_y = max(18, int(h * 1.45), int(image_h * 0.025))
+        crop_left = max(0, x - pad_x)
+        crop_top = max(0, y - pad_y)
+        crop_right = min(image_w, x + w + pad_x)
+        crop_bottom = min(image_h, y + h + pad_y)
+        crop_w = max(1, crop_right - crop_left)
+        crop_h = max(1, crop_bottom - crop_top)
+        if crop_w < 32 or crop_h < 28:
+            return None
+
+        crop_gray = display_gray[crop_top:crop_bottom, crop_left:crop_right]
+        crop_mask = mask[crop_top:crop_bottom, crop_left:crop_right]
+        if crop_gray.size <= 0 or crop_mask.size <= 0:
+            return None
+
+        active = crop_mask > 0
+        if np.count_nonzero(active) < max(32, int(crop_w * crop_h * 0.08)):
+            active = np.ones_like(crop_gray, dtype=bool)
+        active_gray = crop_gray[active]
+        if active_gray.size <= 0:
+            return None
+
+        analysis_crop = self.enhance_gray_for_inspection(crop_gray)
+        local_background = cv2.GaussianBlur(analysis_crop, (0, 0), sigmaX=7, sigmaY=7)
+        signed_diff = analysis_crop.astype(np.int16) - local_background.astype(np.int16)
+        line_response = np.abs(signed_diff).astype(np.uint8)
+        active_response = line_response[active]
+        if active_response.size <= 0:
+            return None
+
+        response_peak = float(np.percentile(active_response, 98.4))
+        if response_peak < 8.0:
+            return None
+        response_threshold = max(5.0, float(np.percentile(active_response, 90.0)))
+        response_mask = np.where((line_response >= response_threshold) & active, 255, 0).astype(np.uint8)
+        response_mask = cv2.morphologyEx(response_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+
+        inner_left = x - crop_left
+        inner_top = y - crop_top
+        inner_right = inner_left + w
+        inner_bottom = inner_top + h
+        contact_margin = max(4, int(min(w, h) * 0.16))
+        contact_left = max(0, inner_left - contact_margin)
+        contact_top = max(0, inner_top - contact_margin)
+        contact_right = min(crop_w - 1, inner_right + contact_margin)
+        contact_bottom = min(crop_h - 1, inner_bottom + contact_margin)
+        contact_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+        cv2.rectangle(contact_mask, (contact_left, contact_top), (contact_right, contact_bottom), 255, -1)
+        contact_mask = cv2.bitwise_and(contact_mask, np.where(active, 255, 0).astype(np.uint8))
+
+        local_delta = float(np.percentile(active_gray, 96.0) - np.percentile(active_gray, 4.0))
+        low_threshold = max(16, int(max(8.0, local_delta * 0.48)))
+        high_threshold = max(48, int(max(28.0, local_delta * 1.55)))
+        blur = cv2.GaussianBlur(analysis_crop, (5, 5), 0)
+        edges = cv2.Canny(blur, low_threshold, high_threshold)
+        edges = cv2.bitwise_or(edges, response_mask)
+        edges = cv2.bitwise_and(edges, np.where(active, 255, 0).astype(np.uint8))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+
+        edge_pixels = int(cv2.countNonZero(edges))
+        active_pixels = max(1, int(np.count_nonzero(active)))
+        edge_fill = float(edge_pixels) / float(active_pixels)
+        if (
+            edge_pixels < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_EDGE_PIXELS
+            or edge_fill > FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MAX_FILL
+        ):
+            return None
+        contact_pixels = int(cv2.countNonZero(cv2.bitwise_and(edges, contact_mask)))
+        if contact_pixels < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_CONTACT_PIXELS:
+            return None
+
+        box_gray = crop_gray[inner_top:inner_bottom, inner_left:inner_right]
+        box_active = active[inner_top:inner_bottom, inner_left:inner_right]
+        if box_gray.size > 0 and np.any(box_active):
+            box_values = box_gray[box_active]
+            box_mean = float(np.mean(box_values))
+            dark_fraction = float(np.mean(box_values <= max(12.0, box_mean - 18.0)))
+            box_response = line_response[inner_top:inner_bottom, inner_left:inner_right]
+            box_response_fill = float(np.mean(box_response[box_active] >= response_threshold)) if box_response.size else 0.0
+            if dark_fraction > 0.72 and box_response_fill > 0.42:
+                return None
+
+        def build_ring_result(left, top, right, bottom, support_pixels, contact_support, support_ratio, angle_groups, source_name):
+            left = max(0, int(left) - 3)
+            top = max(0, int(top) - 3)
+            right = min(crop_w - 1, int(right) + 4)
+            bottom = min(crop_h - 1, int(bottom) + 4)
+            refined_w = max(1, right - left)
+            refined_h = max(1, bottom - top)
+            box_area = max(1, refined_w * refined_h)
+            refined_area_ratio = float(box_area) / float(max(1, image_w * image_h))
+            if refined_area_ratio > FAST_REVIEW_YOLO_STAIN_CURVED_SCRATCH_MAX_BOX_RATIO:
+                return None
+            refined_edges = edges[top:bottom + 1, left:right + 1]
+            refined_fill = float(cv2.countNonZero(refined_edges)) / float(max(1, refined_edges.size))
+            if refined_fill > FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MAX_FILL:
+                return None
+            aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+            length = max(refined_w, refined_h, int(round(float(support_pixels) / max(0.12, float(support_ratio)))))
+            return {
+                "x": int(round((crop_left + left) / x_scale)),
+                "y": int(round((crop_top + top) / y_scale)),
+                "w": int(round(refined_w / x_scale)),
+                "h": int(round(refined_h / y_scale)),
+                "area": int(support_pixels),
+                "length": int(length),
+                "aspect_ratio": round(aspect_ratio, 2),
+                "line_count": int(max(1, angle_groups)),
+                "angle_groups": int(angle_groups),
+                "total_line_length": round(float(length), 1),
+                "local_response": round(response_peak, 1),
+                "edge_fill_ratio": round(refined_fill, 3),
+                "ring_support_ratio": round(float(support_ratio), 3),
+                "ring_contact_pixels": int(contact_support),
+                "ring_edge_scratch": source_name,
+                "strong_internal_scratch": True,
+            }
+
+        best = None
+        best_score = 0.0
+        min_dim = max(1, min(crop_w, crop_h))
+        min_radius = max(8, int(min(w, h) * 0.34))
+        max_radius = max(min_radius + 3, int(min_dim * 0.58))
+        try:
+            circles = cv2.HoughCircles(
+                blur,
+                cv2.HOUGH_GRADIENT,
+                dp=1.2,
+                minDist=max(18, int(min_dim * 0.24)),
+                param1=72,
+                param2=11,
+                minRadius=min_radius,
+                maxRadius=max_radius,
+            )
+        except Exception:
+            circles = None
+        if circles is not None:
+            for circle in np.round(circles[0, :]).astype(int):
+                cx, cy, radius = [int(value) for value in circle[:3]]
+                if radius <= 0:
+                    continue
+                ring_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+                cv2.circle(ring_mask, (cx, cy), radius + 3, 255, -1)
+                cv2.circle(ring_mask, (cx, cy), max(1, radius - 3), 0, -1)
+                ring_mask = cv2.bitwise_and(ring_mask, np.where(active, 255, 0).astype(np.uint8))
+                ring_edges = cv2.bitwise_and(edges, ring_mask)
+                support_pixels = int(cv2.countNonZero(ring_edges))
+                contact_support = int(cv2.countNonZero(cv2.bitwise_and(ring_edges, contact_mask)))
+                if (
+                    support_pixels < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_EDGE_PIXELS
+                    or contact_support < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_CONTACT_PIXELS
+                ):
+                    continue
+                ys, xs = np.where(ring_edges > 0)
+                if xs.size <= 0 or ys.size <= 0:
+                    continue
+                angles = (np.degrees(np.arctan2(ys.astype(np.float32) - cy, xs.astype(np.float32) - cx)) + 360.0) % 360.0
+                angle_groups = len(set((angles // 24.0).astype(int).tolist()))
+                support_ratio = float(support_pixels) / float(max(1.0, 2.0 * np.pi * radius))
+                if (
+                    angle_groups < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_ANGLE_GROUPS
+                    or support_ratio < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_SUPPORT
+                ):
+                    continue
+                result = build_ring_result(
+                    int(np.min(xs)),
+                    int(np.min(ys)),
+                    int(np.max(xs)),
+                    int(np.max(ys)),
+                    support_pixels,
+                    contact_support,
+                    support_ratio,
+                    angle_groups,
+                    "hough_circle",
+                )
+                if result is None:
+                    continue
+                score = support_pixels + contact_support * 3.0 + angle_groups * 12.0 + support_ratio * 60.0
+                if score > best_score:
+                    best_score = score
+                    best = result
+
+        if best is not None:
+            return best
+
+        component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(edges, 8)
+        for index in range(1, component_count):
+            left = int(stats[index, cv2.CC_STAT_LEFT])
+            top = int(stats[index, cv2.CC_STAT_TOP])
+            cw = int(stats[index, cv2.CC_STAT_WIDTH])
+            ch = int(stats[index, cv2.CC_STAT_HEIGHT])
+            area = int(stats[index, cv2.CC_STAT_AREA])
+            if cw <= 0 or ch <= 0 or area < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_EDGE_PIXELS:
+                continue
+            comp_mask = np.where(labels == index, 255, 0).astype(np.uint8)
+            contact_support = int(cv2.countNonZero(cv2.bitwise_and(comp_mask, contact_mask)))
+            if contact_support < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_CONTACT_PIXELS:
+                continue
+            comp_fill = float(area) / float(max(1, cw * ch))
+            if comp_fill > FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MAX_FILL:
+                continue
+            comp_roi = comp_mask[top:top + ch, left:left + cw]
+            min_line_length = max(8, int(max(cw, ch) * 0.18))
+            lines = cv2.HoughLinesP(
+                comp_roi,
+                1,
+                np.pi / 180.0,
+                threshold=5,
+                minLineLength=min_line_length,
+                maxLineGap=max(4, int(min(cw, ch) * 0.18)),
+            )
+            angle_groups = set()
+            total_length = 0.0
+            if lines is not None:
+                for line in lines[:, 0, :]:
+                    x1, y1, x2, y2 = [int(value) for value in line]
+                    length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                    if length < min_line_length:
+                        continue
+                    total_length += length
+                    angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                    angle_groups.add(int(angle // 24.0))
+            contour_points = np.column_stack(np.where(comp_mask > 0))
+            curved_component = len(angle_groups) >= FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_ANGLE_GROUPS
+            if contour_points.shape[0] >= 12:
+                points = contour_points[:, ::-1].astype(np.int32).reshape(-1, 1, 2)
+                try:
+                    (_cx, _cy), (axis_a, axis_b), _angle = cv2.fitEllipse(points)
+                    ellipse_aspect = float(max(axis_a, axis_b)) / float(max(1.0, min(axis_a, axis_b)))
+                    curved_component = curved_component or ellipse_aspect <= 4.8
+                except Exception:
+                    pass
+            if not curved_component:
+                continue
+            support_ratio = float(area) / float(max(1.0, max(cw, ch) * 2.0))
+            if support_ratio < FAST_REVIEW_YOLO_STAIN_RING_SCRATCH_MIN_SUPPORT:
+                continue
+            result = build_ring_result(
+                left,
+                top,
+                left + cw,
+                top + ch,
+                area,
+                contact_support,
+                support_ratio,
+                max(1, len(angle_groups)),
+                "component_arc",
+            )
+            if result is None:
+                continue
+            score = area + contact_support * 3.0 + total_length + len(angle_groups) * 15.0
+            if score > best_score:
+                best_score = score
+                best = result
+
+        return best
+
+    def yolo_stain_looks_like_bright_scratch(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 18 or h < 12:
+            return None
+
+        box_gray = display_gray[y:y + h, x:x + w]
+        box_mask = mask[y:y + h, x:x + w]
+        if box_gray.size <= 0 or box_mask.size <= 0:
+            return None
+
+        active_box = box_mask > 0
+        if np.count_nonzero(active_box) < max(24, int(w * h * 0.12)):
+            active_box = np.ones_like(box_gray, dtype=bool)
+
+        analysis_gray = self.enhance_gray_for_inspection(display_gray)
+        background = cv2.GaussianBlur(analysis_gray, (0, 0), sigmaX=9, sigmaY=9)
+        bright_response = np.maximum(
+            analysis_gray.astype(np.int16) - background.astype(np.int16),
+            0,
+        ).astype(np.uint8)
+        dark_response = np.maximum(
+            background.astype(np.int16) - analysis_gray.astype(np.int16),
+            0,
+        ).astype(np.uint8)
+        box_bright = bright_response[y:y + h, x:x + w]
+        box_dark = dark_response[y:y + h, x:x + w]
+        active_bright = box_bright[active_box]
+        active_dark = box_dark[active_box]
+        active_gray = box_gray[active_box]
+        if active_bright.size <= 0 or active_gray.size <= 0:
+            return None
+
+        bright_delta = float(np.percentile(active_bright, 92.0))
+        dark_delta = float(np.percentile(active_dark, 86.0)) if active_dark.size else 0.0
+        gray_p98 = float(np.percentile(active_gray, 98.0))
+        if gray_p98 < FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS * 0.70 and bright_delta < 24.0:
+            return None
+        if bright_delta < FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_BRIGHT_DELTA and gray_p98 < FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS:
+            return None
+        if dark_delta >= bright_delta * 1.75 and gray_p98 < FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS:
+            return None
+
+        bright_threshold = max(
+            FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_BRIGHT_DELTA,
+            min(float(np.percentile(active_bright, 88.0)), bright_delta * 0.82),
+        )
+        gray_threshold = max(
+            FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS * 0.72,
+            float(np.percentile(active_gray, 93.0)),
+        )
+        candidate = np.where(
+            ((box_bright >= bright_threshold) | (box_gray >= gray_threshold)) & active_box,
+            255,
+            0,
+        ).astype(np.uint8)
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_area = int(cv2.countNonZero(candidate))
+        if candidate_area < 8:
+            return None
+
+        fill_ratio = float(candidate_area) / float(max(1, w * h))
+        if fill_ratio > FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MAX_FILL_RATIO:
+            return None
+
+        min_line_length = max(
+            24,
+            int(max(w, h) * FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_LINE_LENGTH_RATIO),
+            int(min(w, h) * 0.34),
+        )
+        line_edges = cv2.Canny(box_gray, 30, 90)
+        line_edges = cv2.bitwise_and(line_edges, np.where(active_box, 255, 0).astype(np.uint8))
+        lines = cv2.HoughLinesP(
+            line_edges,
+            1,
+            np.pi / 180.0,
+            threshold=12,
+            minLineLength=min_line_length,
+            maxLineGap=max(8, int(min(w, h) * 0.11)),
+        )
+        if lines is None:
+            return None
+
+        border_margin = max(5, int(min(w, h) * FAST_REVIEW_YOLO_STAIN_TO_SCRATCH_MIN_BORDER_RATIO))
+        segments = []
+        angle_totals = {}
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            endpoint_near_border = (
+                min(x1, y1, w - 1 - x1, h - 1 - y1) <= border_margin
+                or min(x2, y2, w - 1 - x2, h - 1 - y2) <= border_margin
+            )
+            long_enough_without_border = length >= max(42.0, max(w, h) * 0.38)
+            if not endpoint_near_border and not long_enough_without_border:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_group = int(angle // 18.0)
+            angle_totals[angle_group] = angle_totals.get(angle_group, 0.0) + length
+            segments.append((x1, y1, x2, y2, length, angle_group))
+
+        if not segments:
+            return None
+
+        best = max(segments, key=lambda item: item[4])
+        dominant_total = max(angle_totals.values()) if angle_totals else best[4]
+        if best[4] < max(32.0, max(w, h) * 0.24) and dominant_total < max(46.0, max(w, h) * 0.34):
+            return None
+
+        xs = []
+        ys = []
+        for x1, y1, x2, y2, _length, _angle_group in segments:
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+        left = max(0, min(xs) - 3)
+        top = max(0, min(ys) - 3)
+        right = min(w - 1, max(xs) + 4)
+        bottom = min(h - 1, max(ys) + 4)
+        refined_w = max(1, right - left)
+        refined_h = max(1, bottom - top)
+        aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        if aspect_ratio < 1.55 and dominant_total < max(72.0, max(w, h) * 0.42):
+            return None
+
+        return {
+            "x": int(round((x + left) / x_scale)),
+            "y": int(round((y + top) / y_scale)),
+            "w": int(round(refined_w / x_scale)),
+            "h": int(round(refined_h / y_scale)),
+            "area": int(candidate_area),
+            "length": int(round(max(best[4], dominant_total))),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "line_count": int(len(segments)),
+            "angle_groups": int(len(angle_totals)),
+            "total_line_length": round(float(sum(item[4] for item in segments)), 1),
+            "local_bright_delta": round(bright_delta, 1),
+            "local_dark_delta": round(dark_delta, 1),
+            "fill_ratio": round(fill_ratio, 2),
+            "strong_internal_scratch": True,
+        }
+
+    def yolo_stain_looks_like_dark_scratch_texture(
+        self,
+        defect,
+        display_gray,
+        mask,
+        source_w,
+        source_h,
+        image_w,
+        image_h,
+    ):
+        if display_gray is None or mask is None or cv2 is None or np is None:
+            return None
+        if defect.get("type") != "stain" or not self.is_yolo_source(defect):
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(defect.get("x")) * x_scale)
+        y = int(self._positive_int(defect.get("y")) * y_scale)
+        w = int(self._positive_int(defect.get("w")) * x_scale)
+        h = int(self._positive_int(defect.get("h")) * y_scale)
+        if w <= 0 or h <= 0:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        if w < 20 or h < 18:
+            return None
+
+        pad_x = max(10, int(w * 0.85), int(image_w * 0.018))
+        pad_y = max(10, int(h * 0.85), int(image_h * 0.018))
+        crop_left = max(0, x - pad_x)
+        crop_top = max(0, y - pad_y)
+        crop_right = min(image_w, x + w + pad_x)
+        crop_bottom = min(image_h, y + h + pad_y)
+        crop_w = max(1, crop_right - crop_left)
+        crop_h = max(1, crop_bottom - crop_top)
+        if crop_w < 28 or crop_h < 28:
+            return None
+
+        crop_gray = display_gray[crop_top:crop_bottom, crop_left:crop_right]
+        crop_mask = mask[crop_top:crop_bottom, crop_left:crop_right]
+        if crop_gray.size <= 0 or crop_mask.size <= 0:
+            return None
+        active = crop_mask > 0
+        if np.count_nonzero(active) < max(32, int(crop_w * crop_h * 0.10)):
+            active = np.ones_like(crop_gray, dtype=bool)
+
+        active_gray = crop_gray[active]
+        if active_gray.size <= 0:
+            return None
+        local_contrast = float(np.percentile(active_gray, 95.0) - np.percentile(active_gray, 5.0))
+        local_std = float(np.std(active_gray))
+        if local_contrast < FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_CONTRAST and local_std < 7.5:
+            return None
+
+        analysis_crop = self.enhance_gray_for_inspection(crop_gray)
+        blur = cv2.GaussianBlur(analysis_crop, (0, 0), sigmaX=7, sigmaY=7)
+        dark_response = np.maximum(blur.astype(np.int16) - analysis_crop.astype(np.int16), 0).astype(np.uint8)
+        bright_response = np.maximum(analysis_crop.astype(np.int16) - blur.astype(np.int16), 0).astype(np.uint8)
+        abs_response = cv2.addWeighted(dark_response, 0.65, bright_response, 0.35, 0.0)
+        active_dark = dark_response[active]
+        active_abs = abs_response[active]
+        dark_limit = min(
+            float(np.percentile(active_gray, 38.0)),
+            float(np.mean(active_gray) - max(4.0, local_std * 0.22)),
+        )
+        dark_blob_fill = float(np.mean(active_gray <= dark_limit))
+        response_floor = max(8.0, float(np.percentile(active_abs, 78.0)))
+
+        low_threshold = max(18, min(64, int(local_std * 1.15)))
+        high_threshold = max(54, min(150, int(max(local_std * 2.7, low_threshold * 2.2))))
+        edges = cv2.Canny(analysis_crop, low_threshold, high_threshold)
+        response_edges = np.where(abs_response >= response_floor, 255, 0).astype(np.uint8)
+        edges = cv2.bitwise_or(edges, response_edges)
+        edges = cv2.bitwise_and(edges, np.where(active, 255, 0).astype(np.uint8))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+        edge_pixels = int(cv2.countNonZero(edges))
+        edge_fill = float(edge_pixels) / float(max(1, np.count_nonzero(active)))
+        if edge_pixels < 10 or edge_fill > FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MAX_EDGE_FILL:
+            return None
+
+        inner_left = x - crop_left
+        inner_top = y - crop_top
+        inner_right = inner_left + w
+        inner_bottom = inner_top + h
+        near_pad_x = max(5, int(w * 0.80))
+        near_pad_y = max(5, int(h * 0.80))
+        near_left = max(0, inner_left - near_pad_x)
+        near_top = max(0, inner_top - near_pad_y)
+        near_right = min(crop_w - 1, inner_right + near_pad_x)
+        near_bottom = min(crop_h - 1, inner_bottom + near_pad_y)
+
+        min_line_length = max(18, int(max(crop_w, crop_h) * 0.24), int(min(crop_w, crop_h) * 0.32))
+        lines = cv2.HoughLinesP(
+            edges,
+            1,
+            np.pi / 180.0,
+            threshold=10,
+            minLineLength=min_line_length,
+            maxLineGap=max(6, int(min(crop_w, crop_h) * 0.16)),
+        )
+        if lines is None:
+            return None
+
+        segments = []
+        angle_totals = {}
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            line_left = min(x1, x2)
+            line_right = max(x1, x2)
+            line_top = min(y1, y2)
+            line_bottom = max(y1, y2)
+            near_original_box = (
+                line_right >= near_left
+                and line_left <= near_right
+                and line_bottom >= near_top
+                and line_top <= near_bottom
+            )
+            if not near_original_box:
+                continue
+            line_mask = np.zeros_like(crop_gray, dtype=np.uint8)
+            cv2.line(line_mask, (x1, y1), (x2, y2), 255, 2)
+            line_active = (line_mask > 0) & active
+            if np.count_nonzero(line_active) < max(6, int(length * 0.35)):
+                continue
+            line_gray = crop_gray[line_active]
+            line_response = abs_response[line_active]
+            line_dark = dark_response[line_active]
+            saturated_fraction = float(np.mean(line_gray >= 238)) if line_gray.size else 0.0
+            line_response_p70 = float(np.percentile(line_response, 70.0)) if line_response.size else 0.0
+            line_dark_p70 = float(np.percentile(line_dark, 70.0)) if line_dark.size else 0.0
+            if saturated_fraction >= 0.48 and line_dark_p70 < 4.0:
+                continue
+            if line_response_p70 < max(5.0, response_floor * 0.42) and local_contrast < 26.0:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            angle_group = int(angle // 15.0)
+            angle_totals[angle_group] = angle_totals.get(angle_group, 0.0) + length
+            segments.append((x1, y1, x2, y2, length, angle_group, angle))
+
+        if not segments:
+            return None
+
+        total_length = float(sum(item[4] for item in segments))
+        dominant_group, dominant_total = max(angle_totals.items(), key=lambda item: item[1])
+        dominant_ratio = dominant_total / float(max(1.0, total_length))
+        longest = max(segments, key=lambda item: item[4])
+        required_total = max(48.0, max(crop_w, crop_h) * FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_TOTAL_RATIO)
+        if (
+            len(segments) < FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_LINE_COUNT
+            and dominant_total < required_total * 0.82
+        ):
+            return None
+        if total_length < required_total and dominant_total < required_total * 0.72:
+            return None
+        if dominant_ratio < FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MIN_DOMINANT_RATIO:
+            return None
+        if (
+            dark_blob_fill > FAST_REVIEW_YOLO_STAIN_DARK_SCRATCH_MAX_BLOB_FILL
+            and dominant_ratio < 0.62
+            and len(segments) < 4
+        ):
+            return None
+
+        dominant_segments = [
+            item for item in segments
+            if min(abs(item[5] - dominant_group), 12 - abs(item[5] - dominant_group)) <= 1
+        ]
+        if not dominant_segments:
+            dominant_segments = [longest]
+
+        xs = []
+        ys = []
+        for x1, y1, x2, y2, _length, _angle_group, _angle in dominant_segments:
+            xs.extend([x1, x2])
+            ys.extend([y1, y2])
+        left = max(0, min(xs) - 4)
+        top = max(0, min(ys) - 4)
+        right = min(crop_w - 1, max(xs) + 5)
+        bottom = min(crop_h - 1, max(ys) + 5)
+        refined_w = max(1, right - left)
+        refined_h = max(1, bottom - top)
+        aspect_ratio = float(max(refined_w, refined_h)) / float(max(1, min(refined_w, refined_h)))
+        if aspect_ratio < 1.35 and dominant_total < required_total:
+            return None
+
+        return {
+            "x": int(round((crop_left + left) / x_scale)),
+            "y": int(round((crop_top + top) / y_scale)),
+            "w": int(round(refined_w / x_scale)),
+            "h": int(round(refined_h / y_scale)),
+            "area": int(edge_pixels),
+            "length": int(round(max(longest[4], dominant_total))),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "line_count": int(len(segments)),
+            "angle_groups": int(len(angle_totals)),
+            "dominant_line_ratio": round(dominant_ratio, 2),
+            "total_line_length": round(total_length, 1),
+            "local_contrast": round(local_contrast, 1),
+            "local_std": round(local_std, 1),
+            "local_dark_delta": round(float(np.percentile(active_dark, 88.0)) if active_dark.size else 0.0, 1),
+            "edge_fill_ratio": round(edge_fill, 3),
+            "dark_blob_fill": round(dark_blob_fill, 2),
+            "dark_texture_scratch": True,
+            "strong_internal_scratch": True,
+        }
 
     def infer_effective_detection_roi(self, result, payload, display_image):
         roi, _source_w, _source_h = self.resolve_detection_roi_for_image(display_image, payload, result)
@@ -3507,6 +5742,7 @@ class LensDefectHostApp:
         roi=None,
         distance=None,
         display_gray=None,
+        strict_lens_mask=None,
     ):
         if defect.get("type") not in SUPPORTED_DEFECT_TYPES:
             return False
@@ -3536,11 +5772,28 @@ class LensDefectHostApp:
         w = max(1, min(w, image_w - x))
         h = max(1, min(h, image_h - y))
         defect_source = str(defect.get("source", ""))
+        if (
+            self.is_yolo_source(defect_source)
+            and strict_lens_mask is not None
+            and not self.yolo_defect_has_strict_lens_support(
+                strict_lens_mask,
+                image_w,
+                image_h,
+                (x, y, w, h),
+                defect_type,
+            )
+        ):
+            return False
         high_confidence_yolo_roi = (
             self.is_yolo_roi_source(defect_source)
             and self.confidence_float(defect) >= FAST_REVIEW_YOLO_ROI_HIGH_CONFIDENCE
         )
         high_confidence_yolo_roi_scratch = high_confidence_yolo_roi and defect_type == "scratch"
+        yolo_stain_refined_to_scratch = (
+            defect_type == "scratch"
+            and defect.get("class_refined_from") == "stain"
+            and self.is_yolo_source(defect_source)
+        )
         safe_middle_dark_scratch = (
             defect_type == "scratch"
             and defect_source == "pc_fast_dark_scratch"
@@ -3589,7 +5842,7 @@ class LensDefectHostApp:
             scaled_box=(x, y, w, h),
         ):
             return False
-        if not high_confidence_yolo_roi_scratch and self.defect_looks_like_internal_reflection(
+        if not high_confidence_yolo_roi_scratch and not yolo_stain_refined_to_scratch and self.defect_looks_like_internal_reflection(
             defect,
             display_gray=display_gray,
             image_w=image_w,
@@ -3599,6 +5852,7 @@ class LensDefectHostApp:
             return False
         if (
             not high_confidence_yolo_roi_scratch
+            and not yolo_stain_refined_to_scratch
             and not safe_middle_dark_stain
             and self.defect_looks_like_reflection_shadow(
             defect,
@@ -3713,6 +5967,7 @@ class LensDefectHostApp:
                 "pc_fast_bright_crosshatch",
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
+                "pc_micro_line_scratch",
             )
             percentile = 58 if is_line_source else 50
             if float(np.percentile(inner, percentile)) < min_box_distance and not high_confidence_yolo_roi:
@@ -3721,6 +5976,89 @@ class LensDefectHostApp:
                 return False
 
         return True
+
+    def build_strict_lens_mask_for_filter(self, image, roi, source_w, source_h):
+        if cv2 is None or np is None or not isinstance(roi, dict):
+            return None
+        image_w, image_h = image.size
+        if image_w <= 0 or image_h <= 0 or source_w <= 0 or source_h <= 0:
+            return None
+
+        x_scale = float(image_w) / float(max(1, source_w))
+        y_scale = float(image_h) / float(max(1, source_h))
+        x = int(self._positive_int(roi.get("x")) * x_scale)
+        y = int(self._positive_int(roi.get("y")) * y_scale)
+        w = int(self._positive_int(roi.get("w")) * x_scale)
+        h = int(self._positive_int(roi.get("h")) * y_scale)
+        if w <= 4 or h <= 4:
+            return None
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        roi_rect = (x, y, w, h)
+
+        for builder in (self.build_lens_contour_mask, self.build_lens_ellipse_mask):
+            try:
+                mask = builder(image, roi_rect)
+            except Exception:
+                mask = None
+            if self.lens_mask_is_reliable(mask, roi_rect):
+                return mask
+        source = str(roi.get("source", "")).lower()
+        if source in ("pc_round_lens_presence", "pc_lens_contour_presence", "pc_precise_lens_presence"):
+            mask = self.build_roi_ellipse_mask(image_w, image_h, roi_rect)
+            if self.lens_mask_is_reliable(mask, roi_rect):
+                return mask
+        return None
+
+    def build_roi_ellipse_mask(self, image_w, image_h, roi_rect):
+        if cv2 is None or np is None:
+            return None
+        x, y, w, h = roi_rect
+        if image_w <= 0 or image_h <= 0 or w <= 0 or h <= 0:
+            return None
+        mask = np.zeros((image_h, image_w), dtype=np.uint8)
+        center = (int(x + w / 2.0), int(y + h / 2.0))
+        axes = (max(2, int(w * 0.48)), max(2, int(h * 0.48)))
+        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        return mask
+
+    def yolo_defect_has_strict_lens_support(self, strict_lens_mask, image_w, image_h, scaled_box, defect_type):
+        if strict_lens_mask is None:
+            return True
+        x, y, w, h = scaled_box
+        if w <= 0 or h <= 0:
+            return False
+        x = max(0, min(int(x), image_w - 1))
+        y = max(0, min(int(y), image_h - 1))
+        w = max(1, min(int(w), image_w - x))
+        h = max(1, min(int(h), image_h - y))
+        box_mask = strict_lens_mask[y:y + h, x:x + w]
+        if box_mask.size <= 0:
+            return False
+
+        center_x = max(0, min(image_w - 1, int(x + w / 2)))
+        center_y = max(0, min(image_h - 1, int(y + h / 2)))
+        if strict_lens_mask[center_y, center_x] == 0:
+            return False
+
+        overlap = float(cv2.countNonZero(box_mask)) / float(max(1, w * h))
+        if defect_type == "scratch":
+            min_overlap = YOLO_SCRATCH_STRICT_LENS_MIN_OVERLAP
+        else:
+            min_overlap = FAST_REVIEW_YOLO_STAIN_STRICT_LENS_MIN_OVERLAP
+        return overlap >= min_overlap
+
+    def yolo_stain_has_strict_lens_support(self, strict_lens_mask, image_w, image_h, scaled_box):
+        return self.yolo_defect_has_strict_lens_support(
+            strict_lens_mask,
+            image_w,
+            image_h,
+            scaled_box,
+            "stain",
+        )
 
     def dark_stain_candidate_is_safe_middle_defect(self, defect, roi, source_w, source_h):
         if not isinstance(defect, dict):
@@ -3955,6 +6293,7 @@ class LensDefectHostApp:
                 "pc_fast_bright_crosshatch",
                 "pc_fast_center_cross_scratch",
                 "pc_fast_curvilinear_scratch",
+                "pc_micro_line_scratch",
             )
         ):
             return False
@@ -4287,12 +6626,37 @@ class LensDefectHostApp:
         local_p995 = float(np.percentile(local_gray, 99.5)) if local_gray.size else box_p98
         glare_delta = local_p995 - local_mean
 
+        defect_dark_delta = float(defect.get("local_dark_delta", 0) or 0)
+        round_reflection = self.yolo_stain_has_round_reflection_signature(
+            box,
+            box_mask,
+            bright_response[y:y + h, x:x + w],
+            active_box,
+            bright_threshold,
+            glare_gray_threshold,
+            signed_delta,
+            dark_fraction,
+            dark_p85,
+            bright_fraction,
+            box_p98,
+            glare_delta,
+            box_area_ratio,
+            aspect_ratio,
+            defect_dark_delta,
+        )
+        strong_dark_stain = (
+            signed_delta <= -22.0
+            or (dark_fraction >= 0.62 and dark_p85 >= 42.0)
+            or defect_dark_delta >= 18.0
+        )
         real_dark_stain = (
             signed_delta <= -11.0
-            or dark_fraction >= 0.24
-            or dark_p85 >= 18.0
-            or float(defect.get("local_dark_delta", 0) or 0) >= 12.0
+            or (signed_delta <= -6.0 and dark_fraction >= 0.24)
+            or (signed_delta <= -4.0 and dark_p85 >= 18.0)
+            or (signed_delta <= -3.0 and defect_dark_delta >= 12.0)
         )
+        if round_reflection and not strong_dark_stain:
+            return True
         if real_dark_stain:
             return False
 
@@ -4308,18 +6672,109 @@ class LensDefectHostApp:
             or aspect_ratio >= 1.55
             or touches_edge
         )
-        reflection_bright = (
+        absolute_glare = (
+            box_p98 >= glare_gray_threshold
+            or local_p995 >= FAST_REVIEW_REFLECTION_GLARE_MIN_GRAY
+            or glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.35
+        )
+        relative_glare = (
             bright_fraction >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BRIGHT_FRACTION
-            or bright_p85 >= max(10.0, dark_p85 * 1.20)
-            or box_p98 >= glare_gray_threshold
-            or glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.45
+            and box_p98 >= FAST_REVIEW_GLARE_LINE_MIN_BRIGHTNESS * 0.70
+            and bright_p85 >= max(14.0, dark_p85 * 1.25)
+        )
+        reflection_bright = (
+            absolute_glare
+            or relative_glare
+            or (
+                bright_p85 >= max(24.0, dark_p85 * 1.45)
+                and glare_delta >= FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.25
+            )
         )
         weak_dark_evidence = (
-            dark_fraction <= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION
-            and signed_delta >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_SIGNED_DELTA
-            and dark_p85 <= 15.0
+            signed_delta >= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_SIGNED_DELTA
+            and (
+                (
+                    dark_fraction <= FAST_REVIEW_YOLO_STAIN_REFLECTION_MAX_DARK_FRACTION
+                    and dark_p85 <= 18.0
+                )
+                or (
+                    signed_delta >= -2.5
+                    and dark_fraction <= 0.36
+                    and dark_p85 <= 28.0
+                )
+            )
         )
         return bool(large_or_wide_box and reflection_bright and weak_dark_evidence)
+
+    def yolo_stain_has_round_reflection_signature(
+        self,
+        box,
+        box_mask,
+        box_bright,
+        active_box,
+        bright_threshold,
+        glare_gray_threshold,
+        signed_delta,
+        dark_fraction,
+        dark_p85,
+        bright_fraction,
+        box_p98,
+        glare_delta,
+        box_area_ratio,
+        aspect_ratio,
+        defect_dark_delta,
+    ):
+        if box is None or box_mask is None or box_bright is None or active_box is None:
+            return False
+        if box.size <= 0 or box_bright.size <= 0 or not np.any(active_box):
+            return False
+        if aspect_ratio > 3.4 or box_area_ratio < FAST_REVIEW_YOLO_STAIN_REFLECTION_MIN_BOX_RATIO * 0.45:
+            return False
+        if signed_delta < FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_SIGNED_DELTA:
+            return False
+        if dark_fraction > FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_DARK_FRACTION:
+            return False
+        if dark_p85 > FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MAX_DARK_P85:
+            return False
+        if defect_dark_delta >= 16.0:
+            return False
+
+        bright_floor = max(10.0, float(bright_threshold) * 0.82)
+        bright_candidate = ((box_bright >= bright_floor) | (box >= glare_gray_threshold)) & active_box
+        active_count = int(np.count_nonzero(active_box))
+        bright_count = int(np.count_nonzero(bright_candidate))
+        if active_count <= 0:
+            return False
+        actual_bright_fraction = float(bright_count) / float(active_count)
+        if (
+            actual_bright_fraction < FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_BRIGHT_FRACTION
+            and bright_fraction < FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_BRIGHT_FRACTION
+        ):
+            return False
+        if glare_delta < FAST_REVIEW_REFLECTION_SHADOW_MIN_GLARE_DELTA * 0.18 and box_p98 < glare_gray_threshold:
+            return False
+
+        component_ratio = 0.0
+        compact_component = False
+        candidate_u8 = np.where(bright_candidate, 255, 0).astype(np.uint8)
+        candidate_u8 = cv2.morphologyEx(candidate_u8, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+        labels, _label_map, stats, _centroids = cv2.connectedComponentsWithStats(candidate_u8, 8)
+        if labels > 1:
+            largest = max(range(1, labels), key=lambda idx: int(stats[idx, cv2.CC_STAT_AREA]))
+            area = float(stats[largest, cv2.CC_STAT_AREA])
+            cw = float(max(1, stats[largest, cv2.CC_STAT_WIDTH]))
+            ch = float(max(1, stats[largest, cv2.CC_STAT_HEIGHT]))
+            component_ratio = area / float(max(1, active_count))
+            component_aspect = max(cw, ch) / max(1.0, min(cw, ch))
+            compact_component = component_aspect <= 3.2
+
+        return bool(
+            actual_bright_fraction >= FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_BRIGHT_FRACTION * 2.4
+            or (
+                component_ratio >= FAST_REVIEW_YOLO_STAIN_ROUND_REFLECTION_MIN_COMPONENT_RATIO
+                and compact_component
+            )
+        )
 
     def defect_box_is_inside_roi(self, defect, roi, source_w, source_h):
         if not isinstance(roi, dict):
@@ -4417,6 +6872,8 @@ class LensDefectHostApp:
 
     def display_class_result(self, result):
         normal_text = self.current_mode_config().normal_result_text
+        if result.get("no_lens"):
+            return "no_lens", "未检测到镜片", None
         if result.get("conveyor_waiting"):
             return "waiting", "等待中心检测区", None
         if result.get("error"):
@@ -4479,6 +6936,17 @@ class LensDefectHostApp:
 
     def fused_conveyor_result_from_buffer(self, current_result):
         frame_count = len(self.conveyor_fusion_results)
+        strong_defect = self.primary_strong_conveyor_defect(current_result)
+        if strong_defect is not None:
+            fused = self.clone_detection_result(current_result)
+            fused["defects"] = [dict(strong_defect)]
+            fused["conveyor_fusion"] = {
+                "frames": frame_count,
+                "strong_single_frame": True,
+                "confidence": round(self.confidence_float(strong_defect), 3),
+            }
+            return self.normalize_detection_result(fused)
+
         if frame_count < CONVEYOR_FUSION_MIN_FRAMES:
             return self.conveyor_wait_result(current_result, "fusion_wait_frames", reset_center=False)
 
@@ -4538,6 +7006,20 @@ class LensDefectHostApp:
         self.conveyor_fusion_results.append(self.clone_detection_result(result))
         self.conveyor_fusion_results = self.conveyor_fusion_results[-CONVEYOR_FUSION_MAX_FRAMES:]
         return self.fused_conveyor_result_from_buffer(result)
+
+    def primary_strong_conveyor_defect(self, result):
+        if not isinstance(result, dict):
+            return None
+        defects = [
+            defect for defect in (result.get("defects") or [])
+            if isinstance(defect, dict) and defect.get("type") in SUPPORTED_DEFECT_TYPES
+        ]
+        if not defects:
+            return None
+        best = max(defects, key=lambda item: self.confidence_float(item))
+        if self.confidence_float(best) < CONVEYOR_FUSION_STRONG_CONFIDENCE:
+            return None
+        return best
 
     def roi_is_inside_conveyor_gate(self, roi, image_w, image_h):
         if not isinstance(roi, dict) or image_w <= 0 or image_h <= 0:
@@ -4601,6 +7083,32 @@ class LensDefectHostApp:
             rx - margin <= center_x <= rx + rw + margin
             and ry - margin <= center_y <= ry + rh + margin
         )
+
+    def strong_centered_conveyor_defects(self, result, roi, source_w, source_h, requires_workpiece):
+        if not isinstance(result, dict):
+            return []
+        defects = [
+            defect for defect in (result.get("defects") or [])
+            if isinstance(defect, dict) and defect.get("type") in SUPPORTED_DEFECT_TYPES
+        ]
+        strong = []
+        for defect in defects:
+            if self.confidence_float(defect) < CONVEYOR_FUSION_STRONG_CONFIDENCE:
+                continue
+            if not self.defect_center_is_inside_conveyor_gate(defect, source_w, source_h):
+                continue
+            if requires_workpiece and not self.defect_center_is_inside_workpiece_roi(defect, roi, source_w, source_h):
+                continue
+            strong.append(defect)
+        strong.sort(key=lambda item: self.confidence_float(item), reverse=True)
+        return strong
+
+    def conveyor_strong_defect_result(self, result, defects, reason):
+        refined = self.clone_detection_result(result)
+        refined["defects"] = [dict(defect) for defect in defects]
+        refined["conveyor_fast_defect"] = True
+        refined["conveyor_bypass_reason"] = reason
+        return self.normalize_detection_result(refined)
 
     def conveyor_roi_source_is_fallback(self, roi):
         if not isinstance(roi, dict):
@@ -4670,6 +7178,9 @@ class LensDefectHostApp:
         return self.valid_roi_or_none(scaled, source_w, source_h)
 
     def apply_conveyor_center_gate(self, result):
+        self.conveyor_centered_count = 0
+        self.conveyor_fusion_results = []
+        return result
         if not self.conveyor_center_gate_var.get() or not isinstance(result, dict):
             self.conveyor_centered_count = 0
             self.conveyor_fusion_results = []
@@ -4690,6 +7201,13 @@ class LensDefectHostApp:
         if roi is None:
             roi = result.get("roi") if isinstance(result.get("roi"), dict) else None
         roi = self.valid_roi_or_none(roi, source_w, source_h)
+        strong_centered_defects = self.strong_centered_conveyor_defects(
+            result,
+            roi,
+            source_w,
+            source_h,
+            requires_workpiece,
+        )
 
         lens_reported_missing = bool(isinstance(lens, dict) and lens.get("found") is False)
         if requires_workpiece and (
@@ -4698,17 +7216,32 @@ class LensDefectHostApp:
         ):
             live_roi = self.conveyor_live_workpiece_roi(source_w, source_h)
             if live_roi is None:
+                if strong_centered_defects:
+                    return self.conveyor_strong_defect_result(result, strong_centered_defects, "strong_defect_without_live_roi")
                 reason = "no_lens_found" if lens_reported_missing else "no_live_workpiece"
                 return self.conveyor_wait_result(result, reason)
             roi = live_roi
+            strong_centered_defects = self.strong_centered_conveyor_defects(
+                result,
+                roi,
+                source_w,
+                source_h,
+                requires_workpiece,
+            )
 
         if roi is not None and not self.roi_is_full_frame(roi, source_w, source_h):
             if not self.roi_is_inside_conveyor_gate(roi, source_w, source_h):
+                if strong_centered_defects:
+                    return self.conveyor_strong_defect_result(result, strong_centered_defects, "strong_defect_in_gate")
                 return self.conveyor_wait_result(result, "roi_outside_center_gate")
             self.conveyor_centered_count += 1
             if self.conveyor_centered_count < CONVEYOR_CENTER_STABLE_FRAMES:
+                if strong_centered_defects:
+                    return self.conveyor_strong_defect_result(result, strong_centered_defects, "strong_defect_before_roi_stable")
                 return self.conveyor_wait_result(result, "roi_wait_stable", reset_center=False)
         elif requires_workpiece:
+            if strong_centered_defects:
+                return self.conveyor_strong_defect_result(result, strong_centered_defects, "strong_defect_without_roi")
             return self.conveyor_wait_result(result, "no_live_workpiece")
         else:
             self.conveyor_centered_count = min(
@@ -4817,13 +7350,18 @@ class LensDefectHostApp:
                 "scratch": "#B3261E",
                 "stain": "#9A5B00",
                 "waiting": "#1E6B8C",
+                "no_lens": "#1E6B8C",
             }.get(class_key, "#333333")
             self.class_result_label.configure(fg=color)
         self.has_defect_var.set("是否检测到缺陷：%s" % ("是" if has_defect else "否"))
-        if class_key == "waiting":
+        if class_key == "no_lens":
+            self.has_defect_var.set("是否检测到缺陷：未检测到镜片")
+        elif class_key == "waiting":
             self.has_defect_var.set("是否检测到缺陷：等待检测")
         self.count_var.set("缺陷总数：%d" % defect_count)
         self.level_var.set("整体严重程度：%s" % level_name(overall_level))
+        if class_key == "no_lens":
+            self.level_var.set("整体严重程度：未判定")
         self.lens_track_var.set(self.format_lens_track_text(result.get("lens")))
         if result.get("error"):
             self.status_var.set("状态：OpenMV 错误：%s" % result.get("error"))
@@ -4859,7 +7397,7 @@ class LensDefectHostApp:
             self.render_live_image(self.latest_live_image_payload)
             if self.latest_detection_result is not result:
                 return
-        self.maybe_send_mcu_result(result)
+        self.maybe_send_bluetooth_result(result)
 
     def update_live_image(self, payload):
         self.latest_live_image_payload = payload
@@ -4909,6 +7447,10 @@ class LensDefectHostApp:
         else:
             resized_w, resized_h = source_w, source_h
             resized = image
+        try:
+            resized = resized.filter(ImageFilter.UnsharpMask(radius=0.8, percent=115, threshold=4))
+        except Exception:
+            pass
         filled = Image.new("RGB", (width, height), "#20242A")
         left = max(0, (width - resized_w) // 2)
         top = max(0, (height - resized_h) // 2)
@@ -5016,6 +7558,7 @@ class LensDefectHostApp:
             "pc_fast_bright_crosshatch",
             "pc_fast_center_cross_scratch",
             "pc_fast_curvilinear_scratch",
+            "pc_micro_line_scratch",
         )
         aspect_ratio = float(detection.get("aspect_ratio", 0) or 0)
         line_count = int(detection.get("line_count", 0) or 0)
@@ -5034,6 +7577,31 @@ class LensDefectHostApp:
             return True
         return aspect_ratio >= 3.2 and total_line_length >= 82.0
 
+    def scratch_line_detection_can_short_circuit(self, detection):
+        if not isinstance(detection, dict) or detection.get("type") != "scratch":
+            return False
+        if self.detection_source(detection) != "pc_fast_review_line":
+            return False
+        if self.confidence_float(detection) < 0.92:
+            return False
+        if not bool(detection.get("strong_internal_scratch")):
+            return False
+        aspect_ratio = float(detection.get("aspect_ratio", 0) or 0)
+        fill_ratio = float(detection.get("fill_ratio", 0) or 0)
+        line_count = int(detection.get("line_count", 0) or 0)
+        total_line_length = float(detection.get("total_line_length", 0) or 0)
+        dominant_delta = max(
+            float(detection.get("local_bright_delta", 0) or 0),
+            float(detection.get("local_dark_delta", 0) or 0),
+        )
+        return bool(
+            aspect_ratio >= 2.4
+            and fill_ratio <= 0.24
+            and line_count >= 6
+            and total_line_length >= 180.0
+            and dominant_delta >= 18.0
+        )
+
     def review_detection_is_strong_stain(self, detection):
         if not isinstance(detection, dict) or detection.get("type") != "stain":
             return False
@@ -5044,6 +7612,7 @@ class LensDefectHostApp:
         density = float(detection.get("density", 0) or 0)
         signed_delta = float(detection.get("brightness_signed_delta", 0) or 0)
         local_dark_delta = float(detection.get("local_dark_delta", 0) or 0)
+        local_bright_delta = float(detection.get("local_bright_delta", 0) or 0)
         aspect_ratio = float(detection.get("aspect_ratio", 0) or 0)
         area = int(detection.get("area", 0) or 0)
         if (
@@ -5055,6 +7624,23 @@ class LensDefectHostApp:
                 "pc_fast_dark_x_stain",
             )
             and confidence >= 0.80
+        ):
+            return True
+        if (
+            source == "pc_micro_dark_stain"
+            and confidence >= 0.78
+            and aspect_ratio <= MICRO_STAIN_MAX_ASPECT
+            and density >= MICRO_STAIN_MIN_FILL
+            and local_dark_delta >= MICRO_STAIN_MIN_RESPONSE
+        ):
+            return True
+        if (
+            source == "pc_micro_bright_stain"
+            and confidence >= 0.78
+            and aspect_ratio <= MICRO_BRIGHT_STAIN_MAX_ASPECT
+            and density >= MICRO_BRIGHT_STAIN_MIN_FILL
+            and local_bright_delta >= MICRO_BRIGHT_STAIN_MIN_RESPONSE
+            and signed_delta >= 2.5
         ):
             return True
         if (
@@ -5327,6 +7913,76 @@ class LensDefectHostApp:
         detection["fast_review_confirmed_frames"] = self.fast_review_candidate_count
         return True
 
+    def confirm_micro_bright_stain_candidate(self, detection):
+        if not isinstance(detection, dict) or not detection.get("ultra_tiny_bright_candidate"):
+            self.micro_bright_stain_candidate = None
+            self.micro_bright_stain_candidate_count = 0
+            return detection
+
+        same_candidate = (
+            isinstance(getattr(self, "micro_bright_stain_candidate", None), dict)
+            and self.fast_review_iou(self.micro_bright_stain_candidate, detection)
+            >= MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_IOU
+        )
+        if not same_candidate and isinstance(getattr(self, "micro_bright_stain_candidate", None), dict):
+            same_candidate = (
+                self.detection_center_distance_ratio(self.micro_bright_stain_candidate, detection)
+                <= MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_CENTER_DISTANCE
+            )
+
+        if same_candidate:
+            self.micro_bright_stain_candidate_count = int(getattr(self, "micro_bright_stain_candidate_count", 0) or 0) + 1
+            self.micro_bright_stain_candidate = detection
+        else:
+            self.micro_bright_stain_candidate = detection
+            self.micro_bright_stain_candidate_count = 1
+
+        if self.micro_bright_stain_candidate_count < MICRO_BRIGHT_STAIN_ULTRA_TINY_CONFIRM_FRAMES:
+            return None
+
+        confirmed = dict(detection)
+        confirmed["ultra_tiny_bright_confirmed_frames"] = self.micro_bright_stain_candidate_count
+        confirmed["confidence"] = max(
+            MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE,
+            self.confidence_float(confirmed, MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE),
+        )
+        return confirmed
+
+    def confirm_micro_dark_stain_candidate(self, detection):
+        if not isinstance(detection, dict) or not detection.get("ultra_tiny_dark_candidate"):
+            self.micro_dark_stain_candidate = None
+            self.micro_dark_stain_candidate_count = 0
+            return detection
+
+        same_candidate = (
+            isinstance(getattr(self, "micro_dark_stain_candidate", None), dict)
+            and self.fast_review_iou(self.micro_dark_stain_candidate, detection)
+            >= MICRO_STAIN_ULTRA_TINY_MIN_IOU
+        )
+        if not same_candidate and isinstance(getattr(self, "micro_dark_stain_candidate", None), dict):
+            same_candidate = (
+                self.detection_center_distance_ratio(self.micro_dark_stain_candidate, detection)
+                <= MICRO_STAIN_ULTRA_TINY_MAX_CENTER_DISTANCE
+            )
+
+        if same_candidate:
+            self.micro_dark_stain_candidate_count = int(getattr(self, "micro_dark_stain_candidate_count", 0) or 0) + 1
+            self.micro_dark_stain_candidate = detection
+        else:
+            self.micro_dark_stain_candidate = detection
+            self.micro_dark_stain_candidate_count = 1
+
+        if self.micro_dark_stain_candidate_count < MICRO_STAIN_ULTRA_TINY_CONFIRM_FRAMES:
+            return None
+
+        confirmed = dict(detection)
+        confirmed["ultra_tiny_dark_confirmed_frames"] = self.micro_dark_stain_candidate_count
+        confirmed["confidence"] = max(
+            MICRO_STAIN_SKIP_MIN_CONFIDENCE,
+            self.confidence_float(confirmed, MICRO_STAIN_SKIP_MIN_CONFIDENCE),
+        )
+        return confirmed
+
     def fast_review_current_is_classifier_roi(self, result):
         model_name = str(result.get("model", "")).lower()
         if "classifier" in model_name and not result.get("pc_fast_review"):
@@ -5399,6 +8055,8 @@ class LensDefectHostApp:
             return
         if not isinstance(self.latest_detection_result, dict):
             return
+        if self.latest_detection_result.get("no_lens"):
+            return
 
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
         if payload_key == self.last_fast_review_key:
@@ -5456,6 +8114,16 @@ class LensDefectHostApp:
         if cv2 is None or np is None:
             return
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
+        presence = self.live_lens_presence_for_image(image, payload)
+        if not presence.get("found", True):
+            self.last_yolo_payload_key = payload_key
+            self.show_no_lens_result_for_image(
+                image,
+                payload,
+                reason=str(presence.get("reason", "no_lens_presence_guard")),
+                presence=presence,
+            )
+            return
         if payload_key == self.last_yolo_payload_key:
             return
         now = time.monotonic()
@@ -5465,11 +8133,25 @@ class LensDefectHostApp:
         detector = self.get_yolo_detector()
         if detector is None:
             return
+        try:
+            scratch_detector = self.get_yolo_new_lens_scratch_detector()
+        except Exception:
+            self.yolo_new_lens_scratch_detector = None
+            self.yolo_new_lens_scratch_model_path = None
+            scratch_detector = None
+        try:
+            stain_detector = self.get_yolo_new_lens_stain_detector()
+        except Exception:
+            self.yolo_new_lens_stain_detector = None
+            self.yolo_new_lens_stain_model_path = None
+            stain_detector = None
 
         self.last_yolo_payload_key = payload_key
         self.last_yolo_infer_time = now
         base = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
         inference_roi = self.yolo_inference_roi_for_image(image, payload, base)
+        scratch_aux_detections = []
+        stain_aux_detections = []
         if inference_roi is not None:
             input_size = YOLO_ROI_HIGH_RES_INPUT_SIZE if self.yolo_high_res_roi_var.get() else None
             detections = detector.detect_roi(image, inference_roi, input_size=input_size)
@@ -5489,10 +8171,47 @@ class LensDefectHostApp:
                         detections = full_detections
                         yolo_mode = "roi_full_fallback"
                     self.yolo_roi_miss_count = 0
+            if scratch_detector is not None:
+                try:
+                    scratch_raw = scratch_detector.detect_roi(
+                        image,
+                        inference_roi,
+                        input_size=input_size,
+                        source="yolo_onnx_roi_new_lens_scratch",
+                    )
+                    scratch_aux_detections = self.filter_yolo_new_lens_scratch_detections(
+                        scratch_raw,
+                        "yolo_onnx_roi_new_lens_scratch",
+                    )
+                except Exception:
+                    scratch_aux_detections = []
         else:
             detections = detector.detect(image)
             yolo_mode = "full"
             self.yolo_roi_miss_count = 0
+            if scratch_detector is not None:
+                try:
+                    scratch_raw = scratch_detector.detect(image)
+                    scratch_aux_detections = self.filter_yolo_new_lens_scratch_detections(
+                        scratch_raw,
+                        "yolo_onnx_new_lens_scratch",
+                    )
+                except Exception:
+                    scratch_aux_detections = []
+        if stain_detector is not None:
+            try:
+                stain_raw = stain_detector.detect(image)
+                stain_aux_detections = self.filter_yolo_new_lens_stain_detections(
+                    stain_raw,
+                    "yolo_onnx_new_lens_stain",
+                )
+            except Exception:
+                stain_aux_detections = []
+        aux_detections = self.merge_yolo_detections(scratch_aux_detections, stain_aux_detections)
+        if aux_detections:
+            detections = self.merge_yolo_detections(detections, aux_detections)
+            if inference_roi is not None:
+                self.yolo_roi_miss_count = 0
         if not detections:
             return
         gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
@@ -5510,6 +8229,10 @@ class LensDefectHostApp:
             "inference_roi": inference_roi or {},
             "high_res_roi": bool(inference_roi is not None and self.yolo_high_res_roi_var.get()),
             "tile_review": yolo_mode == "roi_tile_review",
+            "new_lens_scratch_aux": bool(scratch_aux_detections),
+            "new_lens_scratch_model_path": str(scratch_detector.model_path) if scratch_detector is not None else "",
+            "new_lens_stain_aux": bool(stain_aux_detections),
+            "new_lens_stain_model_path": str(stain_detector.model_path) if stain_detector is not None else "",
         }
         refined = self.normalize_detection_result(refined)
         refined = self.filter_edge_defects_for_image(refined, payload, image)
@@ -5587,6 +8310,36 @@ class LensDefectHostApp:
                 merged.append(dict(detection))
         merged.sort(key=lambda item: self.confidence_float(item), reverse=True)
         return merged[:12]
+
+    def filter_yolo_new_lens_scratch_detections(self, detections, source):
+        filtered = []
+        for detection in detections or []:
+            if not isinstance(detection, dict):
+                continue
+            if detection.get("type") != "scratch":
+                continue
+            if self.confidence_float(detection) < YOLO_NEW_LENS_SCRATCH_MIN_CONFIDENCE:
+                continue
+            scratch = dict(detection)
+            scratch["source"] = source
+            scratch["new_lens_scratch_aux"] = True
+            filtered.append(scratch)
+        return filtered
+
+    def filter_yolo_new_lens_stain_detections(self, detections, source):
+        filtered = []
+        for detection in detections or []:
+            if not isinstance(detection, dict):
+                continue
+            if detection.get("type") != "stain":
+                continue
+            if self.confidence_float(detection) < YOLO_NEW_LENS_STAIN_MIN_CONFIDENCE:
+                continue
+            stain = dict(detection)
+            stain["source"] = source
+            stain["new_lens_stain_aux"] = True
+            filtered.append(stain)
+        return filtered
 
     def correct_yolo_black_stain_classes(self, image, detections, gray=None):
         if cv2 is None or np is None or not detections:
@@ -6086,7 +8839,8 @@ class LensDefectHostApp:
             mask = self.build_detection_mask(image, {}, self.latest_detection_result)
         if mask is None:
             return None
-        if cv2.countNonZero(mask) <= 0:
+        mask_area = int(cv2.countNonZero(mask))
+        if mask_area <= 0:
             return None
 
         analysis_gray = self.enhance_gray_for_inspection(gray)
@@ -6099,22 +8853,148 @@ class LensDefectHostApp:
         morph_stain = self.fast_cv_find_morphology_stain(analysis_gray, mask, edge_distance)
         if morph_stain is not None and (stain is None or self.confidence_float(morph_stain) >= self.confidence_float(stain) - 0.03):
             stain = morph_stain
-        dark_cluster = self.fast_cv_find_dark_stain_cluster(analysis_gray, mask, mean_value, std_value, edge_distance)
-        if dark_cluster is not None and (stain is None or dark_cluster.get("area", 0) >= stain.get("area", 0)):
-            stain = dark_cluster
-        dark_x_stain = self.fast_cv_find_dark_x_stain(analysis_gray, mask, edge_distance)
-        if dark_x_stain is None:
+        micro_stain = self.fast_cv_find_micro_stain(analysis_gray, mask, edge_distance)
+        micro_stain = self.confirm_micro_dark_stain_candidate(micro_stain)
+        micro_bright_stain = self.fast_cv_find_micro_bright_stain(analysis_gray, mask, edge_distance)
+        micro_bright_stain = self.confirm_micro_bright_stain_candidate(micro_bright_stain)
+        if micro_bright_stain is not None and (
+            micro_stain is None
+            or self.confidence_float(micro_bright_stain) >= self.confidence_float(micro_stain) - 0.03
+            or int(micro_bright_stain.get("area", 0) or 0) < int(micro_stain.get("area", 0) or 0)
+        ):
+            micro_stain = micro_bright_stain
+        if micro_stain is not None:
+            stain_area = int(stain.get("area", 0) or 0) if isinstance(stain, dict) else 0
+            micro_area = int(micro_stain.get("area", 0) or 0)
+            if (
+                stain is None
+                or (
+                    stain_area <= max(360, micro_area * 6)
+                    and self.confidence_float(micro_stain) >= self.confidence_float(stain) - 0.05
+                )
+            ):
+                stain = micro_stain
+        if self.fast_cv_micro_stain_can_skip_scratch_review(stain):
+            return stain
+        if stain is None and self.fast_cv_frame_looks_like_side_glare_only(analysis_gray, mask):
+            return None
+        dark_cluster = None
+        if self.should_run_dark_stain_cluster(analysis_gray, mask, stain):
+            dark_cluster = self.fast_cv_find_dark_stain_cluster(analysis_gray, mask, mean_value, std_value, edge_distance)
+            if dark_cluster is not None and (stain is None or dark_cluster.get("area", 0) >= stain.get("area", 0)):
+                stain = dark_cluster
+        if self.fast_cv_weak_dark_stain_looks_like_reflection(stain, mask):
+            stain = None
+        strong_dark_stain = (
+            isinstance(stain, dict)
+            and stain.get("type") == "stain"
+            and str(stain.get("source", "")) in (
+                "pc_fast_dark_stain",
+                "pc_fast_dark_star_stain",
+                "pc_fast_dark_star_stain_lines",
+                "pc_fast_center_radial_stain",
+                "pc_fast_dark_x_stain",
+            )
+            and self.confidence_float(stain) >= 0.90
+            and int(stain.get("area", 0) or 0) >= 240
+            and float(stain.get("density", 0) or 0) >= 0.20
+        )
+        run_dark_line_review = (
+            not strong_dark_stain
+            and self.should_run_dark_line_review(analysis_gray, mask)
+        )
+        dark_x_stain = None
+        run_dark_x_review = run_dark_line_review and self.should_run_dark_x_stain_review(analysis_gray, mask)
+        if run_dark_x_review:
+            dark_x_stain = self.fast_cv_find_dark_x_stain(analysis_gray, mask, edge_distance)
+        if (
+            dark_x_stain is None
+            and float(mask_area) / float(max(1, width * height)) < FAST_REVIEW_DARK_X_CENTER_FALLBACK_MAX_MASK_RATIO
+        ):
             center_mask = self.build_center_defect_fallback_mask(width, height)
-            if cv2.countNonZero(center_mask) > 0:
+            if cv2.countNonZero(center_mask) > 0 and (
+                run_dark_x_review
+                or (
+                    self.should_run_dark_line_review(analysis_gray, center_mask)
+                    and self.should_run_dark_x_stain_review(analysis_gray, center_mask)
+                )
+            ):
+                run_dark_line_review = True
                 center_edge_distance = cv2.distanceTransform(center_mask, cv2.DIST_L2, 3)
                 dark_x_stain = self.fast_cv_find_dark_x_stain(analysis_gray, center_mask, center_edge_distance)
         if dark_x_stain is not None:
             if stain is None or dark_x_stain.get("total_line_length", 0) >= stain.get("length", 0) * 1.35:
                 stain = dark_x_stain
-        scratch = self.fast_cv_find_scratch(analysis_gray, mask, edge_distance, None)
+        if self.fast_cv_stain_can_skip_scratch_review(stain):
+            return stain
+        micro_scratch = None
+        run_micro_scratch_review = self.should_run_micro_scratch_review(analysis_gray, mask, stain)
+        weak_center_cross_scratch = None
+        if not run_micro_scratch_review or stain is None:
+            weak_center_cross_scratch = self.fast_cv_find_weak_center_cross_scratch(analysis_gray, mask, edge_distance)
+        if not run_micro_scratch_review and self.fast_cv_micro_stain_can_skip_scratch_review(stain):
+            return stain
+        if not run_micro_scratch_review and stain is None:
+            return weak_center_cross_scratch
         morph_scratch = self.fast_cv_find_morphology_scratch(analysis_gray, mask, edge_distance)
-        if morph_scratch is not None and (scratch is None or self.confidence_float(morph_scratch) >= self.confidence_float(scratch) - 0.04):
-            scratch = morph_scratch
+        morph_scratch_is_strong = (
+            morph_scratch is not None
+            and self.review_detection_is_strong_scratch(morph_scratch)
+            and self.confidence_float(morph_scratch) >= 0.88
+        )
+        if run_micro_scratch_review and not morph_scratch_is_strong:
+            micro_scratch = self.fast_cv_find_micro_scratch(analysis_gray, mask, edge_distance)
+        scratch = morph_scratch
+        run_heavy_scratch = not (
+            morph_scratch_is_strong
+            or (
+                micro_scratch is not None
+                and self.review_detection_is_strong_scratch(micro_scratch)
+                and self.confidence_float(micro_scratch) >= 0.88
+            )
+        )
+        if run_heavy_scratch and self.should_run_heavy_scratch_review(analysis_gray, mask):
+            heavy_scratch = self.fast_cv_find_scratch(analysis_gray, mask, edge_distance, stain)
+            if heavy_scratch is not None and (
+                scratch is None
+                or self.confidence_float(heavy_scratch) >= self.confidence_float(scratch) - 0.04
+            ):
+                scratch = heavy_scratch
+        if run_heavy_scratch and scratch is None and self.should_run_bright_scratch_review(analysis_gray, mask):
+            bright_scratch = self.fast_cv_find_bright_scratch_lines(analysis_gray, mask, edge_distance)
+            if bright_scratch is not None:
+                scratch = bright_scratch
+        if weak_center_cross_scratch is not None and (
+            scratch is None
+            or self.confidence_float(weak_center_cross_scratch) >= self.confidence_float(scratch) - 0.04
+            or weak_center_cross_scratch.get("total_line_length", 0) >= scratch.get("total_line_length", scratch.get("length", 0)) * 0.72
+        ):
+            scratch = weak_center_cross_scratch
+        micro_scratch_is_tiny_fragment = False
+        if isinstance(micro_scratch, dict) and isinstance(scratch, dict):
+            scratch_source = str(scratch.get("source", ""))
+            micro_scratch_is_tiny_fragment = (
+                scratch_source in (
+                    "pc_fast_review",
+                    "pc_fast_review_line",
+                    "pc_fast_bright_scratch",
+                    "pc_fast_bright_crosshatch",
+                    "pc_fast_center_cross_scratch",
+                    "pc_fast_curvilinear_scratch",
+                )
+                and int(micro_scratch.get("length", 0) or 0) < max(24, int(int(scratch.get("length", 0) or 0) * 0.55))
+                and int(micro_scratch.get("area", 0) or 0) < max(90, int(int(scratch.get("area", 0) or 0) * 0.35))
+                and int(micro_scratch.get("line_count", 0) or 0) <= 1
+            )
+        if micro_scratch is not None and not micro_scratch_is_tiny_fragment and (
+            scratch is None
+            or (
+                not self.review_detection_is_strong_scratch(scratch)
+                and self.confidence_float(micro_scratch) >= self.confidence_float(scratch) - 0.05
+            )
+            or int(micro_scratch.get("length", 0) or 0) > int(scratch.get("length", 0) or 0) * 1.12
+        ):
+            scratch = micro_scratch
         detection = self.choose_fast_cv_defect(scratch, stain, mask)
         if dark_x_stain is not None and (
             detection is None
@@ -6122,10 +9002,10 @@ class LensDefectHostApp:
             or dark_x_stain.get("confidence", 0) >= detection.get("confidence", 0) - 0.04
         ):
             detection = dark_x_stain
-        if detection is None:
+        if detection is None and run_dark_line_review and self.should_run_dark_stain_fallback(analysis_gray, mask):
             detection = self.fast_cv_find_center_radial_stain(analysis_gray)
-        if detection is None:
-            detection = self.fast_cv_find_dark_star_stain_lines(analysis_gray)
+            if detection is None:
+                detection = self.fast_cv_find_dark_star_stain_lines(analysis_gray)
         return detection
 
     def inspection_kernel_size(self, width, height, ratio, minimum=7, maximum=31):
@@ -6134,6 +9014,984 @@ class LensDefectHostApp:
         if size % 2 == 0:
             size += 1
         return max(3, size)
+
+    def should_run_heavy_scratch_review(self, gray, mask):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return True
+        try:
+            mask_area = max(1, int(cv2.countNonZero(mask)))
+            review_mask = mask
+            inner_kernel_size = max(3, int(min(gray.shape[:2]) * FAST_REVIEW_HEAVY_LINE_INNER_MARGIN_RATIO))
+            if inner_kernel_size % 2 == 0:
+                inner_kernel_size += 1
+            if inner_kernel_size > 3:
+                inner_mask = cv2.erode(
+                    mask,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (inner_kernel_size, inner_kernel_size)),
+                    iterations=1,
+                )
+                inner_area = int(cv2.countNonZero(inner_mask))
+                if inner_area >= int(mask_area * FAST_REVIEW_HEAVY_LINE_INNER_MIN_AREA_RATIO):
+                    review_mask = inner_mask
+            local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=9, sigmaY=9)
+            local_diff = cv2.absdiff(gray, local_background)
+            local_values = local_diff[review_mask > 0]
+            if local_values.size <= 0:
+                return False
+            local_p98 = float(np.percentile(local_values, 98.0))
+            edge_mask = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 25, 70)
+            review_area = max(1, int(cv2.countNonZero(review_mask)))
+            edge_density = float(cv2.countNonZero(cv2.bitwise_and(edge_mask, review_mask))) / float(review_area)
+            if edge_density < FAST_REVIEW_HEAVY_LINE_MIN_EDGE_DENSITY:
+                return False
+
+            precheck_edges = cv2.bitwise_and(edge_mask, review_mask)
+            min_line_length = max(
+                18,
+                int(min(gray.shape[:2]) * FAST_REVIEW_HEAVY_LINE_PRECHECK_MIN_LENGTH_RATIO),
+            )
+            lines = cv2.HoughLinesP(
+                precheck_edges,
+                1,
+                np.pi / 180.0,
+                threshold=12,
+                minLineLength=min_line_length,
+                maxLineGap=8,
+            )
+            if lines is None:
+                return False
+            total_length = 0.0
+            longest_length = 0.0
+            line_count = 0
+            angle_groups = set()
+            for line in lines[:, 0, :]:
+                x1, y1, x2, y2 = [int(value) for value in line]
+                line_length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                total_length += line_length
+                longest_length = max(longest_length, line_length)
+                line_count += 1
+                angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                angle_groups.add(int(angle // 22.5))
+            if (
+                edge_density >= FAST_REVIEW_HEAVY_LINE_NOISE_EDGE_DENSITY
+                and local_p98 <= FAST_REVIEW_HEAVY_LINE_NOISE_MAX_LOCAL_P98
+            ):
+                line_dominance = longest_length / float(max(1.0, total_length))
+                if (
+                    line_count >= FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MIN_LINES
+                    and len(angle_groups) >= FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MIN_GROUPS
+                    and line_dominance <= FAST_REVIEW_HEAVY_LINE_NOISE_FRAGMENT_MAX_DOMINANCE
+                ):
+                    return False
+                return bool(
+                    line_count >= FAST_REVIEW_HEAVY_LINE_NOISE_MIN_LINES
+                    and longest_length >= min_line_length * FAST_REVIEW_HEAVY_LINE_NOISE_MIN_LONGEST_RATIO
+                    and total_length >= min_line_length * FAST_REVIEW_HEAVY_LINE_NOISE_MIN_TOTAL_RATIO
+                )
+            if local_p98 >= FAST_REVIEW_HEAVY_LINE_MIN_LOCAL_P98:
+                return bool(
+                    longest_length >= min_line_length
+                    or total_length >= min_line_length * FAST_REVIEW_HEAVY_LINE_PRECHECK_MIN_TOTAL_RATIO
+                )
+            return bool(
+                longest_length >= min_line_length * FAST_REVIEW_HEAVY_LINE_SPARSE_MIN_LONGEST_RATIO
+                and total_length >= min_line_length * FAST_REVIEW_HEAVY_LINE_SPARSE_MIN_TOTAL_RATIO
+            )
+        except Exception:
+            return True
+
+    def should_run_dark_stain_cluster(self, gray, mask, stain=None):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return True
+        try:
+            height, width = gray.shape[:2]
+            if width < 96 or height < 80:
+                return False
+            if isinstance(stain, dict):
+                source = str(stain.get("source", ""))
+                confidence = self.confidence_float(stain)
+                area = int(stain.get("area", 0) or 0)
+                length = int(stain.get("length", 0) or 0)
+                density = float(stain.get("density", 0) or 0)
+                if (
+                    source in ("pc_micro_dark_stain", "pc_micro_bright_stain")
+                    and confidence >= 0.84
+                    and area <= 80
+                    and length <= 12
+                    and density >= 0.45
+                ):
+                    return False
+
+            scale = 0.35 if min(width, height) >= 240 else 0.50
+            small_w = max(48, int(width * scale))
+            small_h = max(36, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            local_dark = np.maximum(
+                local_background.astype(np.int16) - small_gray.astype(np.int16),
+                0,
+            ).astype(np.uint8)
+            values = local_dark[small_mask > 0]
+            if values.size <= 0:
+                return False
+            p98 = float(np.percentile(values, 98.0))
+            p995 = float(np.percentile(values, 99.5))
+            peak = float(np.max(values))
+            density = float(np.mean(values >= FAST_REVIEW_DARK_CLUSTER_MIN_LOCAL_DELTA))
+            if density >= min(
+                FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MIN_DENSITY,
+                FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MIN_DENSITY,
+            ):
+                fragment_threshold = max(
+                    FAST_REVIEW_DARK_CLUSTER_MIN_LOCAL_DELTA,
+                    float(np.percentile(values, 90.0)),
+                )
+                fragment_mask = np.where(local_dark >= fragment_threshold, 255, 0).astype(np.uint8)
+                fragment_mask = cv2.bitwise_and(fragment_mask, small_mask)
+                fragment_mask = cv2.morphologyEx(fragment_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+                fragment_pixels = max(1, int(cv2.countNonZero(fragment_mask)))
+                fragment_density = float(fragment_pixels) / float(max(1, int(cv2.countNonZero(small_mask))))
+                component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(fragment_mask, 8)
+                best_area = 0
+                best_length = 0
+                for index in range(1, component_count):
+                    _x, _y, w, h, area = [int(value) for value in stats[index]]
+                    best_area = max(best_area, area)
+                    best_length = max(best_length, max(w, h))
+                dominant_ratio = float(best_area) / float(fragment_pixels)
+                if (
+                    fragment_density >= FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MIN_DENSITY
+                    and component_count - 1 >= FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MIN_COMPONENTS
+                    and dominant_ratio <= FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MAX_DOMINANT_RATIO
+                    and best_length <= FAST_REVIEW_DARK_CLUSTER_FRAGMENT_NOISE_MAX_BEST_LENGTH
+                ):
+                    return False
+                if (
+                    p98 <= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_P98
+                    and p995 <= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_P995
+                    and peak <= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_PEAK
+                    and fragment_density >= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MIN_DENSITY
+                    and component_count - 1 >= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MIN_COMPONENTS
+                    and dominant_ratio <= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_DOMINANT_RATIO
+                    and best_length <= FAST_REVIEW_DARK_CLUSTER_WEAK_FRAGMENT_MAX_BEST_LENGTH
+                ):
+                    return False
+            return not (
+                p98 <= FAST_REVIEW_DARK_CLUSTER_GATE_MAX_P98
+                and p995 <= FAST_REVIEW_DARK_CLUSTER_GATE_MAX_P995
+                and peak <= FAST_REVIEW_DARK_CLUSTER_GATE_MAX_PEAK
+                and density <= FAST_REVIEW_DARK_CLUSTER_GATE_MAX_DENSITY
+            )
+        except Exception:
+            return True
+
+    def should_run_dark_line_review(self, gray, mask):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return True
+        try:
+            height, width = gray.shape[:2]
+            if width < 120 or height < 90:
+                return False
+
+            scale = 0.35 if min(width, height) >= 240 else 0.50
+            small_w = max(48, int(width * scale))
+            small_h = max(36, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            local_dark = np.maximum(
+                local_background.astype(np.int16) - small_gray.astype(np.int16),
+                0,
+            ).astype(np.uint8)
+            values = local_dark[small_mask > 0]
+            if values.size <= 0:
+                return False
+            p98 = float(np.percentile(values, 98.0))
+            p995 = float(np.percentile(values, 99.5))
+            peak = float(np.max(values))
+            density = float(np.mean(values >= FAST_REVIEW_DARK_CLUSTER_MIN_LOCAL_DELTA))
+            return bool(
+                p98 >= FAST_REVIEW_DARK_LINE_GATE_MIN_P98
+                or p995 >= FAST_REVIEW_DARK_LINE_GATE_MIN_P995
+                or (
+                    peak >= FAST_REVIEW_DARK_LINE_GATE_MIN_PEAK
+                    and density >= FAST_REVIEW_DARK_LINE_GATE_MIN_DENSITY * 0.12
+                )
+                or density >= FAST_REVIEW_DARK_LINE_GATE_MIN_DENSITY
+            )
+        except Exception:
+            return True
+
+    def should_run_dark_x_stain_review(self, gray, mask):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return True
+        try:
+            height, width = gray.shape[:2]
+            if width < 120 or height < 90:
+                return False
+            scale = FAST_REVIEW_DARK_X_PREFLIGHT_SCALE if min(width, height) >= 240 else 0.50
+            small_w = max(48, int(width * scale))
+            small_h = max(36, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            small_area = max(1, int(cv2.countNonZero(small_mask)))
+            if small_area <= 0:
+                return False
+
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            signed_diff = small_gray.astype(np.int16) - local_background.astype(np.int16)
+            dark_response = np.maximum(-signed_diff, 0).astype(np.uint8)
+            bright_response = np.maximum(signed_diff, 0).astype(np.uint8)
+            values = dark_response[small_mask > 0]
+            if values.size <= 0:
+                return False
+            bright_values = bright_response[small_mask > 0]
+            response_values = np.maximum(dark_response, bright_response)[small_mask > 0]
+            threshold = max(
+                FAST_REVIEW_DARK_CLUSTER_MIN_LOCAL_DELTA,
+                float(np.percentile(values, 90.0)),
+            )
+            candidate_mask = np.where(dark_response >= threshold, 255, 0).astype(np.uint8)
+            candidate_mask = cv2.bitwise_and(candidate_mask, small_mask)
+            candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+            candidate_density = float(cv2.countNonZero(candidate_mask)) / float(small_area)
+            if candidate_density < FAST_REVIEW_DARK_X_PREFLIGHT_MIN_DENSITY:
+                return False
+
+            min_line_length = max(8, int(min(small_w, small_h) * 0.050))
+            lines = cv2.HoughLinesP(
+                candidate_mask,
+                1,
+                np.pi / 180.0,
+                threshold=7,
+                minLineLength=min_line_length,
+                maxLineGap=5,
+            )
+            if lines is None:
+                return False
+
+            line_count = 0
+            total_length = 0.0
+            longest_length = 0.0
+            angle_groups = set()
+            for line in lines[:, 0, :]:
+                x1, y1, x2, y2 = [int(value) for value in line]
+                line_length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                if line_length < min_line_length:
+                    continue
+                center_x = max(0, min(small_w - 1, int((x1 + x2) / 2)))
+                center_y = max(0, min(small_h - 1, int((y1 + y2) / 2)))
+                if small_mask[center_y, center_x] == 0:
+                    continue
+                angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                angle_groups.add(int(angle // 30.0))
+                total_length += line_length
+                longest_length = max(longest_length, line_length)
+                line_count += 1
+
+            if line_count <= 0:
+                return False
+            dark_p98 = float(np.percentile(values, 98.0))
+            bright_p98 = float(np.percentile(bright_values, 98.0)) if bright_values.size else 0.0
+            response_p98 = float(np.percentile(response_values, 98.0)) if response_values.size else dark_p98
+            line_dominance = longest_length / float(max(1.0, total_length))
+            weak_balanced_fragment_noise = (
+                dark_p98 <= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_DARK_P98
+                and response_p98 <= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_ABS_P98
+                and candidate_density >= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_DENSITY
+                and line_count >= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_LINES
+                and len(angle_groups) >= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MIN_GROUPS
+                and line_dominance <= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_DOMINANCE
+                and abs(dark_p98 - bright_p98) <= FAST_REVIEW_DARK_X_PREFLIGHT_WEAK_NOISE_MAX_POLARITY_GAP
+            )
+            if weak_balanced_fragment_noise:
+                return False
+            if (
+                candidate_density > FAST_REVIEW_DARK_X_PREFLIGHT_MAX_DENSITY
+                and line_count > FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MAX_LINES
+                and len(angle_groups) >= FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MAX_GROUPS
+                and line_dominance < FAST_REVIEW_DARK_X_PREFLIGHT_HIGH_DENSITY_MIN_DOMINANT_RATIO
+            ):
+                return False
+            return bool(
+                total_length >= min_line_length * FAST_REVIEW_DARK_X_PREFLIGHT_MIN_TOTAL_RATIO
+                and longest_length >= min_line_length * FAST_REVIEW_DARK_X_PREFLIGHT_MIN_LONGEST_RATIO
+                and len(angle_groups) >= 2
+            )
+        except Exception:
+            return True
+
+    def should_run_bright_scratch_review(self, gray, mask):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return False
+        try:
+            height, width = gray.shape[:2]
+            if width < 120 or height < 90:
+                return False
+            scale = FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_SCALE if min(width, height) >= 240 else 0.50
+            small_w = max(48, int(width * scale))
+            small_h = max(36, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            small_area = max(1, int(cv2.countNonZero(small_mask)))
+            if small_area <= 0:
+                return False
+
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            bright_response = np.maximum(
+                small_gray.astype(np.int16) - local_background.astype(np.int16),
+                0,
+            ).astype(np.uint8)
+            values = bright_response[small_mask > 0]
+            if values.size <= 0:
+                return False
+            threshold = max(
+                FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_BRIGHT_DELTA,
+                float(np.percentile(values, 92.0)),
+            )
+            candidate_mask = np.where(bright_response >= threshold, 255, 0).astype(np.uint8)
+            candidate_mask = cv2.bitwise_and(candidate_mask, small_mask)
+            candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+            candidate_pixels = int(cv2.countNonZero(candidate_mask))
+            if candidate_pixels <= 0:
+                return False
+            candidate_density = float(candidate_pixels) / float(small_area)
+            if (
+                candidate_density < FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_DENSITY
+                or candidate_density > FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MAX_DENSITY
+            ):
+                return False
+
+            component_count, _labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+            min_component_length = max(12, int(min(small_w, small_h) * FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LENGTH_RATIO))
+            best = None
+            for index in range(1, component_count):
+                x, y, w, h, area = [int(value) for value in stats[index]]
+                if area <= 0 or w <= 0 or h <= 0:
+                    continue
+                length = max(w, h)
+                short_side = max(1, min(w, h))
+                aspect_ratio = float(length) / float(short_side)
+                center_x = float(centroids[index][0])
+                if (
+                    length < min_component_length
+                    or aspect_ratio < FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_COMPONENT_ASPECT
+                    or center_x > small_w * FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MAX_CENTER_X_RATIO
+                ):
+                    continue
+                support = candidate_mask[y:y + h, x:x + w] > 0
+                if not np.any(support):
+                    continue
+                bright_delta = float(np.percentile(bright_response[y:y + h, x:x + w][support], 85.0))
+                if bright_delta < FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_BRIGHT_DELTA:
+                    continue
+                score = length * 2.0 + aspect_ratio * 8.0 + bright_delta
+                if best is None or score > best["score"]:
+                    best = {
+                        "score": score,
+                        "length": float(length),
+                        "bright_delta": bright_delta,
+                    }
+            if best is None:
+                return False
+
+            min_line_length = max(8, int(min(small_w, small_h) * 0.060))
+            lines = cv2.HoughLinesP(
+                candidate_mask,
+                1,
+                np.pi / 180.0,
+                threshold=6,
+                minLineLength=min_line_length,
+                maxLineGap=6,
+            )
+            if lines is None:
+                return False
+            line_count = 0
+            total_length = 0.0
+            longest_length = 0.0
+            for line in lines[:, 0, :]:
+                x1, y1, x2, y2 = [int(value) for value in line]
+                line_length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                if line_length < min_line_length:
+                    continue
+                center_x = max(0, min(small_w - 1, int((x1 + x2) / 2)))
+                center_y = max(0, min(small_h - 1, int((y1 + y2) / 2)))
+                if small_mask[center_y, center_x] == 0:
+                    continue
+                if center_x > small_w * FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MAX_CENTER_X_RATIO:
+                    continue
+                line_count += 1
+                total_length += line_length
+                longest_length = max(longest_length, line_length)
+            return bool(
+                line_count >= FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LINES
+                and total_length >= min_line_length * FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_TOTAL_RATIO
+                and longest_length >= min_line_length * FAST_REVIEW_BRIGHT_SCRATCH_PREFLIGHT_MIN_LONGEST_RATIO
+            )
+        except Exception:
+            return False
+
+    def fast_cv_stain_can_skip_scratch_review(self, stain):
+        if not isinstance(stain, dict) or stain.get("type") != "stain":
+            return False
+        source = str(stain.get("source", ""))
+        if source not in (
+            "pc_fast_dark_stain",
+            "pc_fast_dark_star_stain",
+            "pc_fast_dark_star_stain_lines",
+            "pc_fast_center_radial_stain",
+            "pc_fast_dark_x_stain",
+        ):
+            return False
+        if self.confidence_float(stain) < 0.90:
+            return False
+        area = int(stain.get("area", 0) or 0)
+        aspect_ratio = float(stain.get("aspect_ratio", 0) or 0)
+        density = float(stain.get("density", 0) or 0)
+        signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+        local_dark_delta = float(stain.get("local_dark_delta", 0) or 0)
+        if area < 240 or signed_delta > -24.0 or local_dark_delta < 18.0:
+            if (
+                source == "pc_fast_dark_stain"
+                and area >= 2400
+                and 0.0 < aspect_ratio <= 2.10
+                and 0.10 <= density <= 0.34
+                and signed_delta <= -7.0
+                and local_dark_delta >= 7.0
+                and self.confidence_float(stain) >= 0.92
+            ):
+                return True
+            return bool(
+                source == "pc_fast_dark_stain"
+                and area >= 1500
+                and 0.0 < aspect_ratio <= 1.75
+                and density >= 0.32
+                and signed_delta <= -14.0
+                and local_dark_delta >= 14.0
+                and self.confidence_float(stain) >= 0.93
+            )
+        return bool(density >= 0.50 or area >= 1400)
+
+    def fast_cv_weak_dark_stain_looks_like_reflection(self, stain, mask):
+        if not isinstance(stain, dict) or stain.get("type") != "stain" or mask is None:
+            return False
+        if str(stain.get("source", "")) != "pc_fast_dark_stain":
+            return False
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        area = float(stain.get("area", 0) or 0)
+        area_ratio = area / float(mask_area)
+        density = float(stain.get("density", 0) or 0)
+        aspect_ratio = float(stain.get("aspect_ratio", 0) or 0)
+        angle_groups = int(stain.get("angle_groups", 0) or 0)
+        signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+        local_dark_delta = float(stain.get("local_dark_delta", 0) or 0)
+        return bool(
+            area_ratio >= 0.30
+            and density >= 0.50
+            and 0.0 < aspect_ratio <= 1.85
+            and angle_groups <= 1
+            and local_dark_delta <= 7.0
+            and signed_delta >= -22.0
+        )
+
+    def fast_cv_micro_stain_can_skip_scratch_review(self, stain):
+        if not isinstance(stain, dict) or stain.get("type") != "stain":
+            return False
+        source = str(stain.get("source", ""))
+        if source not in ("pc_micro_dark_stain", "pc_micro_bright_stain"):
+            return False
+        min_confidence = MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE if source == "pc_micro_bright_stain" else MICRO_STAIN_SKIP_MIN_CONFIDENCE
+        if self.confidence_float(stain) < min_confidence:
+            return False
+        area = int(stain.get("area", 0) or 0)
+        length = int(stain.get("length", 0) or 0)
+        aspect_ratio = float(stain.get("aspect_ratio", 0) or 0)
+        density = float(stain.get("density", 0) or 0)
+        local_dark_delta = float(stain.get("local_dark_delta", 0) or 0)
+        local_bright_delta = float(stain.get("local_bright_delta", 0) or 0)
+        ring_delta = float(stain.get("local_ring_delta", 0) or 0)
+        signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+        bright_micro_stain = (
+            source == "pc_micro_bright_stain"
+            and 0 < area <= MICRO_BRIGHT_STAIN_SKIP_MAX_AREA
+            and 0 < length <= MICRO_BRIGHT_STAIN_SKIP_MAX_LENGTH
+            and 0.0 < aspect_ratio <= MICRO_BRIGHT_STAIN_SKIP_MAX_ASPECT
+            and density >= MICRO_BRIGHT_STAIN_SKIP_MIN_DENSITY
+            and local_bright_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_BRIGHT_DELTA
+            and ring_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_RING_DELTA
+            and signed_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_SIGNED_DELTA
+        )
+        if bright_micro_stain:
+            return True
+        compact_micro_stain = (
+            10 <= area <= MICRO_STAIN_SKIP_MAX_AREA
+            and 0 < length <= MICRO_STAIN_SKIP_MAX_LENGTH
+            and 0.0 < aspect_ratio <= MICRO_STAIN_SKIP_MAX_ASPECT
+            and density >= MICRO_STAIN_SKIP_MIN_DENSITY
+            and local_dark_delta >= MICRO_STAIN_SKIP_MIN_DARK_DELTA
+            and ring_delta >= MICRO_STAIN_SKIP_MIN_RING_DELTA
+            and signed_delta <= MICRO_STAIN_SKIP_MAX_SIGNED_DELTA
+        )
+        tiny_dark_dot = (
+            0 < area <= MICRO_STAIN_SKIP_TINY_MAX_AREA
+            and 0 < length <= MICRO_STAIN_SKIP_TINY_MAX_LENGTH
+            and 0.0 < aspect_ratio <= MICRO_STAIN_SKIP_TINY_MAX_ASPECT
+            and density >= MICRO_STAIN_SKIP_TINY_MIN_DENSITY
+            and local_dark_delta >= MICRO_STAIN_SKIP_TINY_MIN_DARK_DELTA
+            and ring_delta >= MICRO_STAIN_SKIP_TINY_MIN_RING_DELTA
+            and signed_delta <= MICRO_STAIN_SKIP_TINY_MAX_SIGNED_DELTA
+        )
+        ultra_tiny_dark_dot = (
+            0 < area <= MICRO_STAIN_ULTRA_TINY_MAX_AREA
+            and 0 < length <= MICRO_STAIN_ULTRA_TINY_MAX_LENGTH
+            and 0.0 < aspect_ratio <= MICRO_STAIN_ULTRA_TINY_MAX_ASPECT
+            and density >= MICRO_STAIN_ULTRA_TINY_MIN_FILL
+            and local_dark_delta >= MICRO_STAIN_ULTRA_TINY_MIN_RESPONSE
+            and signed_delta <= MICRO_STAIN_ULTRA_TINY_MAX_SIGNED_DELTA
+        )
+        return bool(compact_micro_stain or tiny_dark_dot or ultra_tiny_dark_dot)
+
+    def fast_cv_frame_looks_like_side_glare_only(self, gray, mask):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return False
+        try:
+            height, width = gray.shape[:2]
+            if width < 48 or height < 48:
+                return False
+            scale = SIDE_GLARE_PREFLIGHT_SCALE if min(width, height) >= 180 else 0.50
+            small_w = max(64, int(width * scale))
+            small_h = max(48, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            small_area = int(cv2.countNonZero(small_mask))
+            if small_area <= 0:
+                return False
+
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=4.0, sigmaY=4.0)
+            signed_diff = small_gray.astype(np.int16) - local_background.astype(np.int16)
+            bright_response = np.maximum(signed_diff, 0).astype(np.uint8)
+            dark_response = np.maximum(-signed_diff, 0).astype(np.uint8)
+            bright_values = bright_response[small_mask > 0]
+            if bright_values.size <= 0:
+                return False
+
+            threshold = max(10.0, float(np.percentile(bright_values, 98.5)))
+            candidate_mask = np.where(bright_response >= threshold, 255, 0).astype(np.uint8)
+            candidate_mask = cv2.bitwise_and(candidate_mask, small_mask)
+            candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+            bright_pixels = int(cv2.countNonZero(candidate_mask))
+            if bright_pixels <= 0:
+                return False
+            if float(bright_pixels) / float(small_area) > SIDE_GLARE_PREFLIGHT_MAX_DENSITY:
+                return False
+
+            component_count, _labels, stats, centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+            min_length = max(12, int(min(small_w, small_h) * SIDE_GLARE_PREFLIGHT_MIN_LENGTH_RATIO))
+            min_side_x = int(small_w * FAST_REVIEW_FRAME_SIDE_REJECT_RATIO)
+            best = None
+            for index in range(1, component_count):
+                x, y, w, h, area = [int(value) for value in stats[index]]
+                if area < SIDE_GLARE_PREFLIGHT_MIN_AREA or w <= 0 or h <= 0:
+                    continue
+                length = max(w, h)
+                short_side = max(1, min(w, h))
+                aspect_ratio = float(length) / float(short_side)
+                fill_ratio = float(area) / float(max(1, w * h))
+                center_x = float(centroids[index][0])
+                if (
+                    aspect_ratio < SIDE_GLARE_PREFLIGHT_MIN_ASPECT
+                    or length < min_length
+                    or fill_ratio < SIDE_GLARE_PREFLIGHT_MIN_FILL
+                    or center_x < min_side_x
+                ):
+                    continue
+
+                support = candidate_mask[y:y + h, x:x + w]
+                if support.size <= 0 or cv2.countNonZero(support) <= 0:
+                    continue
+                bright_roi = bright_response[y:y + h, x:x + w][support > 0]
+                dark_roi = dark_response[y:y + h, x:x + w][support > 0]
+                if bright_roi.size <= 0:
+                    continue
+                bright_delta = float(np.percentile(bright_roi, 85.0))
+                dark_delta = float(np.percentile(dark_roi, 85.0)) if dark_roi.size else 0.0
+                if (
+                    bright_delta < SIDE_GLARE_PREFLIGHT_MIN_BRIGHT_DELTA
+                    or dark_delta > bright_delta * SIDE_GLARE_PREFLIGHT_MAX_DARK_RATIO
+                ):
+                    continue
+
+                pad = max(6, int(min(small_w, small_h) * 0.035))
+                local_left = max(0, x - pad)
+                local_top = max(0, y - pad)
+                local_right = min(small_w, x + w + pad)
+                local_bottom = min(small_h, y + h + pad)
+                local_gray = small_gray[local_top:local_bottom, local_left:local_right]
+                local_mask = small_mask[local_top:local_bottom, local_left:local_right]
+                active_gray = small_gray[y:y + h, x:x + w][support > 0]
+                local_values = local_gray[local_mask > 0] if local_gray.size and local_mask.size else local_gray.reshape(-1)
+                if active_gray.size <= 0 or local_values.size <= 0:
+                    continue
+                roi_p90 = float(np.percentile(active_gray, 90.0))
+                local_mean = float(np.mean(local_values))
+                if roi_p90 - local_mean < SIDE_GLARE_PREFLIGHT_MIN_LOCAL_DELTA:
+                    continue
+
+                score = area * 3.0 + aspect_ratio * 8.0 + bright_delta
+                if best is None or score > best["score"]:
+                    best = {
+                        "area": area,
+                        "score": score,
+                    }
+
+            if best is None:
+                return False
+            return bool(float(best["area"]) / float(max(1, bright_pixels)) >= SIDE_GLARE_PREFLIGHT_MIN_DOMINANT_RATIO)
+        except Exception:
+            return False
+
+    def should_run_micro_scratch_review(self, gray, mask, stain=None):
+        if cv2 is None or np is None or gray is None or mask is None:
+            return True
+        try:
+            height, width = gray.shape[:2]
+            if width < 48 or height < 48:
+                return False
+            mask_area = max(1, int(cv2.countNonZero(mask)))
+            if mask_area <= 0:
+                return False
+
+            scale = MICRO_SCRATCH_PRECHECK_SCALE if min(width, height) >= 240 else 0.70
+            small_w = max(64, int(width * scale))
+            small_h = max(48, int(height * scale))
+            small_gray = cv2.resize(gray, (small_w, small_h), interpolation=cv2.INTER_AREA)
+            small_mask = cv2.resize(mask, (small_w, small_h), interpolation=cv2.INTER_NEAREST)
+            small_area = max(1, int(cv2.countNonZero(small_mask)))
+            if small_area <= 0:
+                return False
+
+            local_background = cv2.GaussianBlur(small_gray, (0, 0), sigmaX=2.2, sigmaY=2.2)
+            signed_diff = small_gray.astype(np.int16) - local_background.astype(np.int16)
+            response = np.maximum(
+                np.maximum(signed_diff, 0),
+                np.maximum(-signed_diff, 0),
+            ).astype(np.uint8)
+            values = response[small_mask > 0]
+            if values.size <= 0:
+                return False
+
+            local_p94 = float(np.percentile(values, 94.0))
+            local_p98 = float(np.percentile(values, 98.0))
+            local_peak = float(np.max(values))
+            threshold = max(MICRO_SCRATCH_MIN_RESPONSE, local_p94)
+            candidate_mask = np.where(response >= threshold, 255, 0).astype(np.uint8)
+            candidate_mask = cv2.bitwise_and(candidate_mask, small_mask)
+            candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+            active_pixels = int(cv2.countNonZero(candidate_mask))
+            if active_pixels <= 0:
+                return False
+            active_density = float(active_pixels) / float(small_area)
+
+            component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+            best_aspect = 0.0
+            best_length = 0
+            best_area = 0
+            best_fill = 0.0
+            best_index = 0
+            best_box = None
+            elongated_fragments = 0
+            for index in range(1, component_count):
+                x, y, w, h, area = [int(value) for value in stats[index]]
+                if area < 2 or w <= 0 or h <= 0:
+                    continue
+                length = max(w, h)
+                short_side = max(1, min(w, h))
+                aspect_ratio = float(length) / float(short_side)
+                fill_ratio = float(area) / float(max(1, w * h))
+                if aspect_ratio >= MICRO_SCRATCH_PRECHECK_MIN_FRAGMENT_ASPECT and length >= 4:
+                    elongated_fragments += 1
+                if aspect_ratio > best_aspect:
+                    best_aspect = aspect_ratio
+                    best_length = length
+                    best_area = area
+                    best_fill = fill_ratio
+                    best_index = index
+                    best_box = (x, y, w, h)
+            fragment_noise = (
+                active_density >= MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_DENSITY
+                and component_count - 1 >= MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_COMPONENTS
+                and best_length <= MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MAX_BEST_LENGTH
+                and best_area <= MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MAX_BEST_AREA
+                and best_fill >= MICRO_SCRATCH_PRECHECK_FRAGMENT_NOISE_MIN_BEST_FILL
+            )
+            if fragment_noise:
+                return False
+
+            min_line_length = max(5, int(min(small_w, small_h) * 0.020))
+            lines = cv2.HoughLinesP(
+                candidate_mask,
+                1,
+                np.pi / 180.0,
+                threshold=4,
+                minLineLength=min_line_length,
+                maxLineGap=3,
+            )
+            line_count = 0
+            longest_line = 0.0
+            total_line_length = 0.0
+            dashed_line_hint = False
+            if lines is not None:
+                for line in lines[:, 0, :]:
+                    x1, y1, x2, y2 = [int(value) for value in line]
+                    line_length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                    if line_length < min_line_length:
+                        continue
+                    line_count += 1
+                    longest_line = max(longest_line, line_length)
+                    total_line_length += line_length
+
+            if active_pixels >= max(10, min_line_length * 2):
+                dashed_min_line = max(18, int(min(small_w, small_h) * 0.105), min_line_length * 3)
+                dashed_gap = min(18, max(8, int(min(small_w, small_h) * 0.095)))
+                dashed_lines = cv2.HoughLinesP(
+                    candidate_mask,
+                    1,
+                    np.pi / 180.0,
+                    threshold=4,
+                    minLineLength=dashed_min_line,
+                    maxLineGap=dashed_gap,
+                )
+                if dashed_lines is not None:
+                    support_mask = cv2.dilate(candidate_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
+                    for line in dashed_lines[:, 0, :32]:
+                        x1, y1, x2, y2 = [int(value) for value in line]
+                        line_length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                        if line_length < dashed_min_line:
+                            continue
+                        dx = float(x2 - x1)
+                        dy = float(y2 - y1)
+                        normal_x = -dy / max(1.0, line_length)
+                        normal_y = dx / max(1.0, line_length)
+                        best_precheck = None
+                        best_precheck_score = 0.0
+                        for offset in (-1.0, 0.0, 1.0):
+                            samples = max(12, int(line_length))
+                            active_count = 0
+                            fragment_count = 0
+                            in_fragment = False
+                            current_gap = 0
+                            max_gap = 0
+                            signed_values = []
+                            response_values = []
+                            ox1 = x1 + normal_x * offset
+                            oy1 = y1 + normal_y * offset
+                            ox2 = x2 + normal_x * offset
+                            oy2 = y2 + normal_y * offset
+                            for sample_index in range(samples + 1):
+                                ratio = float(sample_index) / float(samples)
+                                px = max(0, min(small_w - 1, int(round(ox1 + (ox2 - ox1) * ratio))))
+                                py = max(0, min(small_h - 1, int(round(oy1 + (oy2 - oy1) * ratio))))
+                                if small_mask[py, px] <= 0:
+                                    if in_fragment:
+                                        in_fragment = False
+                                    continue
+                                is_active = support_mask[py, px] > 0
+                                if is_active:
+                                    active_count += 1
+                                    if not in_fragment:
+                                        fragment_count += 1
+                                    in_fragment = True
+                                    current_gap = 0
+                                else:
+                                    if in_fragment:
+                                        in_fragment = False
+                                    current_gap += 1
+                                    max_gap = max(max_gap, current_gap)
+                                signed_values.append(float(signed_diff[py, px]))
+                                response_values.append(float(response[py, px]))
+                            if not signed_values or not response_values:
+                                continue
+                            active_fraction = float(active_count) / float(max(1, len(response_values)))
+                            response_p85 = float(np.percentile(np.array(response_values, dtype=np.float32), 85.0))
+                            signed_array = np.array(signed_values, dtype=np.float32)
+                            abs_delta = float(np.percentile(np.abs(signed_array), 75.0))
+                            bright_delta = float(np.percentile(np.maximum(signed_array, 0), 85.0))
+                            dark_delta = float(np.percentile(np.maximum(-signed_array, 0), 85.0))
+                            dominant_delta = max(bright_delta, dark_delta)
+                            secondary_delta = min(bright_delta, dark_delta)
+                            max_gap_ratio = float(max_gap) / float(max(1, len(response_values)))
+                            score = (
+                                fragment_count * 12.0
+                                + active_fraction * 70.0
+                                + response_p85 * 2.0
+                                + dominant_delta
+                                - secondary_delta * 0.5
+                                - max_gap_ratio * 50.0
+                            )
+                            if score > best_precheck_score:
+                                best_precheck_score = score
+                                best_precheck = (
+                                    fragment_count,
+                                    active_fraction,
+                                    max_gap_ratio,
+                                    response_p85,
+                                    abs_delta,
+                                    dominant_delta,
+                                    secondary_delta,
+                                )
+                        if best_precheck is None:
+                            continue
+                        (
+                            fragment_count,
+                            active_fraction,
+                            max_gap_ratio,
+                            response_p85,
+                            abs_delta,
+                            dominant_delta,
+                            secondary_delta,
+                        ) = best_precheck
+                        if (
+                            fragment_count >= MICRO_SCRATCH_DASHED_MIN_FRAGMENTS
+                            and active_fraction >= MICRO_SCRATCH_DASHED_MIN_ACTIVE_FRACTION
+                            and max_gap_ratio <= MICRO_SCRATCH_DASHED_MAX_GAP_RATIO
+                            and response_p85 >= max(13.0, MICRO_SCRATCH_DASHED_MIN_RESPONSE * 0.50)
+                            and abs_delta >= max(7.0, MICRO_SCRATCH_DASHED_MIN_ABS_DELTA * 0.58)
+                            and dominant_delta >= secondary_delta * 1.30
+                        ):
+                            dashed_line_hint = True
+                            break
+
+            side_glare_single_line = False
+            if (
+                best_index > 0
+                and best_box is not None
+                and best_aspect >= MICRO_SCRATCH_SIDE_GLARE_MIN_ASPECT
+                and best_length >= min_line_length + 2
+                and best_fill >= MICRO_SCRATCH_SIDE_GLARE_MIN_FILL
+                and active_density <= MICRO_SCRATCH_PRECHECK_MAX_NOISE_DENSITY
+            ):
+                x, y, w, h = best_box
+                center_x = x + w / 2.0
+                if center_x >= small_w * FAST_REVIEW_FRAME_SIDE_REJECT_RATIO:
+                    component_active = labels[y:y + h, x:x + w] == best_index
+                    signed_roi = signed_diff[y:y + h, x:x + w]
+                    gray_roi = small_gray[y:y + h, x:x + w]
+                    if component_active.any() and signed_roi.size > 0 and gray_roi.size > 0:
+                        signed_active = signed_roi[component_active]
+                        bright_delta = float(np.percentile(np.maximum(signed_active, 0), 85.0))
+                        dark_delta = float(np.percentile(np.maximum(-signed_active, 0), 85.0))
+                        local_pad = max(4, int(min(small_w, small_h) * 0.025))
+                        local_left = max(0, x - local_pad)
+                        local_top = max(0, y - local_pad)
+                        local_right = min(small_w, x + w + local_pad)
+                        local_bottom = min(small_h, y + h + local_pad)
+                        local_gray = small_gray[local_top:local_bottom, local_left:local_right]
+                        roi_p90 = float(np.percentile(gray_roi, 90.0))
+                        local_mean = float(np.mean(local_gray)) if local_gray.size else float(np.mean(small_gray))
+                        side_glare_single_line = (
+                            bright_delta >= MICRO_SCRATCH_SIDE_GLARE_MIN_BRIGHT_DELTA
+                            and (
+                                dark_delta <= MICRO_SCRATCH_SIDE_GLARE_MAX_DARK_DELTA
+                                or bright_delta >= dark_delta * MICRO_SCRATCH_SIDE_GLARE_MIN_POLARITY_RATIO
+                            )
+                            and roi_p90 >= MICRO_SCRATCH_SIDE_GLARE_MIN_GRAY
+                            and roi_p90 - local_mean >= MICRO_SCRATCH_SIDE_GLARE_MIN_LOCAL_DELTA
+                        )
+            if side_glare_single_line:
+                return False
+
+            strong_line_hint = (
+                longest_line >= max(min_line_length + 5, int(min(small_w, small_h) * 0.050))
+                or total_line_length >= min_line_length * 4.0
+                or (
+                    best_aspect >= MICRO_SCRATCH_PRECHECK_MIN_ELONGATED_ASPECT
+                    and best_length >= min_line_length + 2
+                )
+            )
+            weak_line_hint = (
+                line_count >= 2
+                and longest_line >= min_line_length + 2
+                and (
+                    total_line_length >= min_line_length * 2.2
+                    or elongated_fragments >= 2
+                    or best_aspect >= MICRO_SCRATCH_PRECHECK_MIN_FRAGMENT_ASPECT
+                )
+            )
+            sparse_single_line_hint = (
+                line_count >= 1
+                and active_density <= MICRO_SCRATCH_PRECHECK_MAX_NOISE_DENSITY
+                and best_aspect >= MICRO_SCRATCH_PRECHECK_MIN_ELONGATED_ASPECT
+                and best_fill <= 0.78
+            )
+
+            if active_density > MICRO_SCRATCH_PRECHECK_MAX_NOISE_DENSITY:
+                return bool(
+                    (
+                        strong_line_hint
+                        and longest_line >= max(min_line_length + 6, int(min(small_w, small_h) * 0.055))
+                        and best_aspect >= MICRO_SCRATCH_PRECHECK_MIN_ELONGATED_ASPECT
+                    )
+                    or dashed_line_hint
+                )
+
+            if strong_line_hint or weak_line_hint or sparse_single_line_hint or dashed_line_hint:
+                return True
+
+            if isinstance(stain, dict):
+                source = str(stain.get("source", ""))
+                confidence = self.confidence_float(stain)
+                stain_area = int(stain.get("area", 0) or 0)
+                stain_length = int(stain.get("length", 0) or 0)
+                density = float(stain.get("density", 0) or 0)
+                compact_micro_stain = (
+                    source in ("pc_micro_dark_stain", "pc_micro_bright_stain")
+                    and confidence >= 0.84
+                    and stain_area <= 90
+                    and stain_length <= 12
+                    and density >= 0.45
+                )
+                if compact_micro_stain and local_p98 < 8.0 and local_peak < 36.0:
+                    return False
+
+            return bool(local_p98 >= 10.0 and local_peak >= 32.0 and best_aspect >= 2.2)
+        except Exception:
+            return True
+
+    def should_run_dark_stain_fallback(self, gray, mask=None):
+        if cv2 is None or np is None or gray is None:
+            return True
+        try:
+            height, width = gray.shape[:2]
+            if width < 120 or height < 90:
+                return False
+            left = int(width * 0.04)
+            right = int(width * FAST_REVIEW_DARK_STAR_LINE_MAX_X_RATIO)
+            top = int(height * 0.03)
+            bottom = int(height * FAST_REVIEW_DARK_STAR_LINE_MAX_Y_RATIO)
+            if right <= left or bottom <= top:
+                return False
+            background = cv2.GaussianBlur(gray, (0, 0), sigmaX=13, sigmaY=13)
+            dark_response = np.maximum(background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+            roi_dark = dark_response[top:bottom, left:right]
+            if roi_dark.size <= 0:
+                return False
+            if mask is not None and mask.shape[:2] == gray.shape[:2]:
+                roi_mask = mask[top:bottom, left:right] > 0
+                values = roi_dark[roi_mask]
+                if values.size < 40:
+                    values = roi_dark.reshape(-1)
+            else:
+                values = roi_dark.reshape(-1)
+            if values.size <= 0:
+                return False
+            return (
+                float(np.percentile(values, 98.0)) >= FAST_REVIEW_DARK_FALLBACK_MIN_P98
+                or float(np.percentile(values, 99.5)) >= FAST_REVIEW_DARK_FALLBACK_MIN_P995
+                or float(np.max(values)) >= FAST_REVIEW_DARK_FALLBACK_MIN_MAX
+            )
+        except Exception:
+            return True
 
     def fast_cv_find_morphology_stain(self, gray, mask, edge_distance=None):
         height, width = gray.shape[:2]
@@ -6154,6 +10012,9 @@ class LensDefectHostApp:
         stain_mask = cv2.bitwise_and(stain_mask, mask)
         stain_mask = cv2.morphologyEx(stain_mask, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
         stain_mask = cv2.morphologyEx(stain_mask, cv2.MORPH_CLOSE, np.ones((5, 5), dtype=np.uint8))
+        candidate_density = float(cv2.countNonZero(stain_mask)) / float(mask_area)
+        if candidate_density > MORPH_STAIN_MAX_NOISE_DENSITY and float(np.max(values)) < MORPH_STAIN_DENSE_MIN_MAX_RESPONSE:
+            return None
 
         component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(stain_mask, 8)
         if component_count <= 1:
@@ -6182,11 +10043,25 @@ class LensDefectHostApp:
             if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
                 continue
             response_roi = blackhat[y:y + h, x:x + w]
-            active_response = response_roi[stain_mask[y:y + h, x:x + w] > 0]
+            active_pixels = stain_mask[y:y + h, x:x + w] > 0
+            active_response = response_roi[active_pixels]
             if active_response.size <= 0:
                 continue
             local_dark_delta = float(np.percentile(active_response, 85.0))
-            score = area + local_dark_delta * 12.0 + fill_ratio * 160.0
+            local_background = cv2.GaussianBlur(gray[y:y + h, x:x + w], (0, 0), sigmaX=9.0, sigmaY=9.0)
+            signed_response = gray[y:y + h, x:x + w].astype(np.int16) - local_background.astype(np.int16)
+            active_signed = signed_response[active_pixels]
+            signed_delta = float(np.mean(active_signed)) if active_signed.size else -local_dark_delta
+            active_dark_delta = float(np.percentile(np.maximum(-active_signed, 0), 85.0)) if active_signed.size else local_dark_delta
+            active_bright_delta = float(np.percentile(np.maximum(active_signed, 0), 85.0)) if active_signed.size else 0.0
+            if local_dark_delta < 18.0:
+                if active_dark_delta < 5.5:
+                    continue
+                if active_bright_delta >= active_dark_delta * 0.82 and signed_delta > -2.5:
+                    continue
+            if signed_delta > -1.2 and active_dark_delta < 8.0:
+                continue
+            score = area + local_dark_delta * 12.0 + active_dark_delta * 8.0 + fill_ratio * 160.0
             if score > best_score:
                 best_score = score
                 confidence = min(0.93, 0.76 + min(0.10, local_dark_delta / 110.0) + min(0.07, area / float(mask_area) * 4.0))
@@ -6204,7 +10079,8 @@ class LensDefectHostApp:
                     "source": "pc_morph_blackhat_stain",
                     "density": round(fill_ratio, 2),
                     "local_dark_delta": round(local_dark_delta, 1),
-                    "brightness_signed_delta": round(-local_dark_delta, 1),
+                    "brightness_signed_delta": round(signed_delta, 1),
+                    "active_dark_delta": round(active_dark_delta, 1),
                 }
         return best
 
@@ -6282,11 +10158,52 @@ class LensDefectHostApp:
             ):
                 continue
             response_roi = line_response[y:y + h, x:x + w]
-            active_response = response_roi[line_mask[y:y + h, x:x + w] > 0]
+            active_pixels = line_mask[y:y + h, x:x + w] > 0
+            active_response = response_roi[active_pixels]
             if active_response.size <= 0:
                 continue
             local_delta = float(np.percentile(active_response, 85.0))
             if local_delta < MORPH_SCRATCH_MIN_RESPONSE:
+                continue
+            local_bright_delta = float(np.percentile(tophat[y:y + h, x:x + w][active_pixels], 80.0))
+            local_dark_delta = float(np.percentile(blackhat[y:y + h, x:x + w][active_pixels], 80.0))
+            dominant_delta = max(local_bright_delta, local_dark_delta)
+            secondary_delta = min(local_bright_delta, local_dark_delta)
+            short_noise_like_line = (
+                length < MORPH_SCRATCH_SHORT_NOISE_MAX_LENGTH
+                and area < 170
+                and (
+                    dominant_delta < MORPH_SCRATCH_SHORT_NOISE_MAX_DOMINANT_DELTA
+                    or (
+                        fill_ratio >= 0.30
+                        and dominant_delta < 34.0
+                        and dominant_delta < secondary_delta * 1.85 + 6.0
+                    )
+                )
+            )
+            weak_balanced_short_line = (
+                length < 58
+                and area < 190
+                and dominant_delta < 18.0
+                and abs(local_bright_delta - local_dark_delta) <= 7.0
+                and aspect_ratio < 3.4
+            )
+            weak_stub_without_polarity = (
+                length < 46
+                and area < 150
+                and dominant_delta < 24.0
+                and secondary_delta >= dominant_delta * 0.58
+            )
+            short_balanced_noise_line = (
+                length < 36
+                and area < 90
+                and aspect_ratio < 3.8
+                and fill_ratio < 0.32
+                and dominant_delta < 36.0
+                and secondary_delta >= dominant_delta * 0.70
+                and abs(local_bright_delta - local_dark_delta) <= 11.0
+            )
+            if short_noise_like_line or weak_balanced_short_line or weak_stub_without_polarity or short_balanced_noise_line:
                 continue
             score = length * 1.4 + area * 0.45 + local_delta * 7.0 + aspect_ratio * 6.0
             if score > best_score:
@@ -6305,9 +10222,991 @@ class LensDefectHostApp:
                     "level": "medium" if length >= 70 or area >= 130 else "light",
                     "source": "pc_morph_line_scratch",
                     "fill_ratio": round(fill_ratio, 2),
-                    "local_bright_delta": round(float(np.percentile(tophat[y:y + h, x:x + w][line_mask[y:y + h, x:x + w] > 0], 80.0)), 1),
-                    "local_dark_delta": round(float(np.percentile(blackhat[y:y + h, x:x + w][line_mask[y:y + h, x:x + w] > 0], 80.0)), 1),
+                    "local_bright_delta": round(local_bright_delta, 1),
+                    "local_dark_delta": round(local_dark_delta, 1),
                     "strong_internal_scratch": bool(length >= 45 and aspect_ratio >= 2.6 and fill_ratio <= 0.32),
+                }
+        return best
+
+    def fast_cv_find_micro_stain(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 48 or height < 48 or mask is None:
+            return None
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mask_area <= 0:
+            return None
+
+        response = np.zeros_like(gray, dtype=np.uint8)
+        for kernel_size in (3, 5, 7, 9):
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel)
+            response = np.maximum(response, blackhat)
+        for sigma in (3.0, 6.0):
+            local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            local_dark = np.maximum(local_background.astype(np.int16) - gray.astype(np.int16), 0).astype(np.uint8)
+            response = np.maximum(response, local_dark)
+
+        values = response[mask > 0]
+        if values.size <= 0:
+            return None
+        threshold = max(MICRO_STAIN_MIN_RESPONSE, float(np.percentile(values, 96.5)))
+        raw_candidate_mask = np.where(response >= threshold, 255, 0).astype(np.uint8)
+        raw_candidate_mask = cv2.bitwise_and(raw_candidate_mask, mask)
+        candidate_mask = cv2.morphologyEx(raw_candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        if float(cv2.countNonZero(candidate_mask)) / float(mask_area) > MICRO_STAIN_MAX_CANDIDATE_DENSITY:
+            return None
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+        if component_count <= 1:
+            return None
+
+        min_edge_distance = max(5, int(min(width, height) * 0.024))
+        max_box_area = max(18, int(mask_area * MICRO_STAIN_MAX_BOX_AREA_RATIO))
+        best = None
+        best_score = 0.0
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < MICRO_STAIN_MIN_AREA or w <= 0 or h <= 0:
+                continue
+            box_area = max(1, w * h)
+            if box_area > max_box_area:
+                continue
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            if aspect_ratio > MICRO_STAIN_MAX_ASPECT or length > max(30, int(min(width, height) * 0.085)):
+                continue
+            fill_ratio = float(area) / float(box_area)
+            if fill_ratio < MICRO_STAIN_MIN_FILL:
+                continue
+            center_x = max(0, min(width - 1, int(x + w / 2)))
+            center_y = max(0, min(height - 1, int(y + h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                continue
+
+            response_roi = response[y:y + h, x:x + w]
+            active = response_roi[candidate_mask[y:y + h, x:x + w] > 0]
+            if active.size <= 0:
+                continue
+            local_dark_delta = float(np.percentile(active, 85.0))
+            if local_dark_delta < MICRO_STAIN_MIN_RESPONSE:
+                continue
+            local_background = cv2.GaussianBlur(gray[y:y + h, x:x + w], (0, 0), sigmaX=3.0, sigmaY=3.0)
+            active_gray = gray[y:y + h, x:x + w][candidate_mask[y:y + h, x:x + w] > 0]
+            active_background = local_background[candidate_mask[y:y + h, x:x + w] > 0]
+            signed_delta = float(np.mean(active_gray.astype(np.int16) - active_background.astype(np.int16))) if active_gray.size else -local_dark_delta
+            outer_pad = max(4, min(14, int(length * 2)))
+            outer_left = max(0, x - outer_pad)
+            outer_top = max(0, y - outer_pad)
+            outer_right = min(width, x + w + outer_pad)
+            outer_bottom = min(height, y + h + outer_pad)
+            outer_gray = gray[outer_top:outer_bottom, outer_left:outer_right]
+            outer_mask = mask[outer_top:outer_bottom, outer_left:outer_right] > 0
+            if outer_gray.size <= 0 or outer_mask.size <= 0:
+                continue
+            ring_mask = outer_mask.copy()
+            inner_left = x - outer_left
+            inner_top = y - outer_top
+            ring_mask[inner_top:inner_top + h, inner_left:inner_left + w] = False
+            ring_values = outer_gray[ring_mask]
+            if ring_values.size < max(18, area * 2):
+                continue
+            active_median = float(np.median(active_gray)) if active_gray.size else float(np.median(gray[y:y + h, x:x + w]))
+            ring_delta = float(np.median(ring_values) - active_median)
+            pinpoint_dark_dot = (
+                area <= MICRO_STAIN_PINPOINT_MAX_AREA
+                and length <= MICRO_STAIN_PINPOINT_MAX_LENGTH
+                and aspect_ratio <= MICRO_STAIN_PINPOINT_MAX_ASPECT
+                and fill_ratio >= MICRO_STAIN_PINPOINT_MIN_FILL
+                and local_dark_delta >= MICRO_STAIN_PINPOINT_MIN_RESPONSE
+                and ring_delta >= MICRO_STAIN_PINPOINT_MIN_RING_DELTA
+            )
+            ultra_tiny_dark_dot = (
+                area <= MICRO_STAIN_ULTRA_TINY_MAX_AREA
+                and length <= MICRO_STAIN_ULTRA_TINY_MAX_LENGTH
+                and aspect_ratio <= MICRO_STAIN_ULTRA_TINY_MAX_ASPECT
+                and fill_ratio >= MICRO_STAIN_ULTRA_TINY_MIN_FILL
+                and local_dark_delta >= MICRO_STAIN_ULTRA_TINY_MIN_RESPONSE
+                and ring_delta >= MICRO_STAIN_ULTRA_TINY_MIN_RING_DELTA
+                and signed_delta <= MICRO_STAIN_ULTRA_TINY_MAX_SIGNED_DELTA
+            )
+            if not pinpoint_dark_dot:
+                if signed_delta > -2.0 and local_dark_delta < MICRO_STAIN_MIN_RESPONSE + 2.0:
+                    continue
+                if signed_delta > -3.0 and (area < 10 or local_dark_delta < MICRO_STAIN_MIN_RESPONSE + 16.0):
+                    continue
+                if signed_delta > -3.0 and area < 18:
+                    continue
+                if area < 12 and signed_delta > -5.5:
+                    continue
+            if ring_delta < MICRO_STAIN_MIN_RING_DELTA:
+                if not (ultra_tiny_dark_dot or pinpoint_dark_dot) and (
+                    local_dark_delta < MICRO_STAIN_TINY_MIN_RESPONSE or signed_delta > -7.0
+                ):
+                    continue
+            if not (ultra_tiny_dark_dot or pinpoint_dark_dot) and (area < 10 or box_area <= 16) and (
+                local_dark_delta < MICRO_STAIN_TINY_MIN_RESPONSE
+                or ring_delta < MICRO_STAIN_TINY_MIN_RING_DELTA
+                or signed_delta > -6.5
+            ):
+                continue
+
+            score = local_dark_delta * 10.0 + ring_delta * 8.0 + area * 2.2 + fill_ratio * 24.0 - aspect_ratio * 4.0
+            if score > best_score:
+                best_score = score
+                confidence = min(
+                    0.88,
+                    0.77 + min(0.07, local_dark_delta / 95.0) + min(0.04, area / float(max(1, max_box_area))),
+                )
+                if ultra_tiny_dark_dot:
+                    confidence = max(confidence, MICRO_STAIN_SKIP_MIN_CONFIDENCE)
+                if pinpoint_dark_dot:
+                    confidence = max(confidence, 0.82)
+                best = {
+                    "type": "stain",
+                    "confidence": round(confidence, 2),
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "area": int(area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "light",
+                    "source": "pc_micro_dark_stain",
+                    "density": round(fill_ratio, 2),
+                    "local_dark_delta": round(local_dark_delta, 1),
+                    "brightness_signed_delta": round(signed_delta, 1),
+                    "local_ring_delta": round(ring_delta, 1),
+                    "micro_defect": True,
+                    "ultra_tiny_dark_candidate": bool(pinpoint_dark_dot),
+                }
+        return best
+
+    def fast_cv_find_micro_bright_stain(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 48 or height < 48 or mask is None:
+            return None
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mask_area <= 0:
+            return None
+
+        response = np.zeros_like(gray, dtype=np.uint8)
+        for kernel_size in (3, 5, 7, 9):
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            response = np.maximum(response, cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel))
+        for sigma in (3.0, 6.0):
+            local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            local_bright = np.maximum(gray.astype(np.int16) - local_background.astype(np.int16), 0).astype(np.uint8)
+            response = np.maximum(response, local_bright)
+
+        values = response[mask > 0]
+        if values.size <= 0:
+            return None
+        threshold = max(MICRO_BRIGHT_STAIN_MIN_RESPONSE, float(np.percentile(values, 97.0)))
+        raw_candidate_mask = np.where(response >= threshold, 255, 0).astype(np.uint8)
+        raw_candidate_mask = cv2.bitwise_and(raw_candidate_mask, mask)
+        candidate_mask = cv2.morphologyEx(raw_candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_pixels = int(cv2.countNonZero(candidate_mask))
+        if candidate_pixels <= 0:
+            return None
+        if float(candidate_pixels) / float(mask_area) > MICRO_BRIGHT_STAIN_MAX_CANDIDATE_DENSITY:
+            return None
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+        if component_count <= 1:
+            return None
+
+        min_edge_distance = max(7, int(min(width, height) * 0.030))
+        max_box_area = max(18, int(mask_area * MICRO_BRIGHT_STAIN_MAX_BOX_AREA_RATIO))
+        best = None
+        best_score = 0.0
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < MICRO_BRIGHT_STAIN_MIN_AREA or w <= 0 or h <= 0:
+                continue
+            box_area = max(1, w * h)
+            if box_area > max_box_area:
+                continue
+            length = max(w, h)
+            if length > MICRO_BRIGHT_STAIN_MAX_LENGTH:
+                continue
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            pinpoint_shape_candidate = (
+                area <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_AREA
+                and length <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_LENGTH
+                and aspect_ratio <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_ASPECT
+            )
+            if aspect_ratio > MICRO_BRIGHT_STAIN_MAX_ASPECT and not pinpoint_shape_candidate:
+                continue
+            fill_ratio = float(area) / float(box_area)
+            if fill_ratio < MICRO_BRIGHT_STAIN_MIN_FILL and not (
+                pinpoint_shape_candidate
+                and fill_ratio >= MICRO_BRIGHT_STAIN_PINPOINT_MIN_FILL
+            ):
+                continue
+            center_x = max(0, min(width - 1, int(x + w / 2)))
+            center_y = max(0, min(height - 1, int(y + h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                continue
+
+            active_mask = candidate_mask[y:y + h, x:x + w] > 0
+            if not np.any(active_mask):
+                continue
+            active_response = response[y:y + h, x:x + w][active_mask]
+            if active_response.size <= 0:
+                continue
+            local_bright_delta = float(np.percentile(active_response, 85.0))
+            if local_bright_delta < MICRO_BRIGHT_STAIN_MIN_RESPONSE:
+                continue
+
+            local_background = cv2.GaussianBlur(gray[y:y + h, x:x + w], (0, 0), sigmaX=3.0, sigmaY=3.0)
+            active_gray = gray[y:y + h, x:x + w][active_mask]
+            active_background = local_background[active_mask]
+            signed_delta = float(np.mean(active_gray.astype(np.int16) - active_background.astype(np.int16))) if active_gray.size else local_bright_delta
+
+            outer_pad = max(5, min(18, int(length * 2)))
+            outer_left = max(0, x - outer_pad)
+            outer_top = max(0, y - outer_pad)
+            outer_right = min(width, x + w + outer_pad)
+            outer_bottom = min(height, y + h + outer_pad)
+            outer_gray = gray[outer_top:outer_bottom, outer_left:outer_right]
+            outer_mask = mask[outer_top:outer_bottom, outer_left:outer_right] > 0
+            if outer_gray.size <= 0 or outer_mask.size <= 0:
+                continue
+            ring_mask = outer_mask.copy()
+            inner_left = x - outer_left
+            inner_top = y - outer_top
+            ring_mask[inner_top:inner_top + h, inner_left:inner_left + w] = False
+            ring_values = outer_gray[ring_mask]
+            if ring_values.size < max(18, area * 2):
+                continue
+            active_median = float(np.median(active_gray)) if active_gray.size else float(np.median(gray[y:y + h, x:x + w]))
+            ring_delta = float(active_median - np.median(ring_values))
+
+            tiny_bright_dot = (
+                area <= MICRO_BRIGHT_STAIN_SKIP_MAX_AREA
+                and length <= MICRO_BRIGHT_STAIN_SKIP_MAX_LENGTH
+                and aspect_ratio <= MICRO_BRIGHT_STAIN_SKIP_MAX_ASPECT
+                and fill_ratio >= MICRO_BRIGHT_STAIN_SKIP_MIN_DENSITY
+                and local_bright_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_BRIGHT_DELTA
+                and ring_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_RING_DELTA
+                and signed_delta >= MICRO_BRIGHT_STAIN_SKIP_MIN_SIGNED_DELTA
+            )
+            pinpoint_bright_dot = (
+                area <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_AREA
+                and length <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_LENGTH
+                and aspect_ratio <= MICRO_BRIGHT_STAIN_PINPOINT_MAX_ASPECT
+                and fill_ratio >= MICRO_BRIGHT_STAIN_PINPOINT_MIN_FILL
+                and local_bright_delta >= MICRO_BRIGHT_STAIN_PINPOINT_MIN_RESPONSE
+                and ring_delta >= MICRO_BRIGHT_STAIN_PINPOINT_MIN_RING_DELTA
+            )
+            small_ring_bright_dot = (
+                area <= MICRO_BRIGHT_STAIN_SMALL_RING_MAX_AREA
+                and length <= MICRO_BRIGHT_STAIN_SMALL_RING_MAX_LENGTH
+                and aspect_ratio <= MICRO_BRIGHT_STAIN_MAX_ASPECT
+                and fill_ratio >= MICRO_BRIGHT_STAIN_SMALL_RING_MIN_FILL
+                and local_bright_delta >= MICRO_BRIGHT_STAIN_SMALL_RING_MIN_RESPONSE
+                and ring_delta >= MICRO_BRIGHT_STAIN_SMALL_RING_MIN_RING_DELTA
+                and signed_delta >= MICRO_BRIGHT_STAIN_SMALL_RING_MIN_SIGNED_DELTA
+            )
+            ultra_tiny_bright_dot = (
+                area <= MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_AREA
+                and length <= MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_LENGTH
+                and aspect_ratio <= MICRO_BRIGHT_STAIN_ULTRA_TINY_MAX_ASPECT
+                and fill_ratio >= MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_FILL
+                and local_bright_delta >= MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_RESPONSE
+                and ring_delta >= MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_RING_DELTA
+                and signed_delta >= MICRO_BRIGHT_STAIN_ULTRA_TINY_MIN_SIGNED_DELTA
+            )
+            if signed_delta < 2.5 and not (pinpoint_bright_dot or small_ring_bright_dot):
+                continue
+            if ring_delta < MICRO_BRIGHT_STAIN_MIN_RING_DELTA:
+                if not (tiny_bright_dot or ultra_tiny_bright_dot or pinpoint_bright_dot or small_ring_bright_dot):
+                    continue
+            if not (ultra_tiny_bright_dot or pinpoint_bright_dot) and area < 10 and (
+                local_bright_delta < MICRO_BRIGHT_STAIN_TINY_MIN_RESPONSE
+                or (ring_delta < MICRO_BRIGHT_STAIN_TINY_MIN_RING_DELTA and not ultra_tiny_bright_dot)
+                or signed_delta < MICRO_BRIGHT_STAIN_SKIP_MIN_SIGNED_DELTA
+            ):
+                continue
+
+            score = local_bright_delta * 9.0 + ring_delta * 8.0 + area * 2.0 + fill_ratio * 22.0 - aspect_ratio * 5.0
+            if score > best_score:
+                best_score = score
+                confidence = min(
+                    0.88,
+                    0.76 + min(0.07, local_bright_delta / 110.0) + min(0.04, area / float(max(1, max_box_area))),
+                )
+                if tiny_bright_dot:
+                    confidence = max(confidence, MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE)
+                if small_ring_bright_dot:
+                    confidence = max(confidence, MICRO_BRIGHT_STAIN_SKIP_MIN_CONFIDENCE)
+                if ultra_tiny_bright_dot:
+                    confidence = max(confidence, 0.82)
+                if pinpoint_bright_dot:
+                    confidence = max(confidence, 0.82)
+                best = {
+                    "type": "stain",
+                    "confidence": round(confidence, 2),
+                    "x": int(x),
+                    "y": int(y),
+                    "w": int(w),
+                    "h": int(h),
+                    "area": int(area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "light",
+                    "source": "pc_micro_bright_stain",
+                    "density": round(fill_ratio, 2),
+                    "local_dark_delta": 0.0,
+                    "local_bright_delta": round(local_bright_delta, 1),
+                    "brightness_signed_delta": round(signed_delta, 1),
+                    "local_ring_delta": round(ring_delta, 1),
+                    "micro_defect": True,
+                    "ultra_tiny_bright_candidate": bool(pinpoint_bright_dot or (ultra_tiny_bright_dot and not tiny_bright_dot)),
+                }
+        return best
+
+    def fast_cv_find_micro_scratch(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 48 or height < 48 or mask is None:
+            return None
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        if mask_area <= 0:
+            return None
+
+        bright_response = np.zeros_like(gray, dtype=np.uint8)
+        dark_response = np.zeros_like(gray, dtype=np.uint8)
+        for sigma in (3.0, 6.0):
+            local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            signed_diff = gray.astype(np.int16) - local_background.astype(np.int16)
+            bright_response = np.maximum(bright_response, np.maximum(signed_diff, 0).astype(np.uint8))
+            dark_response = np.maximum(dark_response, np.maximum(-signed_diff, 0).astype(np.uint8))
+        for kernel_size in (3, 5, 7):
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            bright_response = np.maximum(bright_response, cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel))
+            dark_response = np.maximum(dark_response, cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, kernel))
+        response = np.maximum(bright_response, dark_response)
+        signed_response = bright_response.astype(np.int16) - dark_response.astype(np.int16)
+
+        values = response[mask > 0]
+        if values.size <= 0:
+            return None
+        threshold = max(MICRO_SCRATCH_MIN_RESPONSE, float(np.percentile(values, 94.0)))
+        raw_candidate_mask = np.where(response >= threshold, 255, 0).astype(np.uint8)
+        raw_candidate_mask = cv2.bitwise_and(raw_candidate_mask, mask)
+        candidate_mask = cv2.morphologyEx(raw_candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_pixels = int(cv2.countNonZero(candidate_mask))
+        if candidate_pixels <= 0:
+            return None
+        dense_candidate_mode = False
+        if float(candidate_pixels) / float(mask_area) > MICRO_SCRATCH_MAX_CANDIDATE_DENSITY:
+            sparse_threshold = max(threshold + 2.0, float(np.percentile(values, 99.0)))
+            sparse_raw_candidate_mask = np.where(response >= sparse_threshold, 255, 0).astype(np.uint8)
+            sparse_raw_candidate_mask = cv2.bitwise_and(sparse_raw_candidate_mask, mask)
+            sparse_candidate_mask = cv2.morphologyEx(
+                sparse_raw_candidate_mask,
+                cv2.MORPH_CLOSE,
+                np.ones((2, 2), dtype=np.uint8),
+            )
+            sparse_candidate_pixels = int(cv2.countNonZero(sparse_candidate_mask))
+            if sparse_candidate_pixels <= 0:
+                return None
+            if float(sparse_candidate_pixels) / float(mask_area) > MICRO_SCRATCH_MAX_CANDIDATE_DENSITY:
+                return None
+            threshold = sparse_threshold
+            raw_candidate_mask = sparse_raw_candidate_mask
+            candidate_mask = sparse_candidate_mask
+            candidate_pixels = sparse_candidate_pixels
+            dense_candidate_mode = True
+
+        min_edge_distance = max(5, int(min(width, height) * 0.026))
+        min_line_length = max(MICRO_SCRATCH_MIN_LENGTH, int(min(width, height) * 0.020))
+
+        def segment_evidence(x1, y1, x2, y2, line_length):
+            samples = max(5, int(line_length))
+            signed_values = []
+            response_values = []
+            active_count = 0
+            for sample_index in range(samples + 1):
+                ratio = float(sample_index) / float(samples)
+                px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
+                py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
+                if mask[py, px] <= 0:
+                    continue
+                if candidate_mask[py, px] > 0:
+                    active_count += 1
+                signed_values.append(float(signed_response[py, px]))
+                response_values.append(float(response[py, px]))
+            if not signed_values or not response_values:
+                return None
+            signed_array = np.array(signed_values, dtype=np.float32)
+            response_array = np.array(response_values, dtype=np.float32)
+            sample_count = max(1, len(response_values))
+            return {
+                "active_fraction": float(active_count) / float(sample_count),
+                "sample_response": float(np.percentile(response_array, 85.0)),
+                "sample_abs_delta": float(np.percentile(np.abs(signed_array), 75.0)),
+                "sample_signed_delta": float(np.mean(signed_array)),
+                "sample_bright_delta": float(np.percentile(np.maximum(signed_array, 0), 85.0)),
+                "sample_dark_delta": float(np.percentile(np.maximum(-signed_array, 0), 85.0)),
+            }
+
+        support_sample_mask = cv2.dilate(candidate_mask, np.ones((3, 3), dtype=np.uint8), iterations=1)
+
+        def dashed_segment_evidence(x1, y1, x2, y2, line_length):
+            samples = max(12, int(line_length))
+            signed_values = []
+            response_values = []
+            active_count = 0
+            fragment_count = 0
+            in_fragment = False
+            current_gap = 0
+            max_gap = 0
+            for sample_index in range(samples + 1):
+                ratio = float(sample_index) / float(samples)
+                px = max(0, min(width - 1, int(round(x1 + (x2 - x1) * ratio))))
+                py = max(0, min(height - 1, int(round(y1 + (y2 - y1) * ratio))))
+                if mask[py, px] <= 0:
+                    if in_fragment:
+                        in_fragment = False
+                    continue
+                is_active = support_sample_mask[py, px] > 0
+                if is_active:
+                    active_count += 1
+                    if not in_fragment:
+                        fragment_count += 1
+                    in_fragment = True
+                    current_gap = 0
+                else:
+                    if in_fragment:
+                        in_fragment = False
+                    current_gap += 1
+                    max_gap = max(max_gap, current_gap)
+                signed_values.append(float(signed_response[py, px]))
+                response_values.append(float(response[py, px]))
+            if not signed_values or not response_values:
+                return None
+            signed_array = np.array(signed_values, dtype=np.float32)
+            response_array = np.array(response_values, dtype=np.float32)
+            sample_count = max(1, len(response_values))
+            active_fraction = float(active_count) / float(sample_count)
+            max_gap_ratio = float(max_gap) / float(sample_count)
+            return {
+                "active_fraction": active_fraction,
+                "fragment_count": int(fragment_count),
+                "max_gap_ratio": max_gap_ratio,
+                "sample_response": float(np.percentile(response_array, 85.0)),
+                "sample_abs_delta": float(np.percentile(np.abs(signed_array), 75.0)),
+                "sample_signed_delta": float(np.mean(signed_array)),
+                "sample_bright_delta": float(np.percentile(np.maximum(signed_array, 0), 85.0)),
+                "sample_dark_delta": float(np.percentile(np.maximum(-signed_array, 0), 85.0)),
+            }
+
+        def best_dashed_segment_evidence(x1, y1, x2, y2, line_length):
+            if line_length <= 0:
+                return None
+            dx = float(x2 - x1)
+            dy = float(y2 - y1)
+            normal_x = -dy / max(1.0, line_length)
+            normal_y = dx / max(1.0, line_length)
+            best_evidence = None
+            best_score = 0.0
+            for offset in (-1.0, 0.0, 1.0):
+                sx1 = int(round(x1 + normal_x * offset))
+                sy1 = int(round(y1 + normal_y * offset))
+                sx2 = int(round(x2 + normal_x * offset))
+                sy2 = int(round(y2 + normal_y * offset))
+                sx1 = max(0, min(width - 1, sx1))
+                sx2 = max(0, min(width - 1, sx2))
+                sy1 = max(0, min(height - 1, sy1))
+                sy2 = max(0, min(height - 1, sy2))
+                evidence = dashed_segment_evidence(sx1, sy1, sx2, sy2, line_length)
+                if evidence is None:
+                    continue
+                dominant_delta = max(evidence["sample_bright_delta"], evidence["sample_dark_delta"])
+                secondary_delta = min(evidence["sample_bright_delta"], evidence["sample_dark_delta"])
+                score = (
+                    evidence["fragment_count"] * 16.0
+                    + evidence["active_fraction"] * 90.0
+                    + evidence["sample_response"] * 2.0
+                    + dominant_delta
+                    - evidence["max_gap_ratio"] * 70.0
+                    - secondary_delta * 0.6
+                )
+                if score > best_score:
+                    best_score = score
+                    best_evidence = evidence
+                    best_evidence["sample_offset"] = float(offset)
+            return best_evidence
+
+        segments = []
+        single_segment_candidates = []
+        dashed_segment_candidates = []
+        hough_total_length = 0.0
+        hough_longest_length = 0.0
+        lines = cv2.HoughLinesP(
+            candidate_mask,
+            1,
+            np.pi / 180.0,
+            threshold=5,
+            minLineLength=min_line_length,
+            maxLineGap=4,
+        )
+        if lines is not None and not dense_candidate_mode:
+            for line in lines[:, 0, :]:
+                x1, y1, x2, y2 = [int(value) for value in line]
+                length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                if length < min_line_length:
+                    continue
+                center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+                center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+                if mask[center_y, center_x] == 0:
+                    continue
+                if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                    continue
+                evidence = segment_evidence(x1, y1, x2, y2, length)
+                if evidence is None or evidence["active_fraction"] < 0.34:
+                    continue
+                segments.append((x1, y1, x2, y2, length))
+                hough_total_length += length
+                hough_longest_length = max(hough_longest_length, length)
+                if (
+                    evidence["active_fraction"] >= 0.42
+                    and evidence["sample_response"] >= MICRO_SCRATCH_SINGLE_LINE_MIN_RESPONSE
+                    and evidence["sample_abs_delta"] >= MICRO_SCRATCH_SINGLE_LINE_MIN_ABS_DELTA
+                    and max(evidence["sample_bright_delta"], evidence["sample_dark_delta"])
+                    >= min(evidence["sample_response"] * 0.65, min(evidence["sample_bright_delta"], evidence["sample_dark_delta"]) * 2.6 + 4.0)
+                ):
+                    single_segment_candidates.append({
+                        "left": max(0, min(x1, x2) - 1),
+                        "top": max(0, min(y1, y2) - 1),
+                        "right": min(width, max(x1, x2) + 2),
+                        "bottom": min(height, max(y1, y2) + 2),
+                        "total_line_length": length,
+                        "line_count": 1,
+                        "angle_groups": 1,
+                        "segment": True,
+                        "single_segment": True,
+                        **evidence,
+                    })
+
+        if candidate_pixels >= max(12, min_line_length * 2):
+            dashed_min_length = max(
+                MICRO_SCRATCH_DASHED_MIN_LENGTH,
+                int(min(width, height) * 0.070),
+                min_line_length * 3,
+            )
+            dashed_max_gap = min(
+                MICRO_SCRATCH_DASHED_MAX_LINE_GAP,
+                max(8, int(min(width, height) * 0.070)),
+            )
+            dashed_lines = cv2.HoughLinesP(
+                candidate_mask,
+                1,
+                np.pi / 180.0,
+                threshold=4,
+                minLineLength=dashed_min_length,
+                maxLineGap=dashed_max_gap,
+            )
+            if dashed_lines is not None:
+                for line in dashed_lines[:, 0, :]:
+                    x1, y1, x2, y2 = [int(value) for value in line]
+                    length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+                    if length < dashed_min_length:
+                        continue
+                    center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+                    center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+                    if mask[center_y, center_x] == 0:
+                        continue
+                    if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance:
+                        continue
+                    evidence = best_dashed_segment_evidence(x1, y1, x2, y2, length)
+                    if evidence is None:
+                        continue
+                    if (
+                        evidence["fragment_count"] < MICRO_SCRATCH_DASHED_MIN_FRAGMENTS
+                        or evidence["active_fraction"] < MICRO_SCRATCH_DASHED_MIN_ACTIVE_FRACTION
+                        or evidence["max_gap_ratio"] > MICRO_SCRATCH_DASHED_MAX_GAP_RATIO
+                        or evidence["sample_response"] < MICRO_SCRATCH_DASHED_MIN_RESPONSE
+                        or evidence["sample_abs_delta"] < MICRO_SCRATCH_DASHED_MIN_ABS_DELTA
+                    ):
+                        continue
+                    dominant_dashed_delta = max(evidence["sample_bright_delta"], evidence["sample_dark_delta"])
+                    secondary_dashed_delta = min(evidence["sample_bright_delta"], evidence["sample_dark_delta"])
+                    if dominant_dashed_delta < max(
+                        MICRO_SCRATCH_DASHED_MIN_ABS_DELTA,
+                        evidence["sample_response"] * 0.42,
+                    ):
+                        continue
+                    if dominant_dashed_delta < secondary_dashed_delta * MICRO_SCRATCH_DASHED_MIN_POLARITY_RATIO:
+                        continue
+                    dashed_segment_candidates.append({
+                        "left": max(0, min(x1, x2) - 3),
+                        "top": max(0, min(y1, y2) - 3),
+                        "right": min(width, max(x1, x2) + 4),
+                        "bottom": min(height, max(y1, y2) + 4),
+                        "total_line_length": length,
+                        "line_count": int(evidence["fragment_count"]),
+                        "angle_groups": 1,
+                        "segment": True,
+                        "dashed_segment": True,
+                        **evidence,
+                    })
+
+        component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate_mask, 8)
+        best_component_aspect = 0.0
+        best_component_length = 0
+        best_component_fill = 0.0
+        elongated_component_count = 0
+        for index in range(1, component_count):
+            _x, _y, w, h, area = [int(value) for value in stats[index]]
+            if area < 3 or w <= 0 or h <= 0:
+                continue
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            fill_ratio = float(area) / float(max(1, w * h))
+            if length >= min_line_length and aspect_ratio >= MICRO_SCRATCH_MIN_ASPECT:
+                elongated_component_count += 1
+            if aspect_ratio > best_component_aspect:
+                best_component_aspect = aspect_ratio
+                best_component_length = length
+                best_component_fill = fill_ratio
+
+        strong_hough_evidence = (
+            bool(single_segment_candidates)
+            or hough_longest_length >= min_line_length * 2.6
+            or hough_total_length >= min_line_length * 5.0
+            or (len(segments) >= 2 and hough_total_length >= min_line_length * 3.0)
+        )
+        strong_component_evidence = (
+            best_component_length >= min_line_length * 3
+            and best_component_aspect >= MICRO_SCRATCH_MIN_ASPECT
+            and best_component_fill <= MICRO_SCRATCH_MAX_FILL
+        )
+        should_run_lsd = (
+            not strong_hough_evidence
+            and not strong_component_evidence
+            and candidate_pixels >= max(18, min_line_length * 2)
+            and (
+                elongated_component_count >= 1
+                or best_component_aspect >= MICRO_SCRATCH_PRECHECK_MIN_FRAGMENT_ASPECT
+            )
+        )
+        if should_run_lsd:
+            segments.extend(self.lsd_scratch_segments(
+                gray,
+                candidate_mask,
+                mask,
+                edge_distance,
+                min_edge_distance,
+                min_line_length,
+            ))
+
+        candidates = []
+        for cluster in self.cluster_scratch_line_segments(segments) if segments else []:
+            xs = []
+            ys = []
+            total_line_length = 0.0
+            angle_groups = set()
+            for x1, y1, x2, y2, line_length in cluster:
+                xs.extend([x1, x2])
+                ys.extend([y1, y2])
+                total_line_length += line_length
+                angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+                angle_groups.add(int(angle // 22.5))
+            candidates.append({
+                "left": max(0, min(xs) - 2),
+                "top": max(0, min(ys) - 2),
+                "right": min(width - 1, max(xs) + 3),
+                "bottom": min(height - 1, max(ys) + 3),
+                "total_line_length": total_line_length,
+                "line_count": len(cluster),
+                "angle_groups": len(angle_groups),
+                "segment": True,
+            })
+
+        if single_segment_candidates:
+            single_segment_candidates.sort(
+                key=lambda item: (
+                    item.get("sample_response", 0.0) * 2.0
+                    + item.get("sample_abs_delta", 0.0)
+                    + item.get("total_line_length", 0.0)
+                ),
+                reverse=True,
+            )
+            candidates.extend(single_segment_candidates[:64])
+
+        if dashed_segment_candidates:
+            dashed_segment_candidates.sort(
+                key=lambda item: (
+                    item.get("fragment_count", 0) * 18.0
+                    + item.get("active_fraction", 0.0) * 90.0
+                    + item.get("sample_response", 0.0) * 1.8
+                    + item.get("sample_abs_delta", 0.0)
+                    + item.get("total_line_length", 0.0) * 0.30
+                    - item.get("max_gap_ratio", 0.0) * 80.0
+                ),
+                reverse=True,
+            )
+            candidates.extend(dashed_segment_candidates[:24])
+
+        for index in range(1, component_count):
+            x, y, w, h, area = [int(value) for value in stats[index]]
+            if area < 3 or w <= 0 or h <= 0:
+                continue
+            length = max(w, h)
+            short_side = max(1, min(w, h))
+            aspect_ratio = float(length) / float(short_side)
+            if length < min_line_length or aspect_ratio < MICRO_SCRATCH_MIN_ASPECT:
+                continue
+            if short_side > max(7, int(min(width, height) * 0.020)):
+                continue
+            candidates.append({
+                "left": max(0, x - 1),
+                "top": max(0, y - 1),
+                "right": min(width - 1, x + w + 2),
+                "bottom": min(height - 1, y + h + 2),
+                "total_line_length": float(length),
+                "line_count": 1,
+                "angle_groups": 1,
+                "segment": False,
+            })
+
+        best = None
+        best_score = 0.0
+        for candidate in candidates:
+            left = int(candidate["left"])
+            top = int(candidate["top"])
+            right = int(candidate["right"])
+            bottom = int(candidate["bottom"])
+            box_w = max(1, right - left)
+            box_h = max(1, bottom - top)
+            box_area = max(1, box_w * box_h)
+            dashed_segment = bool(candidate.get("dashed_segment"))
+            max_box_area_ratio = MICRO_SCRATCH_DASHED_MAX_BOX_AREA_RATIO if dashed_segment else MICRO_SCRATCH_MAX_BOX_AREA_RATIO
+            if float(box_area) / float(mask_area) > max_box_area_ratio:
+                continue
+            roi_mask = mask[top:bottom, left:right]
+            if roi_mask.size <= 0:
+                continue
+            mask_overlap = float(cv2.countNonZero(roi_mask)) / float(box_area)
+            if mask_overlap < 0.52:
+                continue
+            candidate_roi = candidate_mask[top:bottom, left:right]
+            active_area = int(cv2.countNonZero(candidate_roi))
+            if active_area <= 0:
+                continue
+            support_roi = raw_candidate_mask[top:bottom, left:right]
+            if cv2.countNonZero(support_roi) <= 0:
+                support_roi = candidate_roi
+            length = max(box_w, box_h)
+            short_side = max(1, min(box_w, box_h))
+            candidate_line_length = float(candidate.get("total_line_length", length) or length)
+            aspect_ratio = float(length) / float(short_side)
+            line_aspect_ratio = candidate_line_length / float(short_side)
+            if dashed_segment:
+                dashed_active_fraction = max(
+                    MICRO_SCRATCH_DASHED_MIN_ACTIVE_FRACTION,
+                    float(candidate.get("active_fraction", 0.0) or 0.0),
+                )
+                estimated_line_width = max(
+                    1.0,
+                    float(active_area) / max(1.0, candidate_line_length * dashed_active_fraction),
+                )
+                line_aspect_ratio = max(line_aspect_ratio, candidate_line_length / estimated_line_width)
+                aspect_ratio = max(aspect_ratio, line_aspect_ratio)
+            fill_ratio = float(active_area) / float(box_area)
+            dominant_sample_delta = max(
+                float(candidate.get("sample_bright_delta", 0.0) or 0.0),
+                float(candidate.get("sample_dark_delta", 0.0) or 0.0),
+            )
+            strong_single_line = (
+                bool(candidate.get("single_segment"))
+                and dominant_sample_delta >= 42.0
+                and float(candidate.get("sample_response", 0.0) or 0.0) >= 42.0
+            )
+            if aspect_ratio < MICRO_SCRATCH_MIN_ASPECT:
+                continue
+            if fill_ratio > MICRO_SCRATCH_MAX_FILL and not (strong_single_line and fill_ratio <= 0.92):
+                continue
+            response_roi = response[top:bottom, left:right]
+            active_response = response_roi[support_roi > 0]
+            if active_response.size <= 0:
+                continue
+            local_delta = float(np.percentile(active_response, 85.0))
+            if local_delta < MICRO_SCRATCH_MIN_RESPONSE:
+                continue
+            if candidate.get("single_segment"):
+                local_delta = max(local_delta, float(candidate.get("sample_response", 0.0) or 0.0))
+            if dashed_segment:
+                local_delta = max(local_delta, float(candidate.get("sample_response", 0.0) or 0.0))
+            center_x = max(0, min(width - 1, int(left + box_w / 2)))
+            center_y = max(0, min(height - 1, int(top + box_h / 2)))
+            if mask[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None:
+                if edge_distance[center_y, center_x] < min_edge_distance:
+                    continue
+                if not self.scratch_box_has_safe_edge_distance(
+                    edge_distance,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    min_edge_distance,
+                    0.54,
+                ):
+                    continue
+
+            signed_roi = signed_response[top:bottom, left:right]
+            active_signed = signed_roi[support_roi > 0]
+            local_signed_delta = float(np.mean(active_signed)) if active_signed.size else 0.0
+            local_bright_delta = float(np.percentile(np.maximum(active_signed, 0), 85.0)) if active_signed.size else 0.0
+            local_dark_delta = float(np.percentile(np.maximum(-active_signed, 0), 85.0)) if active_signed.size else 0.0
+            if candidate.get("single_segment"):
+                local_signed_delta = float(candidate.get("sample_signed_delta", local_signed_delta) or local_signed_delta)
+                local_bright_delta = max(local_bright_delta, float(candidate.get("sample_bright_delta", 0.0) or 0.0))
+                local_dark_delta = max(local_dark_delta, float(candidate.get("sample_dark_delta", 0.0) or 0.0))
+            if dashed_segment:
+                local_signed_delta = float(candidate.get("sample_signed_delta", local_signed_delta) or local_signed_delta)
+                local_bright_delta = max(local_bright_delta, float(candidate.get("sample_bright_delta", 0.0) or 0.0))
+                local_dark_delta = max(local_dark_delta, float(candidate.get("sample_dark_delta", 0.0) or 0.0))
+            total_line_length = candidate_line_length
+            line_count = int(candidate.get("line_count", 1) or 1)
+            if dashed_segment:
+                if line_count < MICRO_SCRATCH_DASHED_MIN_FRAGMENTS:
+                    continue
+                if float(candidate.get("active_fraction", 0.0) or 0.0) < MICRO_SCRATCH_DASHED_MIN_ACTIVE_FRACTION:
+                    continue
+                if float(candidate.get("max_gap_ratio", 1.0) or 1.0) > MICRO_SCRATCH_DASHED_MAX_GAP_RATIO:
+                    continue
+                if max(local_bright_delta, local_dark_delta) < MICRO_SCRATCH_DASHED_MIN_ABS_DELTA:
+                    continue
+            if line_count <= 1 and max(local_bright_delta, local_dark_delta) < MICRO_SCRATCH_SINGLE_LINE_MIN_ABS_DELTA:
+                continue
+            if line_count <= 1 and max(local_bright_delta, local_dark_delta) < min(local_delta * 0.65, min(local_bright_delta, local_dark_delta) * 2.6 + 4.0):
+                continue
+            if candidate.get("single_segment") and (
+                float(candidate.get("sample_response", 0.0) or 0.0) < MICRO_SCRATCH_SINGLE_LINE_MIN_RESPONSE
+                or float(candidate.get("sample_abs_delta", 0.0) or 0.0) < MICRO_SCRATCH_SINGLE_LINE_MIN_ABS_DELTA
+            ):
+                continue
+            if dashed_segment and (
+                total_line_length < MICRO_SCRATCH_DASHED_MIN_LENGTH
+                or float(candidate.get("sample_response", 0.0) or 0.0) < MICRO_SCRATCH_DASHED_MIN_RESPONSE
+                or float(candidate.get("sample_abs_delta", 0.0) or 0.0) < MICRO_SCRATCH_DASHED_MIN_ABS_DELTA
+            ):
+                continue
+            side_glare_single_line = False
+            if (
+                (line_count <= 1 or fill_ratio >= MICRO_SCRATCH_SIDE_GLARE_MIN_FILL)
+                and aspect_ratio >= FAST_REVIEW_FRAME_TALL_LINE_MIN_ASPECT
+                and center_x >= int(width * FAST_REVIEW_FRAME_SIDE_REJECT_RATIO)
+                and local_bright_delta >= MICRO_SCRATCH_SIDE_GLARE_MIN_BRIGHT_DELTA
+                and (
+                    local_signed_delta >= 6.0
+                    or (
+                        line_count <= 1
+                        and fill_ratio >= 0.84
+                        and local_bright_delta >= 70.0
+                        and center_x >= int(width * 0.74)
+                    )
+                )
+                and (
+                    local_dark_delta <= MICRO_SCRATCH_SIDE_GLARE_MAX_DARK_DELTA
+                    or local_bright_delta >= local_dark_delta * MICRO_SCRATCH_SIDE_GLARE_MIN_POLARITY_RATIO
+                )
+            ):
+                gray_roi = gray[top:bottom, left:right]
+                local_pad = max(8, int(min(width, height) * 0.025))
+                local_left = max(0, left - local_pad)
+                local_top = max(0, top - local_pad)
+                local_right = min(width, right + local_pad)
+                local_bottom = min(height, bottom + local_pad)
+                local_gray = gray[local_top:local_bottom, local_left:local_right]
+                if gray_roi.size > 0 and local_gray.size > 0:
+                    roi_p90 = float(np.percentile(gray_roi, 90.0))
+                    local_mean = float(np.mean(local_gray))
+                    side_glare_single_line = (
+                        (
+                            roi_p90 >= MICRO_SCRATCH_SIDE_GLARE_MIN_GRAY
+                            and roi_p90 - local_mean >= MICRO_SCRATCH_SIDE_GLARE_MIN_LOCAL_DELTA
+                        )
+                        or (
+                            line_count <= 1
+                            and fill_ratio >= 0.84
+                            and roi_p90 >= 238.0
+                            and local_bright_delta >= 70.0
+                            and center_x >= int(width * 0.74)
+                        )
+                    )
+            if side_glare_single_line:
+                continue
+            score = total_line_length * 2.2 + local_delta * 9.0 + aspect_ratio * 7.0 - fill_ratio * 16.0
+            if candidate.get("segment"):
+                score += line_count * 10.0
+            if dashed_segment:
+                score += (
+                    float(candidate.get("active_fraction", 0.0) or 0.0) * 80.0
+                    - float(candidate.get("max_gap_ratio", 0.0) or 0.0) * 60.0
+                )
+            if score > best_score:
+                best_score = score
+                confidence = min(
+                    0.90,
+                    0.76 + min(0.08, total_line_length / 170.0) + min(0.06, local_delta / 95.0),
+                )
+                strong_internal = (
+                    length >= min_line_length + 4
+                    and aspect_ratio >= MICRO_SCRATCH_MIN_ASPECT
+                    and fill_ratio <= 0.58
+                    and local_delta >= MICRO_SCRATCH_MIN_RESPONSE + 1.0
+                    and max(local_bright_delta, local_dark_delta) >= MICRO_SCRATCH_SINGLE_LINE_MIN_ABS_DELTA
+                )
+                if dashed_segment:
+                    strong_internal = bool(
+                        strong_internal
+                        or (
+                            total_line_length >= MICRO_SCRATCH_DASHED_MIN_LENGTH
+                            and line_count >= MICRO_SCRATCH_DASHED_MIN_FRAGMENTS
+                            and local_delta >= MICRO_SCRATCH_DASHED_MIN_RESPONSE
+                            and max(local_bright_delta, local_dark_delta) >= MICRO_SCRATCH_DASHED_MIN_ABS_DELTA
+                        )
+                    )
+                best = {
+                    "type": "scratch",
+                    "confidence": round(confidence, 2),
+                    "x": int(left),
+                    "y": int(top),
+                    "w": int(box_w),
+                    "h": int(box_h),
+                    "area": int(active_area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "light",
+                    "source": "pc_micro_line_scratch",
+                    "line_count": line_count,
+                    "angle_groups": int(candidate.get("angle_groups", 1) or 1),
+                    "total_line_length": round(total_line_length, 1),
+                    "fill_ratio": round(fill_ratio, 2),
+                    "local_signed_delta": round(local_signed_delta, 1),
+                    "local_bright_delta": round(local_bright_delta, 1),
+                    "local_dark_delta": round(local_dark_delta, 1),
+                    "local_response": round(local_delta, 1),
+                    "dashed_micro_scratch": bool(dashed_segment),
+                    "fragment_count": int(candidate.get("fragment_count", line_count) or line_count),
+                    "line_active_fraction": round(float(candidate.get("active_fraction", 0.0) or 0.0), 2),
+                    "line_max_gap_ratio": round(float(candidate.get("max_gap_ratio", 0.0) or 0.0), 2),
+                    "strong_internal_scratch": bool(strong_internal),
+                    "micro_defect": True,
                 }
         return best
 
@@ -6340,6 +11239,48 @@ class LensDefectHostApp:
         scratch_bright_delta = float(scratch.get("local_bright_delta", 0) or 0)
         scratch_dark_delta = float(scratch.get("local_dark_delta", 0) or 0)
         scratch_slender_lines = int(scratch.get("slender_line_count", 0) or 0)
+        scratch_fill_ratio = float(scratch.get("fill_ratio", 0) or 0)
+        stain_source = str(stain.get("source", ""))
+        stain_length = int(stain.get("length", 0) or 0)
+        stain_signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+        stain_local_delta = float(stain.get("local_dark_delta", 0) or 0)
+        micro_dot_stain = (
+            stain_source in ("pc_micro_dark_stain", "pc_micro_bright_stain", "pc_fast_dark_stain", "pc_morph_blackhat_stain")
+            and scratch_source == "pc_micro_line_scratch"
+            and scratch_line_count <= 1
+            and scratch_total_line_length <= max(18.0, float(stain_length) * 2.2)
+            and scratch_length <= max(20, int(stain_length * 2.8))
+            and scratch_fill_ratio >= 0.64
+            and stain_aspect <= 1.45
+            and stain_density >= 0.45
+            and stain_area >= 10
+            and (
+                self.fast_review_iou(scratch, stain) >= 0.10
+                or self.detection_center_distance_ratio(scratch, stain) <= 0.06
+            )
+        )
+        if micro_dot_stain:
+            return stain
+        compact_dark_stain_with_edge_response = (
+            stain_source in ("pc_fast_dark_stain", "pc_micro_dark_stain", "pc_morph_blackhat_stain")
+            and scratch_source == "pc_micro_line_scratch"
+            and scratch_line_count <= 1
+            and not scratch_strong
+            and scratch_fill_ratio >= 0.72
+            and scratch_area <= max(1100, int(stain_area * 0.75))
+            and scratch_length <= max(64, int(stain_length * 1.35))
+            and stain_density >= 0.58
+            and stain_aspect <= 1.75
+            and stain_area >= max(90, int(scratch_area * 1.15))
+            and stain_local_delta >= max(12.0, scratch_dark_delta * 0.35)
+            and stain_signed_delta <= -18.0
+            and (
+                self.fast_review_iou(scratch, stain) >= 0.08
+                or self.detection_center_distance_ratio(scratch, stain) <= 0.72
+            )
+        )
+        if compact_dark_stain_with_edge_response:
+            return stain
         if self.scratch_candidate_looks_like_dark_stain(scratch, mask):
             return self.promote_scratch_candidate_to_stain(scratch)
         scratch_is_long_slender = (
@@ -6383,6 +11324,16 @@ class LensDefectHostApp:
             and scratch_signed_delta <= FAST_REVIEW_DARK_STAR_STAIN_MAX_SIGNED_DELTA
             and stain is not None
         )
+        dark_line_scratch = (
+            scratch_source in ("pc_fast_review_line", "pc_morph_line_scratch", "pc_micro_line_scratch")
+            and scratch_aspect >= 2.35
+            and scratch_area_ratio <= 0.008
+            and scratch_total_line_length >= FAST_REVIEW_STAR_SCRATCH_MIN_LENGTH
+            and scratch_dark_delta >= max(10.0, scratch_bright_delta * 1.8)
+            and scratch_area <= max(420, int(stain_area * 1.35))
+        )
+        if dark_line_scratch:
+            return scratch
         if dark_star_stain:
             return stain
         if scratch_is_star:
@@ -6422,7 +11373,23 @@ class LensDefectHostApp:
     def stain_candidate_looks_like_scratch(self, stain, mask):
         if not isinstance(stain, dict):
             return False
-        if str(stain.get("source", "")) != "pc_fast_dark_stain":
+        source = str(stain.get("source", ""))
+        if source == "pc_morph_blackhat_stain":
+            signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
+            active_dark_delta = float(stain.get("active_dark_delta", 0) or 0)
+            local_delta = float(stain.get("local_dark_delta", 0) or 0)
+            density = float(stain.get("density", 0) or 0)
+            length = float(stain.get("length", 0) or 0)
+            aspect_ratio = float(stain.get("aspect_ratio", 0) or 0)
+            return bool(
+                signed_delta >= 1.5
+                and active_dark_delta <= 16.0
+                and local_delta >= 48.0
+                and 0.16 <= density <= 0.62
+                and length >= 40.0
+                and aspect_ratio >= 1.25
+            )
+        if source != "pc_fast_dark_stain":
             return False
         if self.dark_stain_candidate_looks_like_weak_scratch_shadow(stain, mask):
             return True
@@ -6435,6 +11402,17 @@ class LensDefectHostApp:
         signed_delta = float(stain.get("brightness_signed_delta", 0) or 0)
         local_delta = float(stain.get("local_dark_delta", 0) or 0)
         area_ratio = area / float(mask_area)
+        weak_bright_line_shadow = (
+            angle_groups <= 1
+            and length >= 80.0
+            and aspect_ratio >= 2.0
+            and area_ratio <= 0.28
+            and 0.42 <= density <= 0.70
+            and signed_delta >= -16.0
+            and local_delta <= 8.0
+        )
+        if weak_bright_line_shadow:
+            return True
         return (
             angle_groups >= FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_LINE_COUNT
             and length >= 42.0
@@ -6487,7 +11465,8 @@ class LensDefectHostApp:
     def promote_stain_candidate_to_scratch(self, stain):
         promoted = dict(stain)
         promoted["type"] = "scratch"
-        promoted["source"] = "pc_fast_dark_scratch"
+        source = str(stain.get("source", ""))
+        promoted["source"] = "pc_morph_bright_line_scratch" if source == "pc_morph_blackhat_stain" else "pc_fast_dark_scratch"
         promoted["confidence"] = max(0.84, min(0.93, float(stain.get("confidence", 0.84) or 0.84)))
         promoted["strong_internal_scratch"] = True
         promoted["level"] = "medium" if self._positive_int(stain.get("length")) >= 65 else "light"
@@ -6508,6 +11487,16 @@ class LensDefectHostApp:
         aspect_ratio = float(scratch.get("aspect_ratio", 0) or 0)
         dark_fraction = float(scratch.get("dark_fraction", 0) or 0)
         component_count = int(scratch.get("component_count", 0) or 0)
+        length = float(scratch.get("length", 0) or 0)
+        total_line_length = float(scratch.get("total_line_length", length) or 0)
+        if (
+            source == "pc_fast_review_line"
+            and aspect_ratio >= 2.35
+            and fill_ratio <= 0.26
+            and total_line_length >= FAST_REVIEW_STAR_SCRATCH_MIN_LENGTH
+            and line_count >= FAST_REVIEW_STAR_SCRATCH_MIN_LINES
+        ):
+            return False
         compact_dark_cluster = (
             fill_ratio >= 0.24
             and aspect_ratio <= 2.25
@@ -6599,6 +11588,12 @@ class LensDefectHostApp:
         lens_dark_values = dark_response[mask > 0]
         lens_gray_values = gray[mask > 0]
         if lens_dark_values.size <= 0 or lens_gray_values.size <= 0:
+            return None
+
+        lens_bright_values = bright_response[mask > 0]
+        dark_p95 = float(np.percentile(lens_dark_values, 95.0))
+        bright_p95 = float(np.percentile(lens_bright_values, 95.0)) if lens_bright_values.size else 0.0
+        if dark_p95 < 18.0 and dark_p95 < bright_p95 * 1.25:
             return None
 
         dark_threshold = max(5.0, float(np.percentile(lens_dark_values, 82.0)))
@@ -7355,6 +12350,8 @@ class LensDefectHostApp:
             })
 
         line_detection = self.fast_cv_find_scratch_lines(gray, mask, edge_distance)
+        if self.scratch_line_detection_can_short_circuit(line_detection):
+            return line_detection
         bright_line_detection = self.fast_cv_find_bright_scratch_lines(gray, mask, edge_distance)
         if bright_line_detection is not None:
             if line_detection is None or bright_line_detection.get("total_line_length", 0) > line_detection.get("total_line_length", 0):
@@ -7434,6 +12431,74 @@ class LensDefectHostApp:
             return None
         confidence = min(0.94, 0.78 + len(selected) * 0.035 + min(0.08, length / 500.0))
         fill_ratio = float(total_area) / float(max(1, (right - left) * (bottom - top)))
+        if (
+            length <= FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_LENGTH
+            and total_area <= FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_AREA
+            and len(selected) <= FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_COMPONENTS
+        ):
+            local_pad = max(8, int(min(width, height) * 0.025))
+            local_left = max(0, int(left) - local_pad)
+            local_top = max(0, int(top) - local_pad)
+            local_right = min(width, int(right) + local_pad)
+            local_bottom = min(height, int(bottom) + local_pad)
+            local_gray = gray[local_top:local_bottom, local_left:local_right]
+            aggregate_gray = gray[int(top):int(bottom), int(left):int(right)]
+            if local_gray.size > 0 and aggregate_gray.size > 0:
+                local_background = cv2.GaussianBlur(local_gray, (0, 0), sigmaX=5, sigmaY=5)
+                roi_left = int(left) - local_left
+                roi_top = int(top) - local_top
+                roi_background = local_background[
+                    roi_top:roi_top + aggregate_gray.shape[0],
+                    roi_left:roi_left + aggregate_gray.shape[1],
+                ]
+                if roi_background.shape == aggregate_gray.shape:
+                    aggregate_diff = aggregate_gray.astype(np.int16) - roi_background.astype(np.int16)
+                    aggregate_abs_delta = float(np.percentile(np.abs(aggregate_diff), 85.0))
+                    aggregate_signed_delta = float(np.mean(aggregate_diff))
+                    if (
+                        aggregate_abs_delta <= FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_ABS_DELTA
+                        and abs(aggregate_signed_delta) <= FAST_REVIEW_AGGREGATE_SCRATCH_WEAK_MAX_SIGNED_DELTA
+                    ):
+                        if line_detection is not None:
+                            return line_detection
+                        return None
+        sparse_balanced_aggregate = (
+            fill_ratio <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_FILL
+            and aggregate_aspect <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_ASPECT
+            and total_area / float(mask_area) <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_AREA_RATIO
+            and len(selected) <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_COMPONENTS
+        )
+        if sparse_balanced_aggregate:
+            local_pad = max(8, int(min(width, height) * 0.025))
+            local_left = max(0, int(left) - local_pad)
+            local_top = max(0, int(top) - local_pad)
+            local_right = min(width, int(right) + local_pad)
+            local_bottom = min(height, int(bottom) + local_pad)
+            local_gray = gray[local_top:local_bottom, local_left:local_right]
+            aggregate_gray = gray[int(top):int(bottom), int(left):int(right)]
+            if local_gray.size > 0 and aggregate_gray.size > 0:
+                local_background = cv2.GaussianBlur(local_gray, (0, 0), sigmaX=5, sigmaY=5)
+                roi_left = int(left) - local_left
+                roi_top = int(top) - local_top
+                roi_background = local_background[
+                    roi_top:roi_top + aggregate_gray.shape[0],
+                    roi_left:roi_left + aggregate_gray.shape[1],
+                ]
+                if roi_background.shape == aggregate_gray.shape:
+                    aggregate_diff = aggregate_gray.astype(np.int16) - roi_background.astype(np.int16)
+                    aggregate_abs_delta = float(np.percentile(np.abs(aggregate_diff), 92.0))
+                    aggregate_signed_delta = float(np.mean(aggregate_diff))
+                    aggregate_bright_delta = float(np.percentile(np.maximum(aggregate_diff, 0), 85.0))
+                    aggregate_dark_delta = float(np.percentile(np.maximum(-aggregate_diff, 0), 85.0))
+                    if (
+                        aggregate_abs_delta <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_ABS_DELTA
+                        and abs(aggregate_signed_delta) <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_SIGNED_DELTA
+                        and abs(aggregate_bright_delta - aggregate_dark_delta)
+                        <= FAST_REVIEW_AGGREGATE_SCRATCH_SPARSE_MAX_POLARITY_GAP
+                    ):
+                        if line_detection is not None:
+                            return line_detection
+                        return None
         return {
             "type": "scratch",
             "confidence": round(confidence, 2),
@@ -7529,6 +12594,11 @@ class LensDefectHostApp:
         diff_threshold = max(8.0, float(np.percentile(lens_values, 93.0)))
         diff_mask = np.where(local_diff >= diff_threshold, 255, 0).astype(np.uint8)
         edge_mask = cv2.Canny(blurred, 25, 70)
+        mask_area = max(1, int(cv2.countNonZero(mask)))
+        edge_density = float(cv2.countNonZero(cv2.bitwise_and(edge_mask, mask))) / float(mask_area)
+        local_p98 = float(np.percentile(lens_values, 98.0))
+        if edge_density < 0.0012 and local_p98 < 12.0:
+            return None
         candidate_mask = cv2.bitwise_or(edge_mask, diff_mask)
         candidate_mask = cv2.bitwise_and(candidate_mask, mask)
         candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
@@ -7588,7 +12658,6 @@ class LensDefectHostApp:
             return None
 
         clusters = self.cluster_scratch_line_segments(segments)
-        mask_area = max(1, int(cv2.countNonZero(mask)))
         frame_area = max(1, int(width * height))
         best = None
         best_score = 0.0
@@ -7647,6 +12716,30 @@ class LensDefectHostApp:
 
             line_density = total_line_length / float(max(1, length))
             fill_ratio = float(candidate_area) / float(max(1, box_area))
+            local_peak_delta = max(local_bright_delta, local_dark_delta)
+            fragmented_line_noise = (
+                len(cluster) >= FAST_REVIEW_LINE_FRAGMENT_NOISE_MIN_LINES
+                and fill_ratio >= FAST_REVIEW_LINE_FRAGMENT_NOISE_MIN_FILL
+                and aspect_ratio <= FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_ASPECT
+                and local_peak_delta <= FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_LOCAL_DELTA
+                and abs(local_signed_delta) <= FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_SIGNED_DELTA
+                and abs(local_bright_delta - local_dark_delta)
+                <= FAST_REVIEW_LINE_FRAGMENT_NOISE_MAX_POLARITY_GAP
+            )
+            if fragmented_line_noise:
+                continue
+            if (
+                local_peak_delta < 8.5
+                and not (aspect_ratio >= 2.8 and total_line_length >= 160.0 and fill_ratio <= 0.16)
+            ):
+                continue
+            if (
+                local_peak_delta < 12.0
+                and abs(local_signed_delta) < 2.2
+                and aspect_ratio < 2.6
+                and not (line_density >= 2.6 and fill_ratio <= 0.08)
+            ):
+                continue
             crosshatch_scratch = (
                 len(cluster) >= 4
                 and total_line_length >= FAST_REVIEW_SCRATCH_CROSSHATCH_MIN_LINE_LENGTH
@@ -8011,6 +13104,8 @@ class LensDefectHostApp:
             blob_ratio = float(blob_like_count) / float(max(1, len(cluster)))
             if blob_ratio > FAST_REVIEW_BRIGHT_CROSSHATCH_MAX_BLOB_LINE_RATIO:
                 continue
+            slender_ratio = float(slender_count) / float(max(1, len(cluster)))
+            slender_length_ratio = slender_total_length / float(max(1.0, total_line_length))
 
             left = max(0, min(xs) - 5)
             top = max(0, min(ys) - 5)
@@ -8052,6 +13147,19 @@ class LensDefectHostApp:
             short_side = max(1, min(box_w, box_h))
             aspect_ratio = float(length) / float(short_side)
             fill_ratio = float(candidate_area) / float(max(1, box_area))
+            fragmented_bright_noise = (
+                len(cluster) >= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_LINES
+                and local_peak <= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_LOCAL_DELTA
+                and slender_ratio <= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_RATIO
+                and fill_ratio >= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_FILL_RATIO
+                and (
+                    slender_length_ratio <= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MAX_SLENDER_LENGTH_RATIO
+                    or blob_ratio >= FAST_REVIEW_BRIGHT_CROSSHATCH_FRAGMENT_NOISE_MIN_BLOB_RATIO
+                )
+            )
+            if fragmented_bright_noise:
+                continue
+
             if (
                 aspect_ratio < FAST_REVIEW_BRIGHT_CROSSHATCH_MIN_ASPECT
                 and len(angle_groups) < 4
@@ -8089,7 +13197,9 @@ class LensDefectHostApp:
                     "line_count": len(cluster),
                     "angle_groups": len(angle_groups),
                     "slender_line_count": int(slender_count),
+                    "slender_line_ratio": round(slender_ratio, 2),
                     "blob_line_ratio": round(blob_ratio, 2),
+                    "slender_length_ratio": round(slender_length_ratio, 2),
                     "slender_total_length": round(slender_total_length, 1),
                     "total_line_length": round(total_line_length, 1),
                     "local_bright_delta": round(local_peak, 1),
@@ -8113,6 +13223,390 @@ class LensDefectHostApp:
                 }
 
         return best
+
+    def fast_cv_find_weak_center_cross_projection(self, response, candidate_mask, center_roi, edge_distance=None):
+        height, width = response.shape[:2]
+        center_points = cv2.findNonZero(center_roi)
+        if center_points is None:
+            return None
+        roi_x, roi_y, roi_w, roi_h = cv2.boundingRect(center_points)
+        if roi_w <= 0 or roi_h <= 0:
+            return None
+
+        active_mask = (candidate_mask > 0) & (center_roi > 0)
+        center_area = max(1, int(cv2.countNonZero(center_roi)))
+        active_area = int(np.count_nonzero(active_mask))
+        active_density = float(active_area) / float(center_area)
+        if (
+            active_area <= 0
+            or active_density < FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_DENSITY
+            or active_density > FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MAX_DENSITY
+        ):
+            return None
+
+        row_counts = active_mask.sum(axis=1)
+        col_counts = active_mask.sum(axis=0)
+        best_y = int(np.argmax(row_counts))
+        best_x = int(np.argmax(col_counts))
+
+        def longest_run(values):
+            best_start = 0
+            best_end = -1
+            current_start = 0
+            current_len = 0
+            best_len = 0
+            for index, value in enumerate(values):
+                if value:
+                    if current_len == 0:
+                        current_start = index
+                    current_len += 1
+                    if current_len > best_len:
+                        best_len = current_len
+                        best_start = current_start
+                        best_end = index
+                else:
+                    current_len = 0
+            return best_start, best_end, best_len
+
+        row_values = active_mask[best_y, roi_x:roi_x + roi_w]
+        col_values = active_mask[roi_y:roi_y + roi_h, best_x]
+        row_start, row_end, row_run = longest_run(row_values)
+        col_start, col_end, col_run = longest_run(col_values)
+        if (
+            row_run < max(42, int(roi_w * FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_H_RATIO))
+            or col_run < max(42, int(roi_h * FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_V_RATIO))
+        ):
+            return None
+
+        center_x_ratio = float(best_x) / float(max(1, width))
+        center_y_ratio = float(best_y) / float(max(1, height))
+        if (
+            center_x_ratio < FAST_REVIEW_CENTER_CROSS_MIN_X_RATIO
+            or center_x_ratio > FAST_REVIEW_CENTER_CROSS_MAX_X_RATIO
+            or center_y_ratio < FAST_REVIEW_CENTER_CROSS_MIN_Y_RATIO
+            or center_y_ratio > FAST_REVIEW_CENTER_CROSS_MAX_Y_RATIO
+        ):
+            return None
+
+        intersection = active_mask[
+            max(0, best_y - 2):min(height, best_y + 3),
+            max(0, best_x - 2):min(width, best_x + 3),
+        ]
+        if intersection.size <= 0 or not intersection.any():
+            return None
+
+        def band_response_percentile(y1, y2, x1, x2, percentile=90.0):
+            band = response[max(0, y1):min(height, y2), max(0, x1):min(width, x2)]
+            band_mask = center_roi[max(0, y1):min(height, y2), max(0, x1):min(width, x2)] > 0
+            values = band[band_mask]
+            if values.size <= 0:
+                return 0.0
+            return float(np.percentile(values, percentile))
+
+        row_response = band_response_percentile(best_y - 1, best_y + 2, roi_x, roi_x + roi_w)
+        col_response = band_response_percentile(roi_y, roi_y + roi_h, best_x - 1, best_x + 2)
+        if (
+            row_response < FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_RESPONSE
+            or col_response < FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_RESPONSE
+        ):
+            return None
+
+        row_bg = max(
+            band_response_percentile(best_y - 10, best_y - 9, roi_x, roi_x + roi_w),
+            band_response_percentile(best_y + 10, best_y + 11, roi_x, roi_x + roi_w),
+        )
+        col_bg = max(
+            band_response_percentile(roi_y, roi_y + roi_h, best_x - 10, best_x - 9),
+            band_response_percentile(roi_y, roi_y + roi_h, best_x + 10, best_x + 11),
+        )
+        if (
+            row_response - row_bg < FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_LOCAL_DELTA
+            or col_response - col_bg < FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MIN_LOCAL_DELTA
+        ):
+            return None
+
+        row_left = roi_x + row_start
+        row_right = roi_x + row_end + 1
+        col_top = roi_y + col_start
+        col_bottom = roi_y + col_end + 1
+        left = max(0, min(row_left, best_x) - 4)
+        right = min(width, max(row_right, best_x + 1) + 4)
+        top = max(0, min(col_top, best_y) - 4)
+        bottom = min(height, max(col_bottom, best_y + 1) + 4)
+        box_w = max(1, right - left)
+        box_h = max(1, bottom - top)
+        box_area = max(1, box_w * box_h)
+        local_active = active_mask[top:bottom, left:right]
+        local_area = int(np.count_nonzero(local_active))
+        fill_ratio = float(local_area) / float(box_area)
+        if fill_ratio > FAST_REVIEW_CENTER_CROSS_WEAK_PROJECTION_MAX_FILL:
+            return None
+
+        min_edge_distance = max(
+            FAST_REVIEW_SCRATCH_MIN_EDGE_DISTANCE,
+            int(min(width, height) * FAST_REVIEW_SCRATCH_EDGE_MARGIN_RATIO),
+        )
+        if edge_distance is not None:
+            if edge_distance[best_y, best_x] < min_edge_distance * 0.62:
+                return None
+            if not self.scratch_box_has_safe_edge_distance(
+                edge_distance,
+                left,
+                top,
+                right,
+                bottom,
+                min_edge_distance,
+                0.56,
+            ):
+                return None
+
+        total_line_length = float(row_run + col_run)
+        local_peak = max(row_response, col_response)
+        confidence = min(
+            0.90,
+            0.82 + min(0.05, total_line_length / 900.0) + min(0.03, local_peak / 120.0),
+        )
+        return {
+            "type": "scratch",
+            "confidence": round(confidence, 2),
+            "x": int(left),
+            "y": int(top),
+            "w": int(box_w),
+            "h": int(box_h),
+            "area": int(local_area),
+            "length": int(max(box_w, box_h)),
+            "aspect_ratio": round(float(max(box_w, box_h)) / float(max(1, min(box_w, box_h))), 2),
+            "level": "light",
+            "source": "pc_fast_center_cross_scratch",
+            "line_count": 2,
+            "angle_groups": 2,
+            "slender_line_count": 2,
+            "total_line_length": round(total_line_length, 1),
+            "local_bright_delta": round(local_peak, 1),
+            "local_signed_delta": round(local_peak, 1),
+            "local_dark_delta": 0.0,
+            "fill_ratio": round(fill_ratio, 3),
+            "weak_center_cross": True,
+            "projection_cross": True,
+            "crosshatch_scratch": True,
+            "strong_internal_scratch": True,
+        }
+
+    def fast_cv_find_weak_center_cross_scratch(self, gray, mask, edge_distance=None):
+        height, width = gray.shape[:2]
+        if width < 180 or height < 120 or mask is None:
+            return None
+
+        mask_points = cv2.findNonZero(mask)
+        if mask_points is None:
+            return None
+        mx, my, mw, mh = cv2.boundingRect(mask_points)
+        left_limit = max(0, int(mx + mw * 0.18))
+        right_limit = min(width, int(mx + mw * 0.82))
+        top_limit = max(0, int(my + mh * 0.18))
+        bottom_limit = min(height, int(my + mh * 0.86))
+        if right_limit <= left_limit or bottom_limit <= top_limit:
+            return None
+
+        center_roi = np.zeros_like(mask)
+        center_roi[top_limit:bottom_limit, left_limit:right_limit] = 255
+        center_roi = cv2.bitwise_and(center_roi, mask)
+        center_area = max(1, int(cv2.countNonZero(center_roi)))
+        if center_area <= 0:
+            return None
+
+        local_background = cv2.GaussianBlur(gray, (0, 0), sigmaX=9, sigmaY=9)
+        response = cv2.absdiff(gray, local_background)
+        values = response[center_roi > 0]
+        if values.size <= 0:
+            return None
+        response_p98 = float(np.percentile(values, 98.0))
+        if response_p98 > FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_NOISE_P98:
+            return None
+        threshold = max(
+            FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_RESPONSE,
+            response_p98,
+        )
+        candidate_mask = np.where(response >= threshold, 255, 0).astype(np.uint8)
+        candidate_mask = cv2.bitwise_and(candidate_mask, center_roi)
+        candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_area = int(cv2.countNonZero(candidate_mask))
+        if candidate_area <= 0:
+            return None
+        candidate_density = float(candidate_area) / float(center_area)
+        projection_cross = self.fast_cv_find_weak_center_cross_projection(
+            response,
+            candidate_mask,
+            center_roi,
+            edge_distance,
+        )
+        if (
+            candidate_density < FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_DENSITY
+            or candidate_density > FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_DENSITY
+        ):
+            return projection_cross
+
+        min_line_length = max(36, int(min(width, height) * FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_LINE_RATIO))
+        lines = cv2.HoughLinesP(
+            candidate_mask,
+            1,
+            np.pi / 180.0,
+            threshold=6,
+            minLineLength=min_line_length,
+            maxLineGap=8,
+        )
+        if lines is None:
+            return projection_cross
+
+        min_edge_distance = max(
+            FAST_REVIEW_SCRATCH_MIN_EDGE_DISTANCE,
+            int(min(width, height) * FAST_REVIEW_SCRATCH_EDGE_MARGIN_RATIO),
+        )
+        horizontal = []
+        vertical = []
+        all_segments = []
+        for line in lines[:, 0, :]:
+            x1, y1, x2, y2 = [int(value) for value in line]
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+            if length < min_line_length:
+                continue
+            center_x = max(0, min(width - 1, int((x1 + x2) / 2)))
+            center_y = max(0, min(height - 1, int((y1 + y2) / 2)))
+            if center_roi[center_y, center_x] == 0:
+                continue
+            if edge_distance is not None and edge_distance[center_y, center_x] < min_edge_distance * 0.62:
+                continue
+            angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+            segment = (x1, y1, x2, y2, length, angle)
+            all_segments.append(segment)
+            if angle <= 18.0 or angle >= 162.0:
+                horizontal.append(segment)
+            elif 72.0 <= angle <= 108.0:
+                vertical.append(segment)
+        if not horizontal or not vertical:
+            return projection_cross
+
+        best = None
+        best_score = 0.0
+        intersection_tolerance = max(
+            FAST_REVIEW_CENTER_CROSS_WEAK_FAST_INTERSECTION_TOLERANCE,
+            int(min(width, height) * 0.024),
+        )
+        min_axis_length = max(
+            min_line_length,
+            int(min(width, height) * FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_AXIS_RATIO),
+        )
+        for h_line in horizontal:
+            hx1, hy1, hx2, hy2, h_length, _h_angle = h_line
+            h_y = (hy1 + hy2) / 2.0
+            h_min_x = min(hx1, hx2)
+            h_max_x = max(hx1, hx2)
+            if h_length < min_axis_length:
+                continue
+            for v_line in vertical:
+                vx1, vy1, vx2, vy2, v_length, _v_angle = v_line
+                if v_length < min_axis_length:
+                    continue
+                v_x = (vx1 + vx2) / 2.0
+                v_min_y = min(vy1, vy2)
+                v_max_y = max(vy1, vy2)
+                if not (
+                    h_min_x - intersection_tolerance <= v_x <= h_max_x + intersection_tolerance
+                    and v_min_y - intersection_tolerance <= h_y <= v_max_y + intersection_tolerance
+                ):
+                    continue
+                center_x_ratio = float(v_x) / float(max(1, width))
+                center_y_ratio = float(h_y) / float(max(1, height))
+                if (
+                    center_x_ratio < FAST_REVIEW_CENTER_CROSS_MIN_X_RATIO
+                    or center_x_ratio > FAST_REVIEW_CENTER_CROSS_MAX_X_RATIO
+                    or center_y_ratio < FAST_REVIEW_CENTER_CROSS_MIN_Y_RATIO
+                    or center_y_ratio > FAST_REVIEW_CENTER_CROSS_MAX_Y_RATIO
+                ):
+                    continue
+                axis_ratio = max(h_length, v_length) / float(max(1.0, min(h_length, v_length)))
+                if axis_ratio > FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_AXIS_IMBALANCE:
+                    continue
+                left = max(0, min(hx1, hx2, vx1, vx2) - 4)
+                top = max(0, min(hy1, hy2, vy1, vy2) - 4)
+                right = min(width, max(hx1, hx2, vx1, vx2) + 5)
+                bottom = min(height, max(hy1, hy2, vy1, vy2) + 5)
+                box_w = max(1, right - left)
+                box_h = max(1, bottom - top)
+                box_area = max(1, box_w * box_h)
+                candidate_roi = candidate_mask[top:bottom, left:right]
+                if candidate_roi.size <= 0:
+                    continue
+                local_area = int(cv2.countNonZero(candidate_roi))
+                fill_ratio = float(local_area) / float(box_area)
+                if fill_ratio > FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MAX_FILL:
+                    continue
+                if edge_distance is not None and not self.scratch_box_has_safe_edge_distance(
+                    edge_distance,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    min_edge_distance,
+                    0.56,
+                ):
+                    continue
+                response_roi = response[top:bottom, left:right]
+                active_values = response_roi[candidate_roi > 0]
+                if active_values.size <= 0:
+                    continue
+                local_peak = float(np.percentile(active_values, 88.0))
+                total_line_length = h_length + v_length
+                if total_line_length < min_line_length * FAST_REVIEW_CENTER_CROSS_WEAK_FAST_MIN_TOTAL_RATIO:
+                    continue
+                length = max(box_w, box_h)
+                aspect_ratio = float(length) / float(max(1, min(box_w, box_h)))
+                score = total_line_length + local_peak * 12.0 - fill_ratio * 120.0
+                if score <= best_score:
+                    continue
+                best_score = score
+                confidence = min(
+                    0.90,
+                    0.82 + min(0.05, total_line_length / 900.0) + min(0.03, local_peak / 120.0),
+                )
+                best = {
+                    "type": "scratch",
+                    "confidence": round(confidence, 2),
+                    "x": int(left),
+                    "y": int(top),
+                    "w": int(box_w),
+                    "h": int(box_h),
+                    "area": int(local_area),
+                    "length": int(length),
+                    "aspect_ratio": round(aspect_ratio, 2),
+                    "level": "light",
+                    "source": "pc_fast_center_cross_scratch",
+                    "line_count": 2,
+                    "angle_groups": 2,
+                    "slender_line_count": 2,
+                    "total_line_length": round(total_line_length, 1),
+                    "local_bright_delta": round(local_peak, 1),
+                    "local_signed_delta": round(local_peak, 1),
+                    "local_dark_delta": 0.0,
+                    "fill_ratio": round(fill_ratio, 3),
+                    "crosshatch_scratch": True,
+                    "weak_center_cross": True,
+                    "strong_internal_scratch": True,
+                    "candidates": [
+                        {
+                            "x": int(min(x1, x2)),
+                            "y": int(min(y1, y2)),
+                            "w": int(abs(x2 - x1) + 1),
+                            "h": int(abs(y2 - y1) + 1),
+                            "area": int(max(1, line_length)),
+                            "length": int(line_length),
+                            "aspect_ratio": round(float(line_length) / float(max(1, min(abs(x2 - x1) + 1, abs(y2 - y1) + 1))), 2),
+                        }
+                        for x1, y1, x2, y2, line_length, _angle in (h_line, v_line)
+                    ],
+                }
+
+        return best if best is not None else projection_cross
 
     def fast_cv_find_center_cross_scratch(self, gray, mask, edge_distance=None):
         height, width = gray.shape[:2]
@@ -8156,6 +13650,17 @@ class LensDefectHostApp:
             0,
         ).astype(np.uint8)
         contrast_mask = cv2.bitwise_and(contrast_mask, center_roi)
+        center_area = max(1, int(cv2.countNonZero(center_roi)))
+        raw_contrast_density = float(cv2.countNonZero(contrast_mask)) / float(center_area)
+        if raw_contrast_density > FAST_REVIEW_CENTER_CROSS_NOISE_MAX_CANDIDATE_DENSITY:
+            raw_edge_mask = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 18, 58)
+            raw_edge_mask = cv2.bitwise_and(raw_edge_mask, center_roi)
+            raw_edge_density = float(cv2.countNonZero(raw_edge_mask)) / float(center_area)
+            if (
+                raw_edge_density < FAST_REVIEW_CENTER_CROSS_NOISE_MAX_EDGE_DENSITY
+                and diff_threshold <= FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA + 2.0
+            ):
+                return None
 
         gray_values = gray[mask > 0]
         if gray_values.size > 0:
@@ -8168,6 +13673,16 @@ class LensDefectHostApp:
         edge_mask = cv2.bitwise_and(edge_mask, center_roi)
         candidate_mask = cv2.bitwise_or(contrast_mask, edge_mask)
         candidate_mask = cv2.morphologyEx(candidate_mask, cv2.MORPH_CLOSE, np.ones((2, 2), dtype=np.uint8))
+        candidate_density = float(cv2.countNonZero(candidate_mask)) / float(center_area)
+        edge_density = float(cv2.countNonZero(edge_mask)) / float(center_area)
+        contrast_density = float(cv2.countNonZero(contrast_mask)) / float(center_area)
+        if (
+            candidate_density > FAST_REVIEW_CENTER_CROSS_NOISE_MAX_CANDIDATE_DENSITY
+            and edge_density < FAST_REVIEW_CENTER_CROSS_NOISE_MAX_EDGE_DENSITY
+            and contrast_density > candidate_density * 0.52
+            and diff_threshold <= FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA + 2.0
+        ):
+            return None
 
         min_line_length = max(9, int(min(width, height) * 0.030))
         lines = cv2.HoughLinesP(
@@ -8226,10 +13741,13 @@ class LensDefectHostApp:
             angle_groups = set()
             slender_count = 0
             vertical_length = 0.0
+            longest_line_length = 0.0
+            long_line_total = 0.0
             for x1, y1, x2, y2, line_length in cluster:
                 xs.extend([x1, x2])
                 ys.extend([y1, y2])
                 total_line_length += line_length
+                longest_line_length = max(longest_line_length, float(line_length))
                 angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
                 angle_groups.add(int(angle // 25.0))
                 if 65.0 <= angle <= 115.0:
@@ -8238,6 +13756,8 @@ class LensDefectHostApp:
                 segment_aspect = float(line_length) / float(short_side)
                 if segment_aspect >= 2.6 and line_length >= 14.0:
                     slender_count += 1
+                if line_length >= max(34.0, min(width, height) * 0.105):
+                    long_line_total += float(line_length)
 
             if total_line_length < FAST_REVIEW_CENTER_CROSS_MIN_TOTAL_LENGTH:
                 continue
@@ -8283,6 +13803,12 @@ class LensDefectHostApp:
             local_peak = float(np.percentile(contrast_roi[candidate_roi > 0], 82.0))
             if local_peak < FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA:
                 continue
+            if (
+                box_area_ratio >= 0.12
+                and local_peak < max(8.5, FAST_REVIEW_CENTER_CROSS_MIN_LOCAL_DELTA + 2.0)
+                and fill_ratio >= 0.24
+            ):
+                continue
             gray_roi = gray[top:bottom, left:right]
             dark_fraction = 0.0
             if gray_roi.size > 0:
@@ -8293,6 +13819,8 @@ class LensDefectHostApp:
                     80.0,
                 )
                 dark_fraction = float(np.mean(gray_roi <= dark_limit))
+            if fill_ratio >= 0.36 and local_peak < 14.0 and dark_fraction < 0.08:
+                continue
             if edge_distance is not None and not self.scratch_box_has_safe_edge_distance(
                 edge_distance,
                 left,
@@ -8308,6 +13836,26 @@ class LensDefectHostApp:
             if aspect_ratio < 1.35:
                 continue
             slender_ratio = float(slender_count) / float(max(1, len(cluster)))
+            dominant_line_ratio = float(longest_line_length) / float(max(1.0, total_line_length))
+            long_line_ratio = float(long_line_total) / float(max(1.0, total_line_length))
+            fragmented_noise_cross = (
+                aspect_ratio <= 2.05
+                and fill_ratio <= 0.24
+                and dark_fraction <= 0.08
+                and local_peak <= FAST_REVIEW_CENTER_CROSS_NOISE_MAX_LOCAL_DELTA
+                and dominant_line_ratio < FAST_REVIEW_CENTER_CROSS_NOISE_MIN_DOMINANT_RATIO
+                and long_line_ratio < FAST_REVIEW_CENTER_CROSS_NOISE_MIN_LONG_LINE_RATIO
+            )
+            weak_fragmented_cross = (
+                aspect_ratio <= 1.80
+                and fill_ratio <= 0.22
+                and dark_fraction <= 0.08
+                and local_peak <= FAST_REVIEW_CENTER_CROSS_NOISE_STRONG_MAX_LOCAL_DELTA
+                and dominant_line_ratio < 0.24
+                and long_line_ratio < 0.50
+            )
+            if fragmented_noise_cross or weak_fragmented_cross:
+                continue
             weak_center_cross = local_peak <= FAST_REVIEW_REFLECTION_CENTER_CROSS_MAX_DELTA
             if (
                 weak_center_cross
@@ -8353,6 +13901,8 @@ class LensDefectHostApp:
                     "angle_groups": len(angle_groups),
                     "slender_line_count": int(slender_count),
                     "total_line_length": round(total_line_length, 1),
+                    "dominant_line_ratio": round(dominant_line_ratio, 2),
+                    "long_line_ratio": round(long_line_ratio, 2),
                     "vertical_line_ratio": round(vertical_ratio, 2),
                     "local_bright_delta": round(local_peak, 1),
                     "local_signed_delta": round(local_peak, 1),
@@ -8669,6 +14219,8 @@ class LensDefectHostApp:
     def apply_stage2_to_live_image(self, image, payload):
         if not isinstance(self.latest_detection_result, dict):
             return
+        if self.latest_detection_result.get("no_lens"):
+            return
         if not self.stage2_enabled_var.get():
             return
         now = time.monotonic()
@@ -8776,16 +14328,14 @@ class LensDefectHostApp:
         if roi is not None and self.roi_is_low_confidence(roi, source_w, source_h):
             roi = None
 
-        auto_roi = self.detect_lens_roi_from_image(image)
-        if auto_roi is None:
-            auto_roi = self.detect_conveyor_workpiece_roi_from_image(image)
+        auto_roi = self.detect_precise_lens_roi_from_image(image)
         if auto_roi is not None:
             scaled_auto = {
                 "x": int(auto_roi["x"] * source_w / float(max(1, image_w))),
                 "y": int(auto_roi["y"] * source_h / float(max(1, image_h))),
                 "w": int(auto_roi["w"] * source_w / float(max(1, image_w))),
                 "h": int(auto_roi["h"] * source_h / float(max(1, image_h))),
-                "source": "pc_auto_roi",
+                "source": str(auto_roi.get("source", "pc_auto_roi") or "pc_auto_roi"),
             }
             if roi is None or self.roi_is_full_frame(roi, source_w, source_h):
                 roi = scaled_auto
@@ -9318,6 +14868,10 @@ class LensDefectHostApp:
         self.last_fast_review_key = None
         self.fast_review_candidate = None
         self.fast_review_candidate_count = 0
+        self.micro_bright_stain_candidate = None
+        self.micro_bright_stain_candidate_count = 0
+        self.micro_dark_stain_candidate = None
+        self.micro_dark_stain_candidate_count = 0
         self.stable_detection_result = None
         self.pending_detection_class = None
         self.pending_detection_count = 0
@@ -9332,7 +14886,7 @@ class LensDefectHostApp:
             messagebox.showinfo("提示", "暂无历史记录可导出。")
             return
 
-        prefix = "lens_defect_history" if self.active_mode_key == "lens" else "slide_defect_history"
+        prefix = "lens_defect_history"
         default_name = "%s_%s.csv" % (prefix, datetime.now().strftime("%Y%m%d_%H%M%S"))
         path = filedialog.asksaveasfilename(
             title="导出历史记录",
@@ -9412,7 +14966,7 @@ class LensDefectHostApp:
     def on_close(self):
         self.auto_capture_running = False
         self.reader.stop()
-        self.mcu_client.disconnect()
+        self.bluetooth_client.disconnect()
         self.root.destroy()
 
 
@@ -9445,6 +14999,8 @@ def runtime_self_test():
         "numpy": None,
         "stage2": None,
         "yolo": None,
+        "yolo_new_lens_scratch": None,
+        "yolo_new_lens_stain": None,
         "yolo_seg": None,
     }
     if cv2 is None:
@@ -9469,6 +15025,50 @@ def runtime_self_test():
     except Exception as exc:
         checks["yolo"] = {"ok": False, "error": str(exc), "model": str(DEFAULT_YOLO_MODEL)}
 
+    if DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL.exists():
+        try:
+            detector = YoloOnnxDetector(DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL, DEFAULT_YOLO_LABELS)
+            checks["yolo_new_lens_scratch"] = {
+                "ok": True,
+                "model": str(detector.model_path),
+                "labels": detector.labels,
+                "input_size": detector.input_size,
+            }
+        except Exception as exc:
+            checks["yolo_new_lens_scratch"] = {
+                "ok": False,
+                "error": str(exc),
+                "model": str(DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL),
+            }
+    else:
+        checks["yolo_new_lens_scratch"] = {
+            "ok": True,
+            "available": False,
+            "model": str(DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL),
+        }
+
+    if DEFAULT_YOLO_NEW_LENS_STAIN_MODEL.exists():
+        try:
+            detector = YoloOnnxDetector(DEFAULT_YOLO_NEW_LENS_STAIN_MODEL, DEFAULT_YOLO_LABELS)
+            checks["yolo_new_lens_stain"] = {
+                "ok": True,
+                "model": str(detector.model_path),
+                "labels": detector.labels,
+                "input_size": detector.input_size,
+            }
+        except Exception as exc:
+            checks["yolo_new_lens_stain"] = {
+                "ok": False,
+                "error": str(exc),
+                "model": str(DEFAULT_YOLO_NEW_LENS_STAIN_MODEL),
+            }
+    else:
+        checks["yolo_new_lens_stain"] = {
+            "ok": True,
+            "available": False,
+            "model": str(DEFAULT_YOLO_NEW_LENS_STAIN_MODEL),
+        }
+
     if DEFAULT_YOLO_SEG_MODEL.exists():
         try:
             detector = YoloOnnxDetector(DEFAULT_YOLO_SEG_MODEL, DEFAULT_YOLO_LABELS)
@@ -9484,7 +15084,22 @@ def runtime_self_test():
     else:
         checks["yolo_seg"] = {"ok": True, "available": False, "model": str(DEFAULT_YOLO_SEG_MODEL)}
 
-    ok = bool(checks["cv2"]["ok"] and checks["numpy"]["ok"] and checks["stage2"]["ok"] and checks["yolo"]["ok"])
+    scratch_aux_ok = bool(
+        checks["yolo_new_lens_scratch"]["ok"]
+        or not DEFAULT_YOLO_NEW_LENS_SCRATCH_MODEL.exists()
+    )
+    stain_aux_ok = bool(
+        checks["yolo_new_lens_stain"]["ok"]
+        or not DEFAULT_YOLO_NEW_LENS_STAIN_MODEL.exists()
+    )
+    ok = bool(
+        checks["cv2"]["ok"]
+        and checks["numpy"]["ok"]
+        and checks["stage2"]["ok"]
+        and checks["yolo"]["ok"]
+        and scratch_aux_ok
+        and stain_aux_ok
+    )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:
         output_path = PROJECT_ROOT / "outputs" / "runtime_self_test.json"
