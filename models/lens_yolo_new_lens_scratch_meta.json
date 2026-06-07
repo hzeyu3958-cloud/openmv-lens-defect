@@ -1,0 +1,9 @@
+{
+  "input_size": 640,
+  "base_model": "D:\\zhuijinde\\Desktop\\\u773c\u955c\u8bc6\u522b\\outputs\\yolo_training\\lens_yolo_new_lens_scratch\\weights\\best.pt",
+  "epochs": 4,
+  "batch": 8,
+  "data": "D:\\zhuijinde\\Desktop\\\u773c\u955c\u8bc6\u522b\\outputs\\yolo_seed_new_lens_hard_cross\\data.yaml",
+  "task": "detect",
+  "recommended_runtime": "detect uses boxes; segment exports YOLO-seg masks when polygon labels are available."
+}

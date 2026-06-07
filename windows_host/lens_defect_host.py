@@ -70,6 +70,8 @@ SERIAL_SYNC_KEEP_BYTES = 32
 SERIAL_SYNC_STATUS_SECONDS = 2.0
 LIVE_IMAGE_UI_POLL_MS = 12
 LIVE_IMAGE_INFERENCE_DELAY_MS = 4
+LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS = 6
+LIVE_IMAGE_RECENT_FRAME_KEEP = 8
 AUTO_START_RECEIVE = False
 BLUETOOTH_SEND_MIN_INTERVAL_SECONDS = 1.0
 LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.12
@@ -2152,6 +2154,9 @@ class LensDefectHostApp:
         self.latest_detection_result = None
         self.latest_live_image_payload = None
         self.latest_live_image_payload_key = None
+        self.displayed_live_image_payload = None
+        self.displayed_live_image_payload_key = None
+        self.recent_live_image_payloads = []
         self.live_image_host_frame_seq = 0
         self.live_image_inference_pending_key = None
         self.live_image_inference_after_id = None
@@ -3275,7 +3280,8 @@ class LensDefectHostApp:
 
     def save_live_correction(self, corrected_class):
         corrected_class = defect_type_key(corrected_class)
-        if self.latest_live_image_payload is None or "image_bytes" not in self.latest_live_image_payload:
+        correction_payload = self.correction_live_payload_to_save()
+        if correction_payload is None or "image_bytes" not in correction_payload:
             messagebox.showwarning("暂无画面", "还没有收到当前画面，先开始接收 OpenMV 画面。")
             return
 
@@ -3285,12 +3291,12 @@ class LensDefectHostApp:
         save_dir.mkdir(parents=True, exist_ok=True)
         filename = "correction_%s_%s_%s.jpg" % (corrected_class, split, safe_filename_time())
         save_path = save_dir / filename
-        image_bytes = self.latest_live_image_payload["image_bytes"]
+        image_bytes = correction_payload["image_bytes"]
         with open(save_path, "wb") as file:
             file.write(image_bytes)
 
-        width = self._positive_int(self.latest_live_image_payload.get("width"))
-        height = self._positive_int(self.latest_live_image_payload.get("height"))
+        width = self._positive_int(correction_payload.get("width"))
+        height = self._positive_int(correction_payload.get("height"))
         quality = self.inspect_capture_image(image_bytes, width, height)
         self.append_capture_metadata(
             dataset_dir=dataset_dir,
@@ -3304,7 +3310,7 @@ class LensDefectHostApp:
             byte_count=len(image_bytes),
             quality=quality,
         )
-        self.append_correction_metadata(dataset_dir, save_path, split, corrected_class, quality)
+        self.append_correction_metadata(dataset_dir, save_path, split, corrected_class, quality, correction_payload)
         self.refresh_dataset_counts()
         self.log_capture(
             "纠错样本已保存：%s，正确类别=%s，已加入下一次训练。"
@@ -3312,7 +3318,21 @@ class LensDefectHostApp:
         )
         self.status_var.set("状态：已保存纠错样本 %s" % defect_type_name(corrected_class))
 
-    def append_correction_metadata(self, dataset_dir, save_path, split, corrected_class, quality):
+    def correction_live_payload_to_save(self):
+        displayed = getattr(self, "displayed_live_image_payload", None)
+        if isinstance(displayed, dict) and displayed.get("image_bytes"):
+            return dict(displayed)
+        latest = getattr(self, "latest_live_image_payload", None)
+        if isinstance(latest, dict) and latest.get("image_bytes"):
+            return dict(latest)
+        recent = getattr(self, "recent_live_image_payloads", None)
+        if isinstance(recent, list):
+            for payload in reversed(recent):
+                if isinstance(payload, dict) and payload.get("image_bytes"):
+                    return dict(payload)
+        return None
+
+    def append_correction_metadata(self, dataset_dir, save_path, split, corrected_class, quality, correction_payload=None):
         path = correction_metadata_path(dataset_dir)
         is_new_file = not path.exists()
         result = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
@@ -3341,6 +3361,7 @@ class LensDefectHostApp:
             "defects": defects,
             "roi": result.get("roi") if isinstance(result.get("roi"), dict) else {},
             "lens": result.get("lens") if isinstance(result.get("lens"), dict) else {},
+            "live_frame": self.live_frame_metadata_for_payload(correction_payload),
             "hard_negative_tags": self.correction_tags(corrected_class, predicted_class, primary),
             "quality": quality,
         }
@@ -4147,6 +4168,41 @@ class LensDefectHostApp:
                 return image.convert("RGB")
         except Exception:
             return None
+
+    def remember_live_image_payload(self, payload):
+        if not isinstance(payload, dict) or not payload.get("image_bytes"):
+            return
+        stored = dict(payload)
+        key = self.lens_presence_payload_key_for_image(None, stored)
+        recent = getattr(self, "recent_live_image_payloads", None)
+        if not isinstance(recent, list):
+            recent = []
+        if key:
+            recent = [
+                item for item in recent
+                if self.lens_presence_payload_key_for_image(None, item) != key
+            ]
+        recent.append(stored)
+        keep = max(1, int(LIVE_IMAGE_RECENT_FRAME_KEEP))
+        self.recent_live_image_payloads = recent[-keep:]
+
+    def live_frame_metadata_for_payload(self, payload):
+        if not isinstance(payload, dict):
+            return {}
+        meta = {}
+        for key in ("frame_id", "host_frame_id", "width", "height", "byte_count", "receive_time"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                meta[key] = value
+        payload_key = self.lens_presence_payload_key_for_image(None, payload)
+        if payload_key:
+            meta["payload_key"] = payload_key
+        displayed_key = getattr(self, "displayed_live_image_payload_key", None)
+        if payload_key and displayed_key:
+            meta["saved_from_displayed_frame"] = bool(
+                payload_key == displayed_key or self.live_frame_key_matches(payload_key, displayed_key)
+            )
+        return meta
 
     def lens_presence_payload_key_for_image(self, image, payload):
         if isinstance(payload, dict):
@@ -8223,6 +8279,7 @@ class LensDefectHostApp:
             payload["frame_id"] = self.live_image_host_frame_seq
         self.latest_live_image_payload = payload
         self.latest_live_image_payload_key = self.lens_presence_payload_key_for_image(None, payload)
+        self.remember_live_image_payload(payload)
         self.live_image_var.set("")
         if Image is None or ImageTk is None:
             self.live_image_label.configure(image="")
@@ -8252,6 +8309,10 @@ class LensDefectHostApp:
     def run_live_image_inference_if_latest(self):
         self.live_image_inference_after_id = None
         if self.live_image_inference_busy:
+            self.live_image_inference_after_id = self.root.after(
+                LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS,
+                self.run_live_image_inference_if_latest,
+            )
             return
         payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else None
         if payload is None:
@@ -8269,6 +8330,16 @@ class LensDefectHostApp:
             self.process_live_image_inference(image, payload)
         finally:
             self.live_image_inference_busy = False
+
+        latest_payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else None
+        latest_key = self.lens_presence_payload_key_for_image(None, latest_payload) if latest_payload else ""
+        if latest_payload is not None and latest_key and latest_key != key:
+            self.live_image_inference_pending_key = latest_key
+            self.live_image_inference_after_id = self.root.after(
+                LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS,
+                self.run_live_image_inference_if_latest,
+            )
+            return
 
         if self.live_payload_is_current(payload, image):
             try:
@@ -8345,6 +8416,7 @@ class LensDefectHostApp:
         if Image is None or ImageTk is None:
             return
 
+        payload = dict(payload) if isinstance(payload, dict) else {}
         try:
             with Image.open(BytesIO(payload["image_bytes"])) as image:
                 display_image = image.convert("RGB")
@@ -8353,6 +8425,8 @@ class LensDefectHostApp:
                 self.draw_detection_boxes(display_image, payload)
                 display_image = self.fill_live_image_area(display_image)
                 self.live_image_photo = ImageTk.PhotoImage(display_image.copy())
+            self.displayed_live_image_payload = dict(payload)
+            self.displayed_live_image_payload_key = self.lens_presence_payload_key_for_image(None, payload)
             self.live_image_label.configure(image=self.live_image_photo, compound="top")
         except Exception as exc:
             self.live_image_photo = None
@@ -17161,6 +17235,56 @@ def bright_cross_scratch_regression_self_test():
             and app.should_apply_fast_review_detection(detection, current)
         )
 
+        real_sample_path = (
+            PROJECT_ROOT
+            / "dataset"
+            / "train"
+            / "scratch"
+            / "scratch_train_20260607_162918_screenshot_cross_001.jpg"
+        )
+        real_sample_detection = None
+        real_sample_ok = True
+        real_sample_actual = "missing"
+        real_sample_source = ""
+        if real_sample_path.exists():
+            with Image.open(real_sample_path) as real_image_file:
+                real_image = real_image_file.convert("RGB")
+            real_payload = {
+                "width": real_image.width,
+                "height": real_image.height,
+                "receive_time": "real_bright_cross_scratch_sample",
+                "byte_count": int(real_sample_path.stat().st_size),
+            }
+            real_presence = app.detect_lens_presence_from_image(real_image)
+            real_current = app.result_with_current_lens_presence(
+                real_image,
+                real_payload,
+                app.normalize_detection_result({
+                    "frame": {"w": real_image.width, "h": real_image.height},
+                    "defects": [],
+                }),
+                real_presence,
+            )
+            real_mask = app.build_detection_mask(real_image, real_payload, real_current)
+            real_gray = cv2.cvtColor(np.array(real_image), cv2.COLOR_RGB2GRAY)
+            real_sample_detection = app.fast_cv_detect_defect(real_image, real_mask, gray=real_gray)
+            real_sample_actual = (
+                real_sample_detection.get("type", "none")
+                if isinstance(real_sample_detection, dict)
+                else "none"
+            )
+            real_sample_source = (
+                str(real_sample_detection.get("source", ""))
+                if isinstance(real_sample_detection, dict)
+                else ""
+            )
+            real_sample_ok = bool(
+                isinstance(real_sample_detection, dict)
+                and real_sample_detection.get("type") == "scratch"
+                and real_sample_detection.get("strong_bright_cross_scratch")
+                and app.should_apply_fast_review_detection(real_sample_detection, real_current)
+            )
+
         soft_glare = np.zeros((height, width, 3), dtype=np.uint8)
         soft_glare[:] = (34, 88, 42)
         soft_glare[:, 90:590] = (50, 128, 60)
@@ -17208,6 +17332,19 @@ def bright_cross_scratch_regression_self_test():
                 "expected": "not_strong_bright_cross_scratch",
                 "actual": soft_cross.get("source", "none") if isinstance(soft_cross, dict) else "none",
                 "ok": bool(soft_ok),
+            },
+            {
+                "name": "real_screenshot_cross_scratch_sample_detected",
+                "expected": "scratch",
+                "actual": real_sample_actual,
+                "source": real_sample_source,
+                "confidence": (
+                    round(app.confidence_float(real_sample_detection), 2)
+                    if isinstance(real_sample_detection, dict)
+                    else 0.0
+                ),
+                "sample": str(real_sample_path),
+                "ok": bool(real_sample_ok),
             },
             {
                 "name": "green_conveyor_without_lens_still_background",
@@ -17350,6 +17487,66 @@ def live_image_latest_frame_regression_self_test():
             and not app.result_matches_live_payload(bound_future, current_payload)
         )
 
+        class RootAfterRecorder:
+            def __init__(self):
+                self.calls = []
+
+            def after(self, delay_ms, callback):
+                self.calls.append((int(delay_ms), callback))
+                return "after-%d" % len(self.calls)
+
+        busy_root = RootAfterRecorder()
+        app.root = busy_root
+        app.live_image_inference_busy = True
+        app.live_image_inference_after_id = None
+        app.run_live_image_inference_if_latest()
+        busy_retry_ok = bool(
+            app.live_image_inference_after_id == "after-1"
+            and busy_root.calls
+            and busy_root.calls[-1][0] == LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS
+        )
+        app.live_image_inference_busy = False
+        app.live_image_inference_after_id = None
+
+        catchup_root = RootAfterRecorder()
+        app.root = catchup_root
+        app.latest_live_image_payload = dict(current_payload)
+        app.live_image_inference_pending_key = current_key
+        app.image_from_live_payload = lambda _payload: Image.new("RGB", (width, height), (44, 88, 44))
+        app.live_payload_is_current = lambda _payload, _image=None: True
+
+        def process_and_receive_newer(_image, _payload):
+            app.latest_live_image_payload = dict(future_payload)
+
+        app.process_live_image_inference = process_and_receive_newer
+        app.run_live_image_inference_if_latest()
+        catchup_retry_ok = bool(
+            app.live_image_inference_pending_key == future_key
+            and app.live_image_inference_after_id == "after-1"
+            and catchup_root.calls
+            and catchup_root.calls[-1][0] == LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS
+        )
+
+        display_buffer = BytesIO()
+        Image.new("RGB", (width, height), (12, 34, 56)).save(display_buffer, format="JPEG")
+        latest_buffer = BytesIO()
+        Image.new("RGB", (width, height), (78, 90, 12)).save(latest_buffer, format="JPEG")
+        displayed_payload = dict(current_payload)
+        displayed_payload["image_bytes"] = display_buffer.getvalue()
+        latest_payload = dict(future_payload)
+        latest_payload["image_bytes"] = latest_buffer.getvalue()
+        app.displayed_live_image_payload = dict(displayed_payload)
+        app.displayed_live_image_payload_key = app.lens_presence_payload_key_for_image(None, displayed_payload)
+        app.latest_live_image_payload = dict(latest_payload)
+        app.latest_live_image_payload_key = app.lens_presence_payload_key_for_image(None, latest_payload)
+        app.recent_live_image_payloads = [dict(displayed_payload), dict(latest_payload)]
+        correction_payload = app.correction_live_payload_to_save()
+        correction_meta = app.live_frame_metadata_for_payload(correction_payload)
+        correction_frame_ok = (
+            app.lens_presence_payload_key_for_image(None, correction_payload) == current_key
+            and correction_meta.get("saved_from_displayed_frame") is True
+        )
+
         cases = [
             {
                 "name": "frame_ids_distinguish_same_size_payloads",
@@ -17386,6 +17583,18 @@ def live_image_latest_frame_regression_self_test():
                 "expected": "future_frame_key_only",
                 "actual": app.result_live_payload_key(bound_future),
                 "ok": bool(future_binding_ok),
+            },
+            {
+                "name": "busy_inference_reschedules_latest_frame",
+                "expected": "retry_scheduled",
+                "actual": app.live_image_inference_after_id,
+                "ok": bool(busy_retry_ok and catchup_retry_ok),
+            },
+            {
+                "name": "correction_saves_displayed_frame_before_newer_latest",
+                "expected": current_key,
+                "actual": app.lens_presence_payload_key_for_image(None, correction_payload),
+                "ok": bool(correction_frame_ok),
             },
         ]
         return {"ok": all(case["ok"] for case in cases), "cases": cases}

@@ -108,6 +108,194 @@ def bright_ring_scratch_box(image_path):
     return left, top, max(1, right - left), max(1, bottom - top)
 
 
+def bright_cross_scratch_box(image_path):
+    try:
+        encoded = np.fromfile(str(image_path), dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    except Exception:
+        image = None
+    if image is None:
+        return None
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    image_h, image_w = gray.shape[:2]
+    if image_w < 160 or image_h < 120:
+        return None
+
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    background = cv2.GaussianBlur(enhanced, (0, 0), sigmaX=11, sigmaY=11)
+    bright = np.maximum(enhanced.astype(np.int16) - background.astype(np.int16), 0).astype(np.uint8)
+    top_hat = cv2.morphologyEx(
+        enhanced,
+        cv2.MORPH_TOPHAT,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (17, 17)),
+    )
+    response = np.maximum(bright, top_hat)
+
+    allowed = np.zeros_like(gray, dtype=np.uint8)
+    allowed[
+        int(image_h * 0.01):int(image_h * 0.86),
+        int(image_w * 0.02):int(image_w * 0.93),
+    ] = 255
+    values = response[allowed > 0]
+    if values.size <= 0 or float(np.percentile(values, 98.0)) < 22.0:
+        return None
+
+    threshold = max(10.0, float(np.percentile(values, 88.0)))
+    candidate = np.where((response >= threshold) & (allowed > 0), 255, 0).astype(np.uint8)
+    edges = cv2.Canny(cv2.GaussianBlur(enhanced, (3, 3), 0), 20, 64)
+    edge_support = cv2.bitwise_and(
+        edges,
+        cv2.dilate(candidate, np.ones((3, 3), dtype=np.uint8), iterations=1),
+    )
+    candidate = cv2.bitwise_or(candidate, edge_support)
+    candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, np.ones((2, 2), dtype=np.uint8))
+    if cv2.countNonZero(candidate) < 16:
+        return None
+
+    min_line_length = max(18, int(min(image_w, image_h) * 0.055))
+    lines = cv2.HoughLinesP(
+        candidate,
+        1,
+        np.pi / 180.0,
+        threshold=7,
+        minLineLength=min_line_length,
+        maxLineGap=max(8, int(min(image_w, image_h) * 0.03)),
+    )
+    if lines is None:
+        return None
+
+    segments = []
+    for line in lines[:, 0, :]:
+        x1, y1, x2, y2 = [int(value) for value in line]
+        length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
+        if length < min_line_length:
+            continue
+        center_x = (x1 + x2) / 2.0
+        center_y = (y1 + y2) / 2.0
+        if center_x < image_w * 0.03 or center_x > image_w * 0.91:
+            continue
+        if center_y < image_h * 0.02 or center_y > image_h * 0.84:
+            continue
+        samples = max(5, int(length / 6.0))
+        active_count = 0
+        line_responses = []
+        for sample_index in range(samples + 1):
+            ratio = float(sample_index) / float(samples)
+            px = max(0, min(image_w - 1, int(round(x1 + (x2 - x1) * ratio))))
+            py = max(0, min(image_h - 1, int(round(y1 + (y2 - y1) * ratio))))
+            if candidate[py, px] > 0:
+                active_count += 1
+            line_responses.append(int(response[py, px]))
+        if float(active_count) / float(samples + 1) < 0.18:
+            continue
+        if line_responses and float(np.percentile(line_responses, 65.0)) < threshold * 0.35:
+            continue
+        angle = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) + 180.0) % 180.0
+        if (
+            (center_x < image_w * 0.10 or center_x > image_w * 0.86)
+            and length > min(image_w, image_h) * 0.22
+        ):
+            continue
+        segments.append((x1, y1, x2, y2, length, angle))
+
+    if len(segments) < 6:
+        return None
+
+    intersections = []
+    segment_intersection_counts = [0 for _item in segments]
+    tolerance = max(8, int(min(image_w, image_h) * 0.035))
+    for first_index, first in enumerate(segments):
+        x1, y1, x2, y2, _first_length, first_angle = first
+        for second_index in range(first_index + 1, len(segments)):
+            x3, y3, x4, y4, _second_length, second_angle = segments[second_index]
+            angle_gap = abs(first_angle - second_angle)
+            angle_gap = min(angle_gap, 180.0 - angle_gap)
+            if angle_gap < 20.0:
+                continue
+            denominator = float((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+            if abs(denominator) < 1e-6:
+                continue
+            px = (
+                (x1 * y2 - y1 * x2) * (x3 - x4)
+                - (x1 - x2) * (x3 * y4 - y3 * x4)
+            ) / denominator
+            py = (
+                (x1 * y2 - y1 * x2) * (y3 - y4)
+                - (y1 - y2) * (x3 * y4 - y3 * x4)
+            ) / denominator
+            if (
+                px < min(x1, x2) - tolerance
+                or px > max(x1, x2) + tolerance
+                or px < min(x3, x4) - tolerance
+                or px > max(x3, x4) + tolerance
+                or py < min(y1, y2) - tolerance
+                or py > max(y1, y2) + tolerance
+                or py < min(y3, y4) - tolerance
+                or py > max(y3, y4) + tolerance
+            ):
+                continue
+            if px < image_w * 0.04 or px > image_w * 0.90 or py < image_h * 0.02 or py > image_h * 0.82:
+                continue
+            intersections.append((px, py))
+            segment_intersection_counts[first_index] += 1
+            segment_intersection_counts[second_index] += 1
+
+    if len(intersections) < 3:
+        return None
+
+    points = np.array(intersections, dtype=np.float32)
+    x_low, x_high = np.percentile(points[:, 0], [5.0, 95.0])
+    y_low, y_high = np.percentile(points[:, 1], [5.0, 95.0])
+    cluster_pad = max(48, int(min(image_w, image_h) * 0.22))
+    selected = []
+    for index, segment in enumerate(segments):
+        x1, y1, x2, y2, length, _angle = segment
+        center_x = (x1 + x2) / 2.0
+        center_y = (y1 + y2) / 2.0
+        if (
+            segment_intersection_counts[index] >= 3
+            and x_low - cluster_pad <= center_x <= x_high + cluster_pad
+            and y_low - cluster_pad <= center_y <= y_high + cluster_pad
+            and length >= min_line_length * 0.85
+        ):
+            selected.append(segment)
+
+    if len(selected) < 4:
+        return None
+
+    xs = []
+    ys = []
+    total_length = 0.0
+    angle_groups = set()
+    for x1, y1, x2, y2, length, angle in selected:
+        xs.extend([x1, x2])
+        ys.extend([y1, y2])
+        total_length += length
+        angle_groups.add(int(angle // 22.5))
+    if total_length < min(image_w, image_h) * 0.95 or len(angle_groups) < 3:
+        return None
+
+    compact_x_low, compact_x_high = np.percentile(points[:, 0], [10.0, 90.0])
+    compact_y_low, compact_y_high = np.percentile(points[:, 1], [10.0, 90.0])
+    compact_pad = max(22, int(min(image_w, image_h) * 0.09))
+    left = max(0, int(round(compact_x_low)) - compact_pad)
+    top = max(0, int(round(compact_y_low)) - compact_pad)
+    right = min(image_w, int(round(compact_x_high)) + compact_pad + 1)
+    bottom = min(image_h, int(round(compact_y_high)) + compact_pad + 1)
+    box_w = max(1, right - left)
+    box_h = max(1, bottom - top)
+    box_area_ratio = float(box_w * box_h) / float(max(1, image_w * image_h))
+    if box_area_ratio > 0.36:
+        return None
+    local_candidate = candidate[top:bottom, left:right]
+    fill_ratio = float(cv2.countNonZero(local_candidate)) / float(max(1, local_candidate.size))
+    if fill_ratio > 0.34:
+        return None
+    return int(left), int(top), int(box_w), int(box_h)
+
+
 def thin_scratch_box(image_path):
     try:
         encoded = np.fromfile(str(image_path), dtype=np.uint8)
@@ -318,6 +506,84 @@ def copy_image_with_label(source_image, output_dir, split, class_name, label_tex
     label_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_image, image_target)
     label_target.write_text(label_text, encoding="utf-8")
+
+
+def write_cv_image(path, image):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    extension = ".jpg" if suffix in (".jpg", ".jpeg") else suffix
+    success, encoded = cv2.imencode(extension, image)
+    if not success:
+        raise RuntimeError(f"Failed to encode augmented image: {path}")
+    encoded.tofile(str(path))
+
+
+def augment_bright_cross_scratch_image(image):
+    variants = []
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    for clip in (1.4, 1.8, 2.4):
+        enhanced = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8)).apply(gray)
+        variants.append(("clahe%02d" % int(clip * 10), cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)))
+    for name, alpha, beta in (
+        ("bright08", 1.08, 8),
+        ("bright14", 1.14, 12),
+        ("dark92", 0.92, -6),
+        ("dark86", 0.86, -10),
+        ("contrast", 1.22, -8),
+        ("flat", 0.78, 18),
+    ):
+        variants.append((name, cv2.convertScaleAbs(image, alpha=alpha, beta=beta)))
+    for gamma in (0.78, 0.88, 1.14, 1.28):
+        table = np.array([
+            min(255, max(0, int(((value / 255.0) ** gamma) * 255.0 + 0.5)))
+            for value in range(256)
+        ], dtype=np.uint8)
+        variants.append(("gamma%03d" % int(gamma * 100), cv2.LUT(image, table)))
+    for sigma in (0.45, 0.75, 1.0):
+        blur = cv2.GaussianBlur(image, (3, 3), sigmaX=sigma)
+        variants.append(("soft%02d" % int(sigma * 100), cv2.addWeighted(image, 0.82, blur, 0.18, 0.0)))
+    for strength in (0.25, 0.38, 0.52):
+        sharp = cv2.addWeighted(
+            image,
+            1.0 + strength,
+            cv2.GaussianBlur(image, (0, 0), sigmaX=1.0),
+            -strength,
+            0.0,
+        )
+        variants.append(("sharp%02d" % int(strength * 100), np.clip(sharp, 0, 255).astype(np.uint8)))
+    for quality in (55, 62, 70):
+        success, jpeg = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        if success:
+            decoded = cv2.imdecode(jpeg, cv2.IMREAD_COLOR)
+            if decoded is not None:
+                variants.append(("jpeg%d" % quality, decoded))
+    return variants
+
+
+def copy_bright_cross_scratch_augments(source_image, output_dir, split, class_name, label_text):
+    if split != "train" or class_name != "scratch" or not label_text.strip():
+        return 0
+    if "screenshot_cross" not in source_image.stem and "bright_cross" not in source_image.stem:
+        return 0
+    try:
+        encoded = np.fromfile(str(source_image), dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    except Exception:
+        image = None
+    if image is None:
+        return 0
+
+    stem = f"newlens_{split}_{class_name}_{source_image.stem}"
+    suffix = source_image.suffix.lower()
+    count = 0
+    for name, variant in augment_bright_cross_scratch_image(image):
+        image_target = output_dir / "images" / split / f"{stem}_aug_{name}{suffix}"
+        label_target = output_dir / "labels" / split / f"{stem}_aug_{name}.txt"
+        write_cv_image(image_target, variant)
+        label_target.parent.mkdir(parents=True, exist_ok=True)
+        label_target.write_text(label_text, encoding="utf-8")
+        count += 1
+    return count
 
 
 def base_image_paths(base_dir, split):
@@ -546,6 +812,7 @@ def main():
     summary = {
         "normal_empty": 0,
         "scratch_labeled": 0,
+        "scratch_augmented": 0,
         "scratch_unlabeled": 0,
         "stain_labeled": 0,
         "stain_unlabeled": 0,
@@ -560,14 +827,26 @@ def main():
         for image_path in image_paths(scratch_dir, args.date_prefix):
             with Image.open(image_path) as image:
                 image_w, image_h = image.size
-            box = thin_scratch_box(image_path)
+            box = bright_cross_scratch_box(image_path)
+            bright_cross = box is not None
+            if box is None:
+                box = thin_scratch_box(image_path)
             if box is None:
                 box = bright_ring_scratch_box(image_path)
             if box is None:
                 summary["scratch_unlabeled"] += 1
                 copy_image_with_label(image_path, output_dir, split, "scratch", "")
                 continue
-            copy_image_with_label(image_path, output_dir, split, "scratch", yolo_line(0, box, image_w, image_h))
+            label_text = yolo_line(0, box, image_w, image_h)
+            copy_image_with_label(image_path, output_dir, split, "scratch", label_text)
+            if bright_cross:
+                summary["scratch_augmented"] += copy_bright_cross_scratch_augments(
+                    image_path,
+                    output_dir,
+                    split,
+                    "scratch",
+                    label_text,
+                )
             summary["scratch_labeled"] += 1
 
         stain_dir = dataset_dir / split / "stain"
