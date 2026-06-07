@@ -660,6 +660,11 @@ YOLO_FULL_FRAME_FALLBACK_AFTER_ROI_MISSES = 8
 YOLO_AUTO_ROI_SIDE_CLIP_MARGIN_RATIO = 0.025
 YOLO_AUTO_ROI_EDGE_PARTIAL_SIZE_RATIO = 0.92
 YOLO_AUTO_ROI_MAX_CENTER_X_DRIFT_RATIO = 0.27
+LIVE_LENS_TRACK_TRUSTED_ROI_SOURCES = {
+    "pc_live_lens_follow",
+    "pc_round_lens_presence",
+    "pc_lens_contour_presence",
+}
 YOLO_ROI_HIGH_RES_INPUT_SIZE = 640
 YOLO_SCRATCH_STRICT_LENS_MIN_OVERLAP = 0.28
 YOLO_LOW_CONFIDENCE_TILE_THRESHOLD = 0.34
@@ -2126,6 +2131,9 @@ class LensDefectHostApp:
         self.yolo_roi_miss_count = 0
         self.lens_presence_payload_key = None
         self.lens_presence_result = None
+        self.live_lens_track_payload_key = None
+        self.live_lens_track_result = None
+        self.live_lens_track_miss_count = 0
         self.last_stage2_infer_time = 0.0
         self.last_fast_review_time = 0.0
         self.last_fast_review_key = None
@@ -2287,6 +2295,9 @@ class LensDefectHostApp:
         self.pending_detection_count = 0
         self.lens_presence_payload_key = None
         self.lens_presence_result = None
+        self.live_lens_track_payload_key = None
+        self.live_lens_track_result = None
+        self.live_lens_track_miss_count = 0
         self.conveyor_centered_count = 0
         self.conveyor_fusion_results = []
         self.conveyor_workpiece_payload_key = None
@@ -4041,7 +4052,7 @@ class LensDefectHostApp:
                 )
                 self.clear_detection_memory_for_no_lens()
                 return no_lens
-            return result
+            return self.result_with_current_lens_presence(image, payload, result, presence)
 
         lens = result.get("lens") if isinstance(result.get("lens"), dict) else None
         if isinstance(lens, dict) and lens.get("found") is False:
@@ -4092,6 +4103,63 @@ class LensDefectHostApp:
             self.lens_presence_payload_key = payload_key
             self.lens_presence_result = dict(presence)
         return presence
+
+    def result_with_current_lens_presence(self, image, payload=None, base_result=None, presence=None):
+        result = dict(base_result) if isinstance(base_result, dict) else {}
+        if image is None:
+            return result
+
+        image_w, image_h = image.size
+        if image_w <= 0 or image_h <= 0:
+            return result
+
+        if presence is None:
+            presence = self.live_lens_presence_for_image(image, payload)
+        presence = dict(presence) if isinstance(presence, dict) else {}
+        payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        result["frame"] = {"w": int(image_w), "h": int(image_h)}
+
+        raw_roi = presence.get("roi") if isinstance(presence.get("roi"), dict) else presence
+        roi = self.valid_roi_or_none(raw_roi, image_w, image_h)
+        if not presence.get("found", True) or roi is None:
+            self.live_lens_track_payload_key = payload_key
+            self.live_lens_track_miss_count = int(getattr(self, "live_lens_track_miss_count", 0) or 0) + 1
+            if not presence.get("found", True):
+                self.live_lens_track_result = None
+            if presence:
+                result["lens_presence"] = dict(presence)
+            return result
+
+        lens = dict(roi)
+        lens["found"] = True
+        lens["source"] = "pc_live_lens_follow"
+        lens["presence_source"] = str(
+            roi.get("source")
+            or presence.get("reason")
+            or presence.get("source")
+            or "pc_lens_presence"
+        )
+        lens["confidence"] = 0.98
+        lens["cx"] = int(lens["x"] + lens["w"] / 2)
+        lens["cy"] = int(lens["y"] + lens["h"] / 2)
+        lens["lost_frames"] = 0
+
+        for transient_key in ("no_lens", "no_lens_reason", "conveyor_waiting", "conveyor_reason", "error"):
+            result.pop(transient_key, None)
+        result["lens"] = dict(lens)
+        result["roi"] = dict(lens)
+        result["lens_presence"] = dict(presence)
+        result["live_lens_follow"] = True
+        result["_live_payload_key"] = payload_key or ""
+        self.live_lens_track_payload_key = payload_key
+        self.live_lens_track_result = {
+            "frame": {"w": int(image_w), "h": int(image_h)},
+            "lens": dict(lens),
+            "roi": dict(lens),
+            "_live_payload_key": payload_key or "",
+        }
+        self.live_lens_track_miss_count = 0
+        return result
 
     def detect_lens_presence_from_image(self, image):
         if cv2 is None or np is None or image is None:
@@ -4499,6 +4567,9 @@ class LensDefectHostApp:
         self.conveyor_centered_count = 0
         self.conveyor_fusion_results = []
         self.yolo_roi_miss_count = 0
+        self.live_lens_track_payload_key = None
+        self.live_lens_track_result = None
+        self.live_lens_track_miss_count = 0
         self.stable_detection_result = None
 
     def show_no_lens_result_for_image(self, image, payload=None, reason="no_lens", presence=None):
@@ -4529,12 +4600,28 @@ class LensDefectHostApp:
         if not recent_defects:
             return result
 
+        frame = result.get("frame") if isinstance(result.get("frame"), dict) else {}
+        source_w = self._positive_int(frame.get("w"))
+        source_h = self._positive_int(frame.get("h"))
+        if source_w <= 0 or source_h <= 0:
+            payload = self.latest_live_image_payload if isinstance(self.latest_live_image_payload, dict) else {}
+            source_w = self._positive_int(payload.get("width"))
+            source_h = self._positive_int(payload.get("height"))
+        current_roi_source = result.get("lens") if isinstance(result.get("lens"), dict) else result.get("roi")
+        recent_roi_source = recent.get("lens") if isinstance(recent.get("lens"), dict) else recent.get("roi")
+        current_roi = self.valid_roi_or_none(current_roi_source, source_w, source_h)
+        recent_roi = self.valid_roi_or_none(recent_roi_source, source_w, source_h)
+        if current_roi is not None and recent_roi is not None:
+            roi_iou = self.fast_review_iou(current_roi, recent_roi)
+            if result.get("live_lens_follow") and roi_iou < 0.45:
+                return result
+
         merged = dict(result)
         merged["defects"] = recent_defects
         merged["pc_fast_review"] = True
         merged["pc_fast_review_hold"] = True
         for key in ("frame", "roi", "lens"):
-            if isinstance(recent.get(key), dict):
+            if not isinstance(merged.get(key), dict) and isinstance(recent.get(key), dict):
                 merged[key] = dict(recent[key])
         return self.normalize_detection_result(merged)
 
@@ -7844,6 +7931,28 @@ class LensDefectHostApp:
 
         self.render_live_image(payload)
 
+    def refresh_live_lens_follow_for_preview(self, image, payload):
+        if cv2 is None or np is None:
+            return
+        if not isinstance(self.latest_detection_result, dict):
+            return
+        if self.latest_detection_result.get("error"):
+            return
+        presence = self.live_lens_presence_for_image(image, payload)
+        if not presence.get("found", True):
+            return
+        refreshed = self.result_with_current_lens_presence(
+            image,
+            payload,
+            self.latest_detection_result,
+            presence,
+        )
+        if not refreshed.get("live_lens_follow"):
+            return
+        refreshed = self.normalize_detection_result(refreshed)
+        self.latest_detection_result = refreshed
+        self.lens_track_var.set(self.format_lens_track_text(refreshed.get("lens")))
+
     def render_live_image(self, payload):
         if Image is None or ImageTk is None:
             return
@@ -7856,6 +7965,7 @@ class LensDefectHostApp:
                     self.apply_fast_cv_review_to_live_image(display_image, payload)
                     if not self.low_latency_mode_var.get():
                         self.apply_stage2_to_live_image(display_image, payload)
+                    self.refresh_live_lens_follow_for_preview(display_image, payload)
                     filtered = self.filter_edge_defects_for_live_image(self.latest_detection_result, payload)
                     if filtered is not self.latest_detection_result:
                         self.update_result_ui(filtered, render_live_image=False)
@@ -8447,7 +8557,7 @@ class LensDefectHostApp:
         defect_area_ratio = float(defect_w * defect_h) / float(max(1, frame_w * frame_h))
         return defect_area_ratio >= FAST_REVIEW_CLASSIFIER_AREA_RATIO
 
-    def should_apply_fast_review_detection(self, detection):
+    def should_apply_fast_review_detection(self, detection, current_result=None):
         detection_type = detection.get("type")
         if detection_type not in SUPPORTED_DEFECT_TYPES:
             return False
@@ -8457,7 +8567,8 @@ class LensDefectHostApp:
         except (TypeError, ValueError):
             confidence = 0.0
 
-        current_key, _current_text, _current_confidence = self.display_class_result(self.latest_detection_result)
+        current_result = current_result if isinstance(current_result, dict) else self.latest_detection_result
+        current_key, _current_text, _current_confidence = self.display_class_result(current_result)
         if current_key == "normal":
             if not FAST_REVIEW_PROMOTE_NORMAL:
                 return False
@@ -8474,7 +8585,7 @@ class LensDefectHostApp:
 
         # The OpenMV classifier reports one broad ROI box. A confirmed PC-side
         # shape check is more reliable for scratch-vs-stain correction.
-        if self.fast_review_current_is_classifier_roi(self.latest_detection_result):
+        if self.fast_review_current_is_classifier_roi(current_result):
             return True
 
         if current_key == "stain" and detection_type == "scratch":
@@ -8501,7 +8612,24 @@ class LensDefectHostApp:
         if self.latest_detection_result.get("no_lens"):
             return
 
+        payload = payload if isinstance(payload, dict) else {}
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
+        presence = self.live_lens_presence_for_image(image, payload)
+        if not presence.get("found", True):
+            self.last_fast_review_key = payload_key
+            self.show_no_lens_result_for_image(
+                image,
+                payload,
+                reason=str(presence.get("reason", "no_lens_presence_guard")),
+                presence=presence,
+            )
+            return
+        current_result = self.result_with_current_lens_presence(
+            image,
+            payload,
+            self.latest_detection_result,
+            presence,
+        )
         if payload_key == self.last_fast_review_key:
             return
         self.last_fast_review_key = payload_key
@@ -8510,7 +8638,7 @@ class LensDefectHostApp:
             return
         self.last_fast_review_time = now
 
-        mask = self.build_detection_mask(image, payload, self.latest_detection_result)
+        mask = self.build_detection_mask(image, payload, current_result)
         gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         detection = self.fast_cv_detect_defect(image, mask, gray=gray)
         if detection is None:
@@ -8520,20 +8648,22 @@ class LensDefectHostApp:
         if not self.confirm_fast_review_detection(detection):
             return
 
-        if not self.should_apply_fast_review_detection(detection):
+        if not self.should_apply_fast_review_detection(detection, current_result):
             return
 
-        refined = dict(self.latest_detection_result)
+        refined = dict(current_result)
         refined["frame"] = {"w": image.width, "h": image.height}
         refined["roi"] = self.best_live_detection_roi(
-            self.latest_detection_result,
+            current_result,
             image.width,
             image.height,
         )
         current_yolo_defects = [
-            defect for defect in (self.latest_detection_result.get("defects") or [])
+            defect for defect in (current_result.get("defects") or [])
             if isinstance(defect, dict) and self.is_yolo_source(defect)
         ]
+        if current_result.get("yolo_payload_key") != payload_key:
+            current_yolo_defects = []
         if current_yolo_defects:
             best_yolo = max(current_yolo_defects, key=lambda item: self.confidence_float(item))
             detection = self.merge_yolo_locked_box_with_review(
@@ -8556,6 +8686,7 @@ class LensDefectHostApp:
     def apply_yolo_to_live_image(self, image, payload):
         if cv2 is None or np is None:
             return
+        payload = payload if isinstance(payload, dict) else {}
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
         presence = self.live_lens_presence_for_image(image, payload)
         if not presence.get("found", True):
@@ -8567,6 +8698,12 @@ class LensDefectHostApp:
                 presence=presence,
             )
             return
+        base = self.result_with_current_lens_presence(
+            image,
+            payload,
+            self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {},
+            presence,
+        )
         if payload_key == self.last_yolo_payload_key:
             return
         now = time.monotonic()
@@ -8591,7 +8728,6 @@ class LensDefectHostApp:
 
         self.last_yolo_payload_key = payload_key
         self.last_yolo_infer_time = now
-        base = self.latest_detection_result if isinstance(self.latest_detection_result, dict) else {}
         inference_roi = self.yolo_inference_roi_for_image(image, payload, base)
         scratch_aux_detections = []
         stain_aux_detections = []
@@ -8665,6 +8801,7 @@ class LensDefectHostApp:
         refined["roi"] = self.yolo_filter_roi_for_image(image, payload, base, inference_roi)
         refined["defects"] = detections
         refined["model"] = "yolo_onnx"
+        refined["yolo_payload_key"] = payload_key
         refined["yolo"] = {
             "enabled": True,
             "model_path": str(detector.model_path),
@@ -9226,6 +9363,8 @@ class LensDefectHostApp:
         source = str(roi.get("source", "")).lower()
         if roi.get("found") is False or source in ("fallback", "pc_center_fallback"):
             return True
+        if source in LIVE_LENS_TRACK_TRUSTED_ROI_SOURCES:
+            return False
         try:
             confidence = float(roi.get("confidence", 1.0) or 0.0)
         except (TypeError, ValueError):
@@ -14666,19 +14805,35 @@ class LensDefectHostApp:
             return
         if not self.stage2_enabled_var.get():
             return
+        payload = payload if isinstance(payload, dict) else {}
+        presence = self.live_lens_presence_for_image(image, payload)
+        if not presence.get("found", True):
+            self.show_no_lens_result_for_image(
+                image,
+                payload,
+                reason=str(presence.get("reason", "no_lens_presence_guard")),
+                presence=presence,
+            )
+            return
+        current_result = self.result_with_current_lens_presence(
+            image,
+            payload,
+            self.latest_detection_result,
+            presence,
+        )
         now = time.monotonic()
         if now - self.last_stage2_infer_time < STAGE2_MIN_INTERVAL_SECONDS:
             return
 
         payload_key = "%s:%s" % (payload.get("receive_time", ""), payload.get("byte_count", ""))
-        if self.latest_detection_result.get("_stage2_payload_key") == payload_key:
+        if current_result.get("_stage2_payload_key") == payload_key:
             return
 
         model = self.get_stage2_model()
         if model is None or cv2 is None or np is None:
             return
 
-        analysis_mask = self.build_stage2_analysis_mask(image, payload, self.latest_detection_result)
+        analysis_mask = self.build_stage2_analysis_mask(image, payload, current_result)
         if analysis_mask is None:
             return
 
@@ -14686,7 +14841,7 @@ class LensDefectHostApp:
         rgb = np.array(image)
         frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         stage2_result = model.infer(frame, analysis_mask)
-        rule_defects = self.latest_detection_result.get("defects") or []
+        rule_defects = current_result.get("defects") or []
         merged_defects, stage2_result = merge_with_rule_defects(
             rule_defects,
             stage2_result,
@@ -14697,7 +14852,7 @@ class LensDefectHostApp:
             stage2_result,
         )
 
-        refined = dict(self.latest_detection_result)
+        refined = dict(current_result)
         refined["defects"] = merged_defects
         refined["_stage2_payload_key"] = payload_key
         refined["stage2"] = {
@@ -15125,12 +15280,9 @@ class LensDefectHostApp:
         if ImageDraw is None or not isinstance(self.latest_detection_result, dict):
             return
 
+        payload = payload if isinstance(payload, dict) else {}
         draw = ImageDraw.Draw(image)
         self.draw_conveyor_gate(draw, image)
-        defects = self.latest_detection_result.get("defects") or []
-        if not defects:
-            return
-
         frame = self.latest_detection_result.get("frame") or {}
         source_w = self._positive_int(frame.get("w")) or self._positive_int(payload.get("width")) or image.width
         source_h = self._positive_int(frame.get("h")) or self._positive_int(payload.get("height")) or image.height
@@ -15138,8 +15290,18 @@ class LensDefectHostApp:
         y_scale = float(image.height) / float(source_h)
         outline_width = max(2, int(min(image.width, image.height) / 160))
 
+        self.draw_live_lens_box(draw, source_w, source_h, x_scale, y_scale, outline_width)
+
+        defects = self.latest_detection_result.get("defects") or []
+        if not defects:
+            return
+
+        current_payload_key = self.lens_presence_payload_key_for_image(image, payload)
+        yolo_payload_key = self.latest_detection_result.get("yolo_payload_key", "")
         for defect in defects:
             if defect.get("type") not in SUPPORTED_DEFECT_TYPES:
+                continue
+            if self.is_yolo_source(defect) and yolo_payload_key and yolo_payload_key != current_payload_key:
                 continue
             x = self._positive_int(defect.get("x"))
             y = self._positive_int(defect.get("y"))
@@ -15174,6 +15336,27 @@ class LensDefectHostApp:
             text_box = (text_x, text_y, text_x + max(58, len(label) * 12), text_y + 17)
             draw.rectangle(text_box, fill=color)
             draw.text((text_x + 3, text_y + 1), label, fill=(255, 255, 255))
+
+    def draw_live_lens_box(self, draw, source_w, source_h, x_scale, y_scale, outline_width):
+        lens = self.latest_detection_result.get("lens") if isinstance(self.latest_detection_result, dict) else None
+        if not isinstance(lens, dict) or not lens.get("found", True):
+            return
+        roi = self.valid_roi_or_none(lens, source_w, source_h)
+        if roi is None:
+            return
+
+        left = roi["x"] * x_scale
+        top = roi["y"] * y_scale
+        right = (roi["x"] + roi["w"]) * x_scale
+        bottom = (roi["y"] + roi["h"]) * y_scale
+        box = (
+            max(0, left),
+            max(0, top),
+            max(0, right),
+            max(0, bottom),
+        )
+        color = (64, 220, 150)
+        draw.ellipse(box, outline=color, width=max(1, outline_width - 1))
 
     def draw_conveyor_gate(self, draw, image):
         if not self.conveyor_center_gate_var.get():
@@ -15677,6 +15860,141 @@ def lens_presence_regression_self_test():
         return {"ok": False, "error": str(exc)}
 
 
+def moving_lens_follow_regression_self_test():
+    if cv2 is None or np is None or Image is None:
+        return {"ok": False, "error": "cv2_numpy_or_pillow_unavailable"}
+    try:
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+        app.lens_presence_payload_key = None
+        app.lens_presence_result = None
+        app.live_lens_track_payload_key = None
+        app.live_lens_track_result = None
+        app.live_lens_track_miss_count = 0
+        app.latest_live_image_payload = None
+
+        width, height = 640, 360
+        frame = np.zeros((height, width, 3), dtype=np.uint8)
+        frame[:] = (34, 42, 38)
+        frame[:, 100:590] = (46, 70, 54)
+        cv2.circle(frame, (473, 181), 63, (130, 170, 134), 3, cv2.LINE_AA)
+        cv2.circle(frame, (473, 181), 51, (72, 102, 78), 1, cv2.LINE_AA)
+        cv2.line(frame, (432, 205), (518, 193), (155, 185, 160), 2, cv2.LINE_AA)
+        image = Image.fromarray(frame, "RGB")
+
+        old_lens = {
+            "found": True,
+            "x": 82,
+            "y": 120,
+            "w": 118,
+            "h": 118,
+            "cx": 141,
+            "cy": 179,
+            "source": "openmv_previous_frame",
+            "confidence": 0.86,
+        }
+        stale_result = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "lens": dict(old_lens),
+            "roi": dict(old_lens),
+            "defects": [{
+                "type": "scratch",
+                "confidence": 0.82,
+                "x": 105,
+                "y": 166,
+                "w": 42,
+                "h": 12,
+                "source": "yolo_onnx",
+            }],
+            "model": "yolo_onnx",
+            "yolo_payload_key": "old_frame:100",
+        })
+        payload = {
+            "width": width,
+            "height": height,
+            "receive_time": "moving_frame",
+            "byte_count": 200,
+        }
+        app.latest_live_image_payload = dict(payload)
+        current_presence = {
+            "found": True,
+            "reason": "pc_round_lens_presence",
+            "roi": {
+                "x": 410,
+                "y": 118,
+                "w": 126,
+                "h": 126,
+                "source": "pc_round_lens_presence",
+            },
+        }
+
+        tracked = app.result_with_current_lens_presence(image, payload, stale_result, current_presence)
+        tracked_lens = tracked.get("lens") if isinstance(tracked.get("lens"), dict) else {}
+        tracked_center_x = float(tracked_lens.get("cx", 0) or 0)
+        inference_roi = app.yolo_inference_roi_for_image(image, payload, tracked)
+        inference_center_x = 0.0
+        if isinstance(inference_roi, dict):
+            inference_center_x = float(inference_roi.get("x", 0) or 0) + float(inference_roi.get("w", 0) or 0) / 2.0
+        mask = app.build_detection_mask(image, payload, tracked)
+        moments = cv2.moments(mask) if mask is not None else {"m00": 0.0}
+        mask_center_x = float(moments["m10"] / moments["m00"]) if moments.get("m00", 0.0) else 0.0
+
+        app.last_pc_defect_result = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "lens": dict(old_lens),
+            "roi": dict(old_lens),
+            "defects": [{
+                "type": "scratch",
+                "confidence": 0.88,
+                "x": 112,
+                "y": 168,
+                "w": 36,
+                "h": 12,
+                "source": "pc_fast_review",
+            }],
+        })
+        app.last_pc_defect_time = time.monotonic()
+        current_normal = app.normalize_detection_result({
+            "frame": {"w": width, "h": height},
+            "lens": dict(tracked_lens),
+            "roi": dict(tracked_lens),
+            "defects": [],
+            "live_lens_follow": True,
+        })
+        merged = app.merge_recent_pc_defect_result(current_normal)
+        recent_hold_ok = not bool(merged.get("has_defect"))
+
+        cases = [
+            {
+                "name": "live_lens_result_uses_current_frame_roi",
+                "expected": "right_current_lens",
+                "actual": round(tracked_center_x, 1),
+                "ok": bool(tracked.get("live_lens_follow") and 455.0 <= tracked_center_x <= 490.0),
+            },
+            {
+                "name": "yolo_inference_roi_follows_current_lens",
+                "expected": "right_current_lens_roi",
+                "actual": round(inference_center_x, 1),
+                "ok": bool(isinstance(inference_roi, dict) and 450.0 <= inference_center_x <= 500.0),
+            },
+            {
+                "name": "fast_review_mask_follows_current_lens",
+                "expected": "right_current_lens_mask",
+                "actual": round(mask_center_x, 1),
+                "ok": bool(mask is not None and 450.0 <= mask_center_x <= 500.0),
+            },
+            {
+                "name": "old_pc_review_not_held_after_lens_moves",
+                "expected": "no_old_defect_hold",
+                "actual": "held" if merged.get("has_defect") else "not_held",
+                "ok": bool(recent_hold_ok),
+            },
+        ]
+        return {"ok": all(case["ok"] for case in cases), "cases": cases}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def runtime_self_test():
     checks = {
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -15692,6 +16010,7 @@ def runtime_self_test():
         "yolo_seg": None,
         "yolo_stain_refine": None,
         "lens_presence": None,
+        "moving_lens_follow": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -15775,6 +16094,7 @@ def runtime_self_test():
         checks["yolo_seg"] = {"ok": True, "available": False, "model": str(DEFAULT_YOLO_SEG_MODEL)}
     checks["yolo_stain_refine"] = yolo_stain_refine_regression_self_test()
     checks["lens_presence"] = lens_presence_regression_self_test()
+    checks["moving_lens_follow"] = moving_lens_follow_regression_self_test()
 
     scratch_aux_ok = bool(
         checks["yolo_new_lens_scratch"]["ok"]
@@ -15793,6 +16113,7 @@ def runtime_self_test():
         and stain_aux_ok
         and checks["yolo_stain_refine"]["ok"]
         and checks["lens_presence"]["ok"]
+        and checks["moving_lens_follow"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:
