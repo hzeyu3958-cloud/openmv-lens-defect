@@ -69,12 +69,12 @@ SERIAL_MAX_TEXT_LINE_BYTES = 8192
 SERIAL_SYNC_KEEP_BYTES = 32
 SERIAL_SYNC_STATUS_SECONDS = 2.0
 LIVE_IMAGE_UI_POLL_MS = 12
-LIVE_IMAGE_INFERENCE_DELAY_MS = 4
+LIVE_IMAGE_INFERENCE_DELAY_MS = 2
 LIVE_IMAGE_INFERENCE_BUSY_RETRY_MS = 6
 LIVE_IMAGE_RECENT_FRAME_KEEP = 8
 AUTO_START_RECEIVE = False
 BLUETOOTH_SEND_MIN_INTERVAL_SECONDS = 1.0
-LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.12
+LOW_LATENCY_YOLO_MIN_INTERVAL_SECONDS = 0.08
 CONVEYOR_CENTER_STABLE_FRAMES = 2
 CONVEYOR_GATE_X_MIN = 0.20
 CONVEYOR_GATE_X_MAX = 0.80
@@ -311,7 +311,7 @@ HOST_BLACK_STAIN_TO_SCRATCH_CONFIRM_UPDATES = 3
 STAGE2_MIN_INTERVAL_SECONDS = 1.2
 FAST_REVIEW_ENABLED = True
 FAST_REVIEW_PROMOTE_NORMAL = True
-FAST_REVIEW_MIN_INTERVAL_SECONDS = 0.10
+FAST_REVIEW_MIN_INTERVAL_SECONDS = 0.07
 FAST_REVIEW_DEFECT_CONFIRM_FRAMES = 1
 FAST_REVIEW_IOU_THRESHOLD = 0.12
 FAST_REVIEW_CLASSIFIER_AREA_RATIO = 0.18
@@ -507,6 +507,9 @@ LENS_PRESENCE_ROUND_MAX_RADIUS_RATIO = 0.28
 LENS_PRESENCE_ROUND_MIN_BALANCED_EDGE_SUPPORT = 0.012
 LENS_PRESENCE_ROUND_MIN_BALANCED_RESPONSE_SUPPORT = 0.060
 LENS_PRESENCE_ROUND_MIN_VERTICAL_BALANCE = 0.16
+LENS_PRESENCE_ROUND_EDGE_MARGIN_RATIO = 0.018
+LENS_PRESENCE_ROUND_MIN_OUTER_EDGE_DENSITY = 0.135
+LENS_PRESENCE_ROUND_MIN_BODY_MEAN_GAP = 24.0
 FAST_REVIEW_AUTO_ROI_MIN_AREA_RATIO = 0.018
 FAST_REVIEW_AUTO_ROI_MIN_WIDTH_RATIO = 0.20
 FAST_REVIEW_AUTO_ROI_MIN_HEIGHT_RATIO = 0.18
@@ -4461,14 +4464,19 @@ class LensDefectHostApp:
         return {"found": False, "reason": "no_lens_like_region"}
 
     def detect_precise_lens_roi_from_image(self, image):
-        round_roi = self.detect_round_lens_roi_from_image(image)
-        if round_roi is not None and self.lens_presence_roi_is_precise(image, round_roi):
-            return round_roi
+        center_roi = self.detect_center_lens_presence_blob(image)
+        if self.lens_presence_roi_is_precise(image, center_roi):
+            center_roi["source"] = "pc_center_lens_blob"
+            return center_roi
 
         contour_roi = self.detect_lens_roi_from_image(image)
         if self.lens_presence_roi_is_precise(image, contour_roi):
             contour_roi["source"] = "pc_lens_contour_presence"
             return contour_roi
+
+        round_roi = self.detect_round_lens_roi_from_image(image)
+        if round_roi is not None and self.lens_presence_roi_is_precise(image, round_roi):
+            return round_roi
 
         return None
 
@@ -4503,6 +4511,9 @@ class LensDefectHostApp:
         center_y = (y + h / 2.0) / float(max(1, image_h))
         if center_x < 0.08 or center_x > 0.92 or center_y < 0.06 or center_y > 0.94:
             return False
+        if str(roi.get("source", "")).lower() == "pc_center_lens_blob":
+            if area_ratio < 0.055 and center_y > 0.78:
+                return False
 
         metrics = self.lens_presence_edge_metrics(image, roi)
         if (
@@ -4647,6 +4658,9 @@ class LensDefectHostApp:
             top = max(0, cy - radius)
             right = min(image_w, cx + radius)
             bottom = min(image_h, cy + radius)
+            edge_margin = int(min_dim * LENS_PRESENCE_ROUND_EDGE_MARGIN_RATIO)
+            if left <= edge_margin or top <= edge_margin or right >= image_w - edge_margin or bottom >= image_h - edge_margin:
+                continue
             roi = {
                 "x": int(left),
                 "y": int(top),
@@ -4656,12 +4670,61 @@ class LensDefectHostApp:
             }
             if not self.round_lens_roi_has_edge_support(gray, roi):
                 continue
+            if not self.round_lens_roi_has_body_support(gray, roi):
+                continue
             visible_area = float(roi["w"] * roi["h"]) / float(max(1, (radius * 2) ** 2))
             score = radius_ratio + visible_area * 0.25
             if score > best_score:
                 best_score = score
                 best = roi
         return best
+
+    def round_lens_roi_has_body_support(self, gray, roi):
+        if cv2 is None or np is None or gray is None or not isinstance(roi, dict):
+            return True
+        image_h, image_w = gray.shape[:2]
+        x = self._positive_int(roi.get("x"))
+        y = self._positive_int(roi.get("y"))
+        w = self._positive_int(roi.get("w"))
+        h = self._positive_int(roi.get("h"))
+        if w <= 8 or h <= 8:
+            return False
+
+        x = max(0, min(x, image_w - 1))
+        y = max(0, min(y, image_h - 1))
+        w = max(1, min(w, image_w - x))
+        h = max(1, min(h, image_h - y))
+        crop = gray[y:y + h, x:x + w]
+        if crop.size <= 0:
+            return False
+
+        center = (w // 2, h // 2)
+        inner = np.zeros((h, w), dtype=np.uint8)
+        cv2.ellipse(inner, center, (max(1, int(w * 0.32)), max(1, int(h * 0.32))), 0, 0, 360, 255, -1)
+        outer = np.zeros((h, w), dtype=np.uint8)
+        cv2.ellipse(outer, center, (max(2, int(w * 0.56)), max(2, int(h * 0.56))), 0, 0, 360, 255, -1)
+        cv2.ellipse(outer, center, (max(2, int(w * 0.49)), max(2, int(h * 0.49))), 0, 0, 360, 0, -1)
+        outer_area = int(cv2.countNonZero(outer))
+        inner_area = int(cv2.countNonZero(inner))
+        if outer_area <= 0 or inner_area <= 0:
+            return False
+
+        edges = cv2.Canny(cv2.GaussianBlur(crop, (5, 5), 0), 32, 92)
+        outer_edge_density = float(cv2.countNonZero(cv2.bitwise_and(edges, outer))) / float(outer_area)
+        background = cv2.GaussianBlur(crop, (0, 0), sigmaX=9, sigmaY=9)
+        response = cv2.absdiff(crop, background)
+        outer_response = response[outer > 0]
+        inner_values = crop[inner > 0]
+        outer_values = crop[outer > 0]
+        if outer_response.size <= 0 or inner_values.size <= 0 or outer_values.size <= 0:
+            return False
+        body_mean_gap = abs(float(np.mean(inner_values)) - float(np.mean(outer_values)))
+        outer_response_p90 = float(np.percentile(outer_response, 90.0))
+        return bool(
+            outer_edge_density >= LENS_PRESENCE_ROUND_MIN_OUTER_EDGE_DENSITY
+            and body_mean_gap >= LENS_PRESENCE_ROUND_MIN_BODY_MEAN_GAP
+            and outer_response_p90 >= 16.0
+        )
 
     def round_lens_roi_has_edge_support(self, gray, roi):
         if cv2 is None or np is None or gray is None or not isinstance(roi, dict):
@@ -15927,9 +15990,14 @@ class LensDefectHostApp:
         h = max(1, min(h, image_h - y))
 
         mask = np.zeros((image_h, image_w), dtype=np.uint8)
-        center = (x + w // 2, y + h // 2)
-        axes = (max(2, int(w * 0.44)), max(2, int(h * 0.40)))
-        cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+        source = str(roi.get("source", "")).lower()
+        aspect_ratio = float(max(w, h)) / float(max(1, min(w, h)))
+        if source in ("pc_center_lens_blob", "pc_lens_contour_presence") and aspect_ratio >= 1.35:
+            cv2.rectangle(mask, (x, y), (x + w - 1, y + h - 1), 255, -1)
+        else:
+            center = (x + w // 2, y + h // 2)
+            axes = (max(2, int(w * 0.44)), max(2, int(h * 0.40)))
+            cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
         edge_ignore = max(4, int(min(w, h) * float(margin_ratio)))
         distance = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
         inner_mask = np.where(distance > edge_ignore, 255, 0).astype(np.uint8)
@@ -17602,6 +17670,107 @@ def live_image_latest_frame_regression_self_test():
         return {"ok": False, "error": str(exc)}
 
 
+def live_clip_screenshot_regression_self_test():
+    if cv2 is None or np is None or Image is None:
+        return {"ok": False, "error": "cv2_numpy_or_pillow_unavailable"}
+    try:
+        sample_dir = PROJECT_ROOT / "dataset" / "regression" / "live_clip_20260610"
+        samples = [
+            ("empty_no_lens_a", sample_dir / "empty_no_lens_a.jpg", "no_lens"),
+            ("empty_no_lens_b", sample_dir / "empty_no_lens_b.jpg", "no_lens"),
+            ("black_stain_lens", sample_dir / "black_stain_lens.jpg", "stain"),
+        ]
+        app = object.__new__(LensDefectHostApp)
+        app.active_mode_key = "lens"
+        app.latest_detection_result = {}
+        app.lens_presence_payload_key = None
+        app.lens_presence_result = None
+        app.live_lens_track_payload_key = None
+        app.live_lens_track_result = None
+        app.live_lens_track_miss_count = 0
+        app._last_effective_roi = None
+
+        cases = []
+        for name, path, expected in samples:
+            if not path.exists():
+                cases.append({
+                    "name": name,
+                    "expected": expected,
+                    "actual": "missing_sample",
+                    "sample": str(path),
+                    "ok": False,
+                })
+                continue
+
+            with Image.open(path) as image_file:
+                image = image_file.convert("RGB")
+            payload = {
+                "width": image.width,
+                "height": image.height,
+                "receive_time": name,
+                "byte_count": int(path.stat().st_size),
+            }
+            presence = app.detect_lens_presence_from_image(image)
+            if expected == "no_lens":
+                cases.append({
+                    "name": name,
+                    "expected": "no_lens",
+                    "actual": "lens" if presence.get("found") else "no_lens",
+                    "reason": str(presence.get("reason", "")),
+                    "ok": not bool(presence.get("found")),
+                })
+                continue
+
+            current = app.result_with_current_lens_presence(
+                image,
+                payload,
+                app.normalize_detection_result({
+                    "frame": {"w": image.width, "h": image.height},
+                    "defects": [],
+                }),
+                presence,
+            )
+            mask = app.build_detection_mask(image, payload, current)
+            black_mask = app.build_lens_black_stain_mask(image, payload, current)
+            gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+            detection = (
+                app.fast_cv_detect_defect(image, mask, gray=gray, black_stain_mask=black_mask)
+                if presence.get("found") and mask is not None
+                else None
+            )
+            filtered = app.filter_edge_defects_for_image(
+                app.normalize_detection_result({
+                    "frame": {"w": image.width, "h": image.height},
+                    "lens": current.get("lens", {}),
+                    "roi": current.get("roi", {}),
+                    "defects": [dict(detection)] if isinstance(detection, dict) else [],
+                    "pc_fast_review": True,
+                }),
+                payload,
+                image,
+            )
+            source = str(detection.get("source", "")) if isinstance(detection, dict) else ""
+            stain_ok = bool(
+                presence.get("found")
+                and isinstance(detection, dict)
+                and detection.get("type") == "stain"
+                and source == "pc_lens_inner_black_stain"
+                and filtered.get("has_defect")
+            )
+            cases.append({
+                "name": name,
+                "expected": "stain",
+                "actual": detection.get("type", "none") if isinstance(detection, dict) else "none",
+                "presence_reason": str(presence.get("reason", "")),
+                "source": source,
+                "confidence": round(app.confidence_float(detection), 2) if isinstance(detection, dict) else 0.0,
+                "ok": bool(stain_ok),
+            })
+        return {"ok": all(case["ok"] for case in cases), "cases": cases}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def runtime_self_test():
     checks = {
         "frozen": bool(getattr(sys, "frozen", False)),
@@ -17621,6 +17790,7 @@ def runtime_self_test():
         "green_conveyor_black_stain": None,
         "bright_cross_scratch": None,
         "live_image_latest_frame": None,
+        "live_clip_screenshots": None,
     }
     if cv2 is None:
         checks["cv2"] = {"ok": False, "error": str(STAGE2_IMPORT_ERROR)}
@@ -17708,6 +17878,7 @@ def runtime_self_test():
     checks["green_conveyor_black_stain"] = green_conveyor_black_stain_regression_self_test()
     checks["bright_cross_scratch"] = bright_cross_scratch_regression_self_test()
     checks["live_image_latest_frame"] = live_image_latest_frame_regression_self_test()
+    checks["live_clip_screenshots"] = live_clip_screenshot_regression_self_test()
 
     scratch_aux_ok = bool(
         checks["yolo_new_lens_scratch"]["ok"]
@@ -17730,6 +17901,7 @@ def runtime_self_test():
         and checks["green_conveyor_black_stain"]["ok"]
         and checks["bright_cross_scratch"]["ok"]
         and checks["live_image_latest_frame"]["ok"]
+        and checks["live_clip_screenshots"]["ok"]
     )
     text = json.dumps(checks, ensure_ascii=False, indent=2)
     try:
